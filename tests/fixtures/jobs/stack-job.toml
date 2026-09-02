@@ -1,0 +1,18 @@
+name = "stack-job"
+profile = "potterbot-xl"
+page_mode = "stack"
+layers = 2
+layer_height = 2.0
+first_layer_height = 2.0
+standoff_z = 20.0
+z_step_per_layer = 2.0
+page_travel_clearance = 50.0
+expected_pages = 2
+
+[[pages]]
+svg = "../../../examples/gallery/rings-grid.svg"
+name = "rings-grid-base"
+
+[[pages]]
+svg = "../svg/stack-rosette-motif.svg"
+name = "rosette-motif"

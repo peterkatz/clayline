@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="40mm"
+     height="20mm"
+     viewBox="0 0 40 20">
+  <path id="release-line"
+        d="M 0 10 L 40 10"
+        fill="none"
+        stroke="#000"
+        stroke-width="1"/>
+</svg>

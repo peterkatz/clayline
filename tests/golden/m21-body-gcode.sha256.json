@@ -1,0 +1,35 @@
+{
+  "svg": {
+    "tests/golden/F4.7/stack-job-calibrated.gcode": "76e7c520090d92c2e8178495c3f5e68555c3a8887a4ba9186f6b5d2bfe9c4b7c",
+    "tests/golden/F4.7/stack-job-drape.gcode": "ed3c14775538d88eb14d55e6adfcca15a2859d9034d809d1e431fd68034052f7",
+    "tests/golden/M2/flow-ladder.gcode": "cd484b82c4b140098e0424f7ff152f550dbd27dabb5daf5860b62487ccbe8bdc",
+    "tests/golden/M2/hardcoded-line.gcode": "f05b8eabbb1e93d5df92cf1a8903789690bf614f6354d3158fa8306a5141539b",
+    "tests/golden/M2/kiss-pair.gcode": "5fd936cebaf8549bf0edfa4ea8164c519d8e2ab6841eaf086827e9e2606d0836",
+    "tests/golden/M2/ring.gcode": "d225c63c06875f0f0acb968485cd105bd32182967b32f48e4b8c8f0a6ffd8ec7",
+    "tests/golden/M4/calibrated-page-01-golden-loop.gcode": "dc25185409e289195bcdfd5a5c2f625f1986d9e5a860fd76cb3218767a9e702b",
+    "tests/golden/M4/calibrated.gcode": "dc25185409e289195bcdfd5a5c2f625f1986d9e5a860fd76cb3218767a9e702b",
+    "tests/golden/M4/drape-zstep-0-page-01-golden-loop.gcode": "c870ece1f203a62ce75476dac46df1c21c44709f5ae359960c474b880e71f910",
+    "tests/golden/M4/drape-zstep-0.gcode": "c870ece1f203a62ce75476dac46df1c21c44709f5ae359960c474b880e71f910",
+    "tests/golden/M4/drape-zstep-height-page-01-golden-loop.gcode": "d5d2c707b943cbf320d03fc1e6f30ba4f18d13db4d434054df0a8b25ec08aa4a",
+    "tests/golden/M4/drape-zstep-height.gcode": "d5d2c707b943cbf320d03fc1e6f30ba4f18d13db4d434054df0a8b25ec08aa4a",
+    "tests/golden/M4/helical-page-01-golden-loop.gcode": "c6f8f7e877618dfe7d8ab76645780fa2c6ce03cb04d28afd7227ea9e6f670ea2",
+    "tests/golden/M4/helical.gcode": "c6f8f7e877618dfe7d8ab76645780fa2c6ce03cb04d28afd7227ea9e6f670ea2",
+    "tests/golden/M4/pages-job-page-01-rings-grid.gcode": "cfb6e577ed665227287f38b637f5aecaa865847b7c229019e520198d3b08d098",
+    "tests/golden/M4/pages-job-page-02-rosette.gcode": "6391d0a373589f86d51e7b320abe5c64560ccc5583be3db0883ea87d70c6cbf9",
+    "tests/golden/M4/pages-job-page-03-petal-flower.gcode": "b9cfc959816b45337c3cf3e733ae8426b6379006f0d6765198502f9ef958649b",
+    "tests/golden/M4/pages-job-page-04-petal-flower.gcode": "6b1c6fd6ddbd74d9f3d2d842a801ecc8a8824901ac6b48e3570787e88db1b71b",
+    "tests/golden/M4/pages-job.gcode": "98ed56b4d7c2cfd4b85c1bf646b74c52f1205409d49c7edd1c747327946c18b6"
+  },
+  "weave": {
+    "m11/cone-ribs.gcode": "79d7b42af6f0cff9688e4baa90f70699e7eb9f21414ba52ac637ed33cc52c897",
+    "m11/cone-spiral.gcode": "7ed0cf843e743593ac342d63866c332a4064e908e916b244a18065e4c3327802",
+    "m11/cone-weave.gcode": "bf1039f8a83ee413ea20f4b043e48dd7e55ff92a28a6d0dafd7b5478c0756c8e",
+    "m11/cylinder-ribs.gcode": "d5224629cd74bd948b4a4860a0f24b3ec04768a28d2e12ea5f0739dde613162d",
+    "m11/cylinder-spiral.gcode": "b7a6828f3af03fff1b10afdc2d9029c58fdc3fa1268fe548e51ffeab246e76d4",
+    "m11/cylinder-weave.gcode": "c18b5be720a71ed6ff6d7dd62703265d8cc6552fab946afb010c4084d551ab86",
+    "m12/cone-zblend-level-rim.gcode": "21ad0d4251add100140e171d9a698c6d2c1c3fa95bee7fc08c39643e5bf2daf4",
+    "m12/cone-zblend-open-rim.gcode": "80aaf0e09ddcb02b38153576f39a4a2bc373f6a3bca3d0c07aa103842a494cb4",
+    "m12/hollow-cylinder-bottom3.gcode": "7bb80f5b4cda0ebfeaa194f3e6023f1f4c79090e5c36ed1ad8f3a44d4709fabf",
+    "m12/lobed-weave-zblend-bottom3.gcode": "b06b3d0a3cc3fbf1e1a1392903d9a052b02ab01080ba113dd0a9856d03b4a6d3"
+  }
+}

@@ -1,0 +1,103 @@
+{
+  "bound_to_commit": "10978de39725bd919b7b0bd4529e1d38b3940803",
+  "mesh": {
+    "path": "half2.obj",
+    "sha256": "894b261ac2ef448e6c86493b56d7d4b0c4eecd510aca68bdb9d846d917727cd3"
+  },
+  "mesh_params": {
+    "filename": "half2.obj",
+    "up": "z",
+    "fit_height": 50,
+    "rotation_y_deg": 90
+  },
+  "modulate_base": {
+    "quality": "settle",
+    "wave": "sine",
+    "amplitude": 1.0,
+    "wavelength": 17.5,
+    "twist": 0.0,
+    "seam": "chained",
+    "z_blend": false,
+    "level_rim": true,
+    "bottom_layers": 0,
+    "island_range_auto": false,
+    "reproducible": true,
+    "prime_mm": 0.0,
+    "end_early_mm": 0.0,
+    "interior": "infill",
+    "infill_pattern": "lines",
+    "infill_spacing_beads": 3.0,
+    "infill_angle_deg": 45.0,
+    "infill_base_layers": 0,
+    "infill_cap_layers": 0,
+    "infill_ramp_layers": 3
+  },
+  "setups": {
+    "3.5-1.05": {
+      "slice": {
+        "nozzle": 3.5,
+        "layer_height": 1.05,
+        "first_layer_height": 1.05,
+        "sample_spacing": 1.0,
+        "bead_width": null
+      },
+      "layer_range": [1, 47],
+      "before": {
+        "printed_layers": 47,
+        "travel_groups": 48,
+        "exceptional_layers": {"43": 2},
+        "full_sha256": "33182f6975534b27cb3ac21a89c65e5299e22f926352bbd1c40c02de5b268d33",
+        "body_sha256": "118b06be1e3a3df0f1357253780aaaa0bd22c079fb2816e39c117af89d983249",
+        "warning_counts_by_code": {
+          "infill_drift": 10,
+          "interior_unfilled_island": 1,
+          "interior_unwelded_seam": 1,
+          "overhang": 3,
+          "pinch": 128,
+          "thin_ring": 9
+        }
+      },
+      "after": {
+        "printed_layers": 47,
+        "travel_groups": 47,
+        "full_sha256": "b06a70f4fce27b593e621fcb7c9b0342de3b2e889a674c571cc5c8d61448ffa4",
+        "body_sha256": "72ace7421c2cca01082ec4f830f788fba0ddbefd37457a1e7ad59339c90f1253",
+        "delta_classification": {
+          "removed": "layer-43 stroke split and its 3-line paste-safe travel group (lift at 190.484228,220.182713 / traverse to 189.812304,219.925276 / approach)",
+          "added": "one printed move to the seam: the 0.719553 mm proved direct weld",
+          "everything_else": "E-accounting and stroke relabeling only; sole layer named in the structural delta is 43",
+          "print_path_mm": "+0.719553",
+          "travel_path_mm": "-4.719552",
+          "wet_weight_g": "+0.004760",
+          "stroke_count": "48 -> 47",
+          "warnings": "interior_unwelded_seam 1 -> 0, nothing else moved"
+        }
+      }
+    },
+    "4.13-1.24": {
+      "slice": {
+        "nozzle": 4.13,
+        "layer_height": 1.24,
+        "first_layer_height": 1.24,
+        "sample_spacing": 1.0,
+        "bead_width": null
+      },
+      "layer_range": [1, 40],
+      "before": {
+        "printed_layers": 40,
+        "travel_groups": 40,
+        "exceptional_layers": {},
+        "full_sha256": "d54d9da51b170234268b2f0d2b10c48def5969a7023a8f8f1d59fa17080f9ee1",
+        "body_sha256": "0cf1f0ceb8964cf678b6ce3b07d0d61649cb81907997d628588816341cac621e",
+        "warning_counts_by_code": {
+          "infill_drift": 5,
+          "interior_unfilled_island": 1,
+          "overhang": 3,
+          "pinch": 105,
+          "thin_ring": 7
+        }
+      },
+      "after": null
+    }
+  }
+}

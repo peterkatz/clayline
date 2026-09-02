@@ -1,0 +1,71 @@
+{
+  "schema": "clayline.weave.m12-entry-corridor.v3",
+  "source_facts_sha256": "c03b59fd07c665d992c2a9c637a7b2725358a0cb946d2bba257713e2fa25e724",
+  "source_facts_hash_canonicalization": "UTF-8 json.dumps(source_facts, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False)",
+  "source_facts": {
+    "source": {
+      "mesh_path": "tests/fixtures/mesh/tall-tumbler.obj",
+      "mesh_sha256": "1f110ced28ddc93bf2baa50e35aece8c5cb1f49c82e37eff815476498edb8d42",
+      "recipe_identity": "tests/test_m12_goldens.py::CASES['tall-tumbler-infill-lines-cap.gcode']"
+    },
+    "recipe": {
+      "pattern_preset": "sine",
+      "settings_overrides": {
+        "amplitude": 0.6,
+        "wavelength": 12.0,
+        "twist": 0.0,
+        "z_blend": false,
+        "level_rim": true,
+        "bottom_layers": 0,
+        "interior": "infill",
+        "infill_pattern": "lines",
+        "infill_spacing_beads": 3.0,
+        "infill_angle_deg": 45.0,
+        "infill_base_layers": 1,
+        "infill_cap_layers": 2,
+        "infill_ramp_layers": 3
+      },
+      "slice": {
+        "profile": "potterbot-xl",
+        "layer_height_mm": 2.0,
+        "first_layer_height_mm": 2.0,
+        "sample_spacing_mm": 1.0,
+        "bead_width_mm": 5.0
+      },
+      "emission": {
+        "reproducible": true,
+        "prime_mm": 0.0,
+        "end_early_mm": 0.0
+      }
+    },
+    "transition": {
+      "lower_layer_index_zero_based": 26,
+      "upper_layer_index_zero_based": 27,
+      "lower_print_z_mm": 54.0,
+      "upper_print_z_mm": 56.0,
+      "layer_delta_mm": 2.0,
+      "bead_width_mm": 5.0,
+      "previous_planned_seam_xy_mm": [
+        177.09062968798534,
+        201.48760031701136
+      ],
+      "reversed_upper_fill_start_xy_mm": [
+        179.57494090518878,
+        200.78814434078518
+      ],
+      "direct_route_length_xy_mm": 2.5808992399164588,
+      "upper_fill_region_tolerance_mm": 1e-07,
+      "old_current_region_gate": {
+        "previous_seam_covered": false,
+        "previous_seam_outside_distance_mm": 0.03966522801134405,
+        "direct_segment_outside_length_mm": 0.04030923276677179,
+        "direct_segment_outside_length_at_tolerance_mm": 0.040309131143175324
+      }
+    },
+    "proof_expectations": {
+      "lower_support": true,
+      "swept_wall_corridor": true,
+      "planner_status": "reachable"
+    }
+  }
+}

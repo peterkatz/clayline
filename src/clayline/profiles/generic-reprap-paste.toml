@@ -1,0 +1,44 @@
+name = "generic-reprap-paste"
+version = "1.0.0"
+description = "UNVERIFIED conservative example: replace bounds, speeds, nozzle, and G-code with facts for your RepRap paste printer before use; no homing, park, heater, or retract is assumed."
+verified = false
+flavor = "reprap"
+nozzle_diameters = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+default_nozzle_diameter = 4.0
+virtual_filament_diameter = 1.75
+extrusion_mode = "relative"
+speed_default = 20.0
+speed_travel = 20.0
+start_gcode = ["G21 ; millimeters", "G90 ; absolute XYZ", "M83 ; relative extrusion"]
+end_gcode = []
+gcode_whitelist = ["G0", "G1", "G4", "G21", "G90", "G91", "G92", "M82", "M83", "M226"]
+
+[work_bounds]
+min_x = 0.0
+max_x = 200.0
+min_y = 0.0
+max_y = 200.0
+min_z = 0.0
+max_z = 200.0
+
+[machine_envelope]
+min_x = 0.0
+max_x = 200.0
+min_y = 0.0
+max_y = 200.0
+min_z = 0.0
+max_z = 200.0
+
+[center]
+x = 100.0
+y = 100.0
+
+[travel_policy]
+lift = 2.0
+reprime_e = 0.0
+dwell_seconds = 0.0
+page_pause_command = "M226"
+
+[emission]
+prime_mm = 15.0
+end_early_mm = 5.0

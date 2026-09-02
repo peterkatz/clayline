@@ -1,0 +1,876 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="theme-color" content="#eee9df">
+    <title>Clayline — Ceramic Printing Toolpath Studio</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/app.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <a class="brand" href="/" aria-label="Clayline home">
+        <svg class="brand-mark" viewBox="0 0 42 42" aria-hidden="true">
+          <circle cx="14.8" cy="14.8" r="9.2"/>
+          <circle cx="27.2" cy="14.8" r="9.2"/>
+          <circle cx="14.8" cy="27.2" r="9.2"/>
+          <circle cx="27.2" cy="27.2" r="9.2"/>
+        </svg>
+        <span>Clayline</span>
+        <small>Ceramic Printing Toolpath Studio</small>
+      </a>
+      <nav class="mode-switcher" aria-label="Clayline mode">
+        <button class="mode-choice is-active" id="tilesModeButton" type="button" data-clayline-mode="tiles" aria-pressed="true">Draw in Clay</button>
+        <button class="mode-choice" id="weaveModeButton" type="button" data-clayline-mode="weave" aria-pressed="false">Weave · mesh</button>
+      </nav>
+      <div class="header-meta">
+        <div class="header-history" role="group" aria-label="Settings history">
+          <button class="icon-button header-history-button" id="undoButton" type="button" title="Undo settings change (⌘Z)" aria-label="Undo settings change" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5"/><path d="M5 12h8a6 6 0 0 1 6 6"/></svg>
+          </button>
+          <button class="icon-button header-history-button" id="redoButton" type="button" title="Redo settings change (⇧⌘Z)" aria-label="Redo settings change" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5"/><path d="M19 12h-8a6 6 0 0 0-6 6"/></svg>
+          </button>
+        </div>
+        <nav class="unit-switch" aria-label="Display units" title="How dimensions are shown everywhere in the studio. Files and G-code stay millimetres inside.">
+          <button type="button" data-unit-choice="mm" class="is-active" aria-pressed="true">mm</button>
+          <button type="button" data-unit-choice="in" aria-pressed="false">in</button>
+        </nav>
+        <span class="header-rule" aria-hidden="true"></span>
+        <span class="hardware-note" title="Clayline writes motion files (G-code) for clay paste printers. Always review travels, clearance and flow in the preview before running a file on the machine.">Makes G-code for clay printers · review before running</span>
+      </div>
+    </header>
+
+    <main class="workspace" id="tilesWorkspace" data-mode-panel="tiles">
+      <aside class="parameter-rail" aria-label="Toolpath parameters">
+        <div class="rail-heading">
+          <div>
+            <p class="eyebrow">Workflow</p>
+            <h1>From drawing to print</h1>
+          </div>
+          <button class="icon-button" id="resetButton" type="button" title="Reset every setting to the shared Clayline defaults" aria-label="Reset parameters">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8v-4m0 0h4M4 4l3.2 3.2a7 7 0 1 1-1.5 7.6"/></svg>
+          </button>
+        </div>
+
+        <div class="rail-scroll">
+        <section class="rail-section is-active" data-section="design">
+          <div class="section-index">01</div>
+          <div class="section-body">
+            <h2>Design</h2>
+            <p class="section-copy">Centerline SVGs only — anything you draw here is a centerline by construction. Fill-only shapes are reported, never guessed.</p>
+            <label class="drop-zone" id="dropZone" for="fileInput" title="Add centerline SVG artwork. Drop files on this box or click to browse — each SVG becomes one printable pass, in the order you add them.">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg>
+              <span><strong>Drop SVGs here</strong><small>or choose files</small></span>
+              <input id="fileInput" type="file" accept="image/svg+xml,.svg" multiple>
+            </label>
+            <div class="draw-new-row">
+              <button class="secondary-button compact-button" id="newDrawingButton" type="button" title="Start an empty pass and draw it straight onto the bed, in millimetres, at coil width.">New drawing</button>
+            </div>
+            <div class="file-summary" id="fileSummary" aria-live="polite">No designs loaded</div>
+            <p class="field-hint" id="designSizeHint">Set the size and placement of each design in Passes.</p>
+          </div>
+        </section>
+
+        <section class="rail-section" data-section="passes">
+          <div class="section-index">02</div>
+          <div class="section-body">
+            <h2>Passes</h2>
+            <p class="section-copy">Each row prints once. Pass 1 is the bottom tier; every row after it builds upward.</p>
+            <p class="mode-note pass-order-note" id="pageModeHint">The first row prints first at the bottom of the stack.</p>
+            <p class="stack-caption" id="stackCaption" hidden>Pass 1 is the physical bottom tier.</p>
+            <div class="page-list" id="pageList" aria-label="Passes in print order"><p class="muted-line">Load one or more SVGs to arrange passes.</p></div>
+            <figure class="bed-map" id="bedMapPanel" hidden>
+              <figcaption class="bed-map-head"><span title="Where each pass sits on the printer bed, checked live before slicing — hover the shape here or its row above to see it highlighted.">Bed map</span><span id="bedMapCaption" title="Space the layout needs versus the bed of the selected printer.">—</span></figcaption>
+              <svg id="bedMapSvg" viewBox="0 0 100 100" role="img" aria-label="Passes placed on the printer bed"></svg>
+            </figure>
+            <div class="fit-banner" id="fitBanner" role="status" aria-live="polite" hidden>
+              <p id="fitBannerText"></p>
+              <div class="fit-banner-actions" id="fitBannerActions"></div>
+            </div>
+            <label class="field" id="pagePauseField" title="Pause between passes (seconds). The value applies after every pass except the final pass. 0 = no requested pause."><span>Pause between passes (s)</span><input id="pagePause" type="number" value="0" min="0" step="1" aria-describedby="pageOptionsHint"></label>
+            <p class="field-hint" id="pageOptionsHint">Applied after every pass except the final pass. 0 adds no requested pause.</p>
+          </div>
+        </section>
+
+        <section class="rail-section" data-section="layers">
+          <div class="section-index">03</div>
+          <div class="section-body">
+            <h2>Layers</h2>
+            <p class="section-copy">Set the physical coil and how each pass rises from the bed.</p>
+            <div class="control-grid two-up">
+              <label class="field" title="Nozzle opening (mm). The sizes listed come from the selected printer's profile. Automatic coil width follows this value."><span>Nozzle opening (mm)</span><select id="nozzle"><option>3.5</option><option>4.13</option><option selected>5</option><option>6.4</option></select></label>
+              <label class="field" title="Starting heuristic: 30% of the nozzle (5 mm → 1.5 mm). It follows nozzle changes until you type a measured value. Clay, pressure, speed, and standoff can require a different layer height."><span><span class="field-word">Layer height (mm)</span> <button type="button" class="follow-chip" id="layerHeightFollowChip" aria-pressed="true" title="Starting at 30% of the nozzle. Type a measured value to take over; click to follow again.">auto</button></span><input id="layerHeight" type="number" value="1.5" min="0.1" step="0.01"></label>
+            </div>
+            <fieldset class="segmented" aria-label="Z mode">
+              <label title="Calibrated — the nozzle rides at layer height and steps up precisely each pass. The default starting mode."><input type="radio" name="zMode" value="calibrated" checked><span>Calibrated</span></label>
+              <label title="Drape — the nozzle rides high above the work and the coil falls onto the canvas. The openwork technique."><input type="radio" name="zMode" value="drape"><span>Drape</span></label>
+            </fieldset>
+            <p class="mode-note z-mode-note" id="modeNote">Nozzle Z follows calibrated layer height.</p>
+            <div class="z-mode-panel calibrated-only" id="calibratedModePanel">
+              <label class="field" title="First layer height (mm). Bed squish only: nozzle height for the very first pass. Follows layer height until you change it, and never affects the spacing of later passes."><span>First layer height (mm)</span><input id="firstLayerHeight" type="number" value="1.5" min="0.1" step="0.01"></label>
+            </div>
+            <div class="z-mode-panel drape-only" id="drapeModePanel" hidden>
+              <div class="control-grid two-up">
+                <label class="field" title="Standoff (mm). How high the nozzle rides above the canvas while the coil falls. The verified setup uses 20 mm."><span>Nozzle height above canvas (mm)</span><input id="standoff" type="number" value="20" min="0" step="1"></label>
+                <label class="field" title="Z step per pass (mm). How much the nozzle rises after each pass. Follows coil height until you change it; 0 keeps the nozzle fixed while the stack grows up toward it."><span>Raise nozzle each pass (mm)</span><input id="zStep" type="number" value="2" min="0" step="0.1"></label>
+              </div>
+            </div>
+            <div class="coil-readout" id="coilReadout">
+              <p class="coil-headline" id="coilHeadline">A 5.0 mm coil pressed down to 2.0 mm.</p>
+              <dl class="coil-facts">
+                <div><dt>Clay per mm of line</dt><dd id="coilClay">9.14 mm³</dd></div>
+                <div><dt>Squish</dt><dd id="coilSquish">0.59</dd></div>
+                <div><dt>Side-by-side spacing</dt><dd id="coilSpacing">4.00 mm</dd></div>
+                <div><dt>Free coil before it squashes</dt><dd id="coilFree">3.41 mm</dd></div>
+              </dl>
+              <p class="coil-verdict" id="coilVerdict">Welds solidly.</p>
+            </div>
+            <p class="field-hint" id="passMath">Traces the design once.</p>
+            <label class="switch-row" id="alternateRow" title="Alternate direction. Every other pass runs the path backwards so flow asymmetry doesn't pile up on one side."><span><strong>Alternate direction each pass</strong><small id="alternateHint">Available with two or more passes.</small></span><input id="alternate" type="checkbox" role="switch" checked></label>
+            <label class="switch-row" id="helicalRow" title="Seamless spiral. The nozzle climbs height continuously around each closed loop instead of stepping up pass by pass, so a tall vessel has no seam where layers meet. Needs Calibrated mode and every stroke closed into a loop."><span><strong>Seamless spiral</strong><small id="helicalHint">The nozzle climbs continuously, so a tall closed shape has no layer seam.</small></span><input id="helical" type="checkbox" role="switch"></label>
+            <label class="switch-row" id="settleValleysRow" title="Settle into valleys. Where the design crosses open gaps in earlier passes, the nozzle sinks and lays clay on what is really there instead of bridging in air. It only sinks where the nozzle fits."><span><strong>Settle into valleys</strong><small id="settleValleysHint">Where the design crosses open gaps in earlier passes, the nozzle sinks and lays clay on what is really there instead of bridging in air. It only sinks where the nozzle fits.</small></span><input id="settleValleys" type="checkbox" role="switch"></label>
+            <details class="advanced-controls layer-advanced" id="layerAdvanced">
+              <summary>Advanced</summary>
+              <div class="advanced-panel">
+                <p class="control-label">Measured coil width (mm)</p>
+                <fieldset class="segmented bead-width-mode" id="beadWidthModeControl" aria-label="Measured coil width mode" aria-describedby="beadWidthHint">
+                  <label><input type="radio" name="beadWidthMode" value="auto" checked><span>Auto</span></label>
+                  <label><input type="radio" name="beadWidthMode" value="measured"><span>Measured</span></label>
+                </fieldset>
+                <label class="field is-disabled measured-width-field" id="beadWidthField" title="Measured laid coil width in millimetres. Select Measured before entering a calibration result."><span>Width (mm)</span><input id="beadWidth" type="number" value="5" min="0.1" step="0.1" disabled aria-describedby="beadWidthHint"></label>
+                <p class="field-hint" id="beadWidthHint">Starts at the nozzle size. If a laid calibration line is wider or narrower, enter the measured width here.</p>
+              </div>
+            </details>
+          </div>
+        </section>
+
+        <section class="rail-section" data-section="path">
+          <div class="section-index">04</div>
+          <div class="section-body">
+            <h2>Path</h2>
+            <p class="section-copy">Choose how closely the path follows the drawing and joins its lines.</p>
+            <div class="control-grid two-up path-control-grid">
+              <label class="field" title="Curve smoothness (flatten tolerance, mm). Curves are traced within this distance of the drawn line. Range 0.02–0.5 mm; under a 3.5–10 mm clay bead anything finer than 0.1 mm is invisible, and coarser values make lighter G-code."><span>Follow curves within <output id="flattenOutput">0.10 mm</output></span><input id="flattenTol" type="range" min="0.02" max="0.5" value="0.1" step="0.01"></label>
+              <label class="field" title="Weld tolerance (mm). Line ends within this distance count as the same point, so slightly rough hand-drawn corners still join into one continuous stroke. Default 0.25 mm."><span>Join ends that nearly touch (mm)</span><input id="weldTol" type="number" value="0.25" min="0" step="0.05"></label>
+              <label class="field field-wide" title="How deeply two touching coils press into each other where they meet side by side, entered as a percentage of effective coil width."><span>Side-by-side join (%) <output id="overlapOutput">20%</output></span><input id="overlap" type="number" value="20" min="0" max="100" step="5" aria-describedby="overlapComputed"></label>
+            </div>
+            <p class="computed-line" id="overlapComputed">= 1.0 mm on your 5 mm coil.</p>
+            <label class="switch-row" id="kissRow" title="Kiss-hop. Where closed rings touch, the stroke hops across the touch point and keeps flowing — a grid of tangent rings becomes one continuous stroke with no travel moves.">
+              <span><strong>Draw touching rings in one stroke</strong><small id="kissHint">Merge tangent loops with short fuse hops (kiss-hop).</small></span>
+              <input id="kiss" type="checkbox" role="switch">
+            </label>
+            <div class="protection-control">
+              <p class="control-label">Protect the thread</p>
+              <fieldset class="segmented joint-boost-control" id="jointBoostControl" aria-label="Protect the thread" aria-describedby="jointBoostHint">
+                <label><input type="radio" name="jointBoost" value="0"><span>Off</span></label>
+                <label><input type="radio" name="jointBoost" value="0.5" checked><span>+50%</span></label>
+                <label><input type="radio" name="jointBoost" value="1.0"><span>+100%</span></label>
+              </fieldset>
+              <p class="field-hint" id="jointBoostHint">Adds this much clay per millimetre by slowing the nozzle, so the extruder keeps its normal pace where the thread starts, finishes, crosses clay, and bridges a gap.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="rail-section" data-section="character">
+          <div class="section-index">05</div>
+          <div class="section-body">
+            <h2>Character</h2>
+            <p class="section-copy">Add a gentle hand-made rhythm to flow or height. Both are off by default.</p>
+            <div class="control-grid two-up">
+              <label class="field" title="Flow ripple (0–0.95). Gently pulses how much clay flows so the bead swells and thins like a hand-rolled coil. 0 = off. Uses the ripple length below."><span>Hand ripple · flow</span><input id="flowModulation" type="number" value="0" min="0" max="0.95" step="0.05"></label>
+              <label class="field" title="Height ripple (mm). Gently waves the nozzle height for a hand-made bead surface. 0 = off. Uses the ripple length below."><span>Hand ripple · height (mm)</span><input id="zModulation" type="number" value="0" min="0" step="0.05" aria-describedby="rippleDepth"></label>
+              <label class="field field-wide" id="wavelengthField" title="Ripple length (mm). Distance along the coil for one swell-and-thin cycle. Only used when a ripple above is greater than zero."><span>Ripple length (mm)</span><input id="wavelength" type="number" value="50" min="1" step="1"></label>
+            </div>
+            <p class="computed-line" id="rippleDepth">The height ripple waves around the first pass height.</p>
+          </div>
+        </section>
+
+        <section class="rail-section" data-section="printer">
+          <div class="section-index">06</div>
+          <div class="section-body">
+            <h2>Printer</h2>
+            <label class="field" title="Printer profile. Bed size, speeds, start/end blocks and the extrusion model all come from this. “Verified” means proven on the real machine."><span>Printer</span><select id="profile"><option value="potterbot-xl" selected>PotterBot 10 XL · verified reference</option><option value="generic-reprap-paste">Generic RepRap paste · unverified</option><option value="generic-marlin-paste">Generic Marlin paste · unverified</option></select></label>
+            <div class="profile-fact"><span class="fact-mark"></span><span id="profileFact">Absolute E · 1.75 mm virtual filament · 381 × 381 mm work area</span></div>
+            <label class="field" title="Flow multiplier. Scales how much clay is pushed per millimetre: above 1× lays a fatter bead, below 1× a leaner one. Tune it on the calibration flow ladder before a long print."><span>Clay flow <output id="flowOutput">1.00×</output></span><input id="flow" type="range" value="1" min="0.5" max="1.5" step="0.01"></label>
+          </div>
+        </section>
+
+        <section class="rail-section" data-section="export">
+          <div class="section-index">07</div>
+          <div class="section-body">
+            <h2>Export</h2>
+            <label class="field" title="Export filename. Leave blank to name the file after your design — the suggested name updates automatically."><span>Save as</span><input id="filename" type="text" value="" placeholder="design-name.gcode" maxlength="180" spellcheck="false"></label>
+            <label class="switch-row" title="Reproducible output. Leaves the timestamp out of the file header so re-slicing the same job gives a byte-identical file — handy for comparing exports."><span><strong>Reproducible output</strong><small>Same job, same file — omit the timestamp.</small></span><input id="reproducible" type="checkbox" role="switch" checked></label>
+          </div>
+        </section>
+        </div>
+
+        <div class="slice-dock">
+          <button class="primary-button" id="sliceButton" type="button" disabled title="Build the toolpath: plans strokes, audits the exact export trace, and renders both previews. Nothing prints from here — it only prepares the file.">
+            <span>Slice job</span>
+            <span class="slice-sub" id="slicePassSub">· 1 pass</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+          </button>
+          <p id="sliceFootnote">Add or draw a design to begin.</p>
+        </div>
+      </aside>
+
+      <section class="preview-shell" aria-label="Toolpath preview">
+        <div class="preview-toolbar">
+          <div class="tabs" role="tablist" aria-label="Preview mode">
+            <button id="planTab" class="tab is-active" type="button" role="tab" aria-selected="true" aria-controls="planView" tabindex="0" data-view="plan" title="2D plan — the bed from above with the whole page layout. Click a line to select its page.">2D plan</button>
+            <button id="toolpathTab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="toolpathView" tabindex="-1" data-view="toolpath" title="3D toolpath — every printed move at height. Drag to orbit, scroll to zoom, scrub passes below.">3D toolpath</button>
+          </div>
+          <div class="preview-actions">
+            <nav class="unit-switch draw-surface-switch" id="drawSurfaceSwitch" aria-label="Bed surface">
+              <button type="button" data-draw-surface="draw" aria-pressed="false" title="Draw on the bed — your designs at coil width, in millimetres, editable. Nothing plans while you draw.">Draw</button>
+              <button type="button" data-draw-surface="sliced" class="is-active" aria-pressed="true" title="The audited path from the last slice. Read-only — slice again after an edit.">Sliced</button>
+            </nav>
+            <nav class="unit-switch draw-tool-switch" id="drawToolSwitch" aria-label="Drawing tool" hidden>
+              <button type="button" data-draw-tool="draw" class="is-active" aria-pressed="true" title="Tap to place points, drag on empty bed to draw freely, pull any line to bend it into an arc the nozzle can turn.">Lines</button>
+              <button type="button" data-draw-tool="ring" aria-pressed="false" title="Drag from the centre to lay a ring. Rings snap so their coils touch, and touching rings print as one stroke with no travel between them.">Rings</button>
+              <button type="button" data-draw-tool="box" aria-pressed="false" title="Drag across the bed to lay a rectangle of coil, or hold shift to keep it square. Its four corners are sharp until you round them.">Box</button>
+              <button type="button" data-draw-tool="polygon" aria-pressed="false" title="Drag from the centre out to a corner to lay an even-sided shape of coil, aimed where you drag. Its corners are sharp until you round them.">Polygon</button>
+            </nav>
+            <label class="compact-field draw-coil-field" id="drawCoilField" hidden title="Coil width (mm). The line you draw is the centre of a coil this wide — width is flow, not the hole. The same control as the rail's.">
+              <span>Coil width (mm)</span>
+              <input id="drawCoil" type="number" value="5" min="0.1" step="0.1" data-unit="mm">
+            </label>
+            <button class="secondary-button compact-button draw-tray-button" id="drawReferenceButton" type="button" hidden aria-pressed="false" title="Place a photo on the bed to trace over. It shows faded under your lines, and it never prints — a drawing aid only. While a photo is placed, press again to move, resize or turn it.">Reference</button>
+            <input id="drawReferenceInput" type="file" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif" hidden>
+            <button class="secondary-button compact-button draw-tray-button" id="drawTrayButton" type="button" hidden aria-expanded="false" aria-controls="drawTray" title="Show the rest of the drawing tools: how many sides a shape has, mirroring and repeating lines around a centre, and how wide a rounded corner is in millimetres.">Shape &amp; repeat<span class="draw-tray-caret" aria-hidden="true">▾</span></button>
+            <button class="secondary-button compact-button draw-done-button" id="drawDoneButton" type="button" hidden title="Finish the drawing and go back to the sliced path. Edits are already kept — slice again before export.">Done</button>
+            <span class="nominal-chip" id="nominalChip" title="Which Z geometry the preview shows. Drape previews are nominal — physical bead placement depends on how the coil falls.">Calibrated Z geometry</span>
+            <button class="icon-button" id="fitButton" type="button" title="Reset 3D view" aria-label="Reset 3D view" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5m13 5h5v-5"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="preview-stage" id="previewStage">
+          <div class="bed-grid" aria-hidden="true"></div>
+          <div class="empty-state" id="emptyState">
+            <svg class="empty-illustration" viewBox="0 0 180 180" aria-hidden="true">
+              <rect x="25" y="25" width="130" height="130" rx="4"/>
+              <circle cx="70" cy="76" r="27"/><circle cx="110" cy="76" r="27"/>
+              <circle cx="70" cy="112" r="27"/><circle cx="110" cy="112" r="27"/>
+            </svg>
+            <h2 id="emptyTitle">Your bed is clear</h2>
+            <p id="emptyMessage">Draw straight onto the bed, or load centerline SVGs you already have. Nothing plans until you Slice.</p>
+            <div class="empty-actions" id="emptyActions">
+              <button class="primary-button" id="startDrawingButton" type="button" title="Open the bed as a drawing surface: tap points, drag to draw freely, pull a line to bend it. Nothing plans until you Slice.">Start a drawing</button>
+              <button class="secondary-button" id="addSvgsButton" type="button" title="Load centerline SVG artwork you already have. Each SVG becomes one printable page.">Add SVGs…</button>
+            </div>
+          </div>
+          <div class="loading-state" id="loadingState" role="status" aria-live="polite" hidden>
+            <div class="clay-spinner" aria-hidden="true"><span></span><span></span><span></span></div>
+            <p id="loadingLabel">Flattening centerlines…</p>
+          </div>
+          <div class="error-state" id="errorState" role="alert" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v5m0 3.5v.5M4.7 19h14.6L12 5 4.7 19Z"/></svg>
+            <h2>This design couldn't slice</h2>
+            <p id="errorMessage"></p>
+            <div class="error-actions" id="errorActions" hidden></div>
+          </div>
+          <div class="plan-view" id="planView" role="tabpanel" aria-labelledby="planTab" hidden></div>
+          <div class="toolpath-view" id="toolpathView" role="tabpanel" aria-labelledby="toolpathTab" hidden></div>
+          <div class="draw-view" id="drawView" aria-label="Drawing surface — the bed at real size" hidden>
+            <canvas id="drawCanvas"></canvas>
+            <div class="draw-arrange-catch" id="drawArrangeCatch" hidden></div>
+            <div class="draw-tray" id="drawTray" aria-label="Shape and repeat tools" hidden>
+              <label class="compact-field draw-tray-field" id="drawSidesField" title="How many sides the shape has, three to twelve. More sides means gentler corners, so the head barely slows as it lays the coil.">
+                <span>Sides</span>
+                <input id="drawSides" type="number" value="6" min="3" max="12" step="1">
+              </label>
+              <label class="compact-field draw-tray-field" id="drawSmoothField" title="Relaxes a wobbly freehand or imported line, up to this many millimetres of drift. Corners you meant stay corners. Slide to preview, let go to keep — one undo step — and the slider comes back to rest.">
+                <span>Smooth (mm)</span>
+                <input id="drawSmooth" type="range" min="0" max="5" step="0.1" value="0">
+              </label>
+              <button class="secondary-button compact-button draw-tray-action" id="drawMirrorButton" type="button" data-draw-action="mirror" aria-pressed="false" title="Drag a line across the bed and every line in this drawing is laid again on the far side of it. The copies are ordinary lines: where they touch, they print as one stroke.">Mirror</button>
+              <button class="secondary-button compact-button draw-tray-action" id="drawRepeatButton" type="button" data-draw-action="repeat" aria-pressed="false" title="Lays the same lines around a centre, so a rosette prints as one continuous stroke where the copies touch. Click the bed to plant the centre.">Repeat</button>
+              <label class="compact-field draw-tray-field" id="drawCopiesField" title="How many repeats go around the centre, counting the one you drew. Six lays a rosette of six arms on the bed. This repeats the shape across the bed — it does not stack passes.">
+                <span>Repeats</span>
+                <input id="drawCopies" type="number" value="6" min="2" max="24" step="1">
+              </label>
+              <label class="compact-field draw-tray-field draw-corner-field" id="drawCornerField" hidden title="How wide a rounded corner is, in millimetres. Leave it empty and each corner takes the widest bend its own lines have room for; anything tighter than the nozzle can turn reads straight back as a curve too tight.">
+                <span>Corner (mm)</span>
+                <input id="drawCornerRadius" type="number" min="0.1" step="0.5" placeholder="Widest">
+              </label>
+              <span class="draw-tray-hint" id="drawTrayHint"></span>
+            </div>
+            <div class="draw-readout" id="drawReadout" aria-live="polite">
+              <div class="draw-readout-rows" id="drawReadoutRows"></div>
+              <button class="draw-fix-button" id="drawFixButton" type="button" hidden title="Replaces the kink with a bend the head can walk, so it stops piling clay where it used to stop dead and pivot. With Lines out you can also click one corner on the bed.">Round this corner</button>
+            </div>
+            <div class="draw-tray draw-arrange-strip" id="drawArrangeStrip" aria-label="Reference photo controls" hidden>
+              <label class="compact-field draw-tray-field draw-arrange-fade" id="drawArrangeFadeField" title="How strongly the photo shows through the bed. Slide left to fade it under your lines, right to bring it forward — it never prints either way.">
+                <span>Fade</span>
+                <input id="drawArrangeFade" type="range" min="5" max="100" step="1" value="40">
+              </label>
+              <button class="secondary-button compact-button draw-tray-action" id="drawArrangeReplaceButton" type="button" title="Swap in a different photo. The new one lands at the bed centre, ready to arrange.">Replace</button>
+              <button class="secondary-button compact-button draw-tray-action" id="drawArrangeRemoveButton" type="button" title="Take the photo off the bed. Your lines stay exactly where they are, and undo brings it back.">Remove</button>
+              <button class="secondary-button compact-button draw-tray-action" id="drawArrangeDoneButton" type="button" title="Keep the photo where it sits and go back to drawing. The pen never moves it again until you press Reference.">Done</button>
+              <span class="draw-tray-hint">Drag the photo to move it, a corner to change its size, the handle above it to turn it. It never prints.</span>
+            </div>
+            <p class="draw-hint">
+              <strong>Tap</strong> a point, then tap the next — a straight line that keeps chaining.<br>
+              <strong>Drag on empty bed</strong> — freehand; it settles into editable points on release.<br>
+              <strong>Pull any line</strong> — it bends into an arc that passes under your finger.<br>
+              <strong>Drag a point</strong> to move it · <strong>⌥-click a line</strong> to add a point.<br>
+              <strong>Box</strong> or <strong>Polygon</strong> drags its shape onto the bed · <strong>Shape &amp; repeat</strong> opens mirroring, repeats and corner rounding.<br>
+              <strong>Enter</strong> or <strong>Esc</strong> ends a line · tap the first point to close a loop · <strong>⌫</strong> removes what's under the cursor.
+            </p>
+          </div>
+        </div>
+        <div class="scrub-dock" id="scrubDock" aria-label="Toolpath scrubber" hidden>
+          <div class="scrub-top">
+            <div class="scrub-passes" id="scrubPasses" role="group" aria-label="Show passes">
+              <span class="scrub-passes-label">Passes</span>
+              <div class="scrub-chip-row" id="scrubChipRow"></div>
+              <span class="scrub-pass-hint" id="scrubPassHint" hidden>All passes share one nominal Z here — isolating a pass is the only way to see print order.</span>
+            </div>
+            <p class="scrub-readout" id="scrubReadout">—</p>
+          </div>
+          <div class="scrub-main">
+            <button class="scrub-button" id="scrubPlay" type="button" aria-label="Play through moves" title="Play (animate the print head)">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path id="scrubPlayIcon" d="M8 5.5v13l11-6.5-11-6.5Z"/></svg>
+            </button>
+            <button class="scrub-button scrub-speed" id="scrubSpeed" type="button" title="Playback speed — click to cycle 1×, 4×, 16× moves per second">1×</button>
+            <div class="scrub-track" id="scrubTrack" title="Drag either handle — the right handle prints up to here">
+              <canvas id="scrubTrackCanvas" aria-hidden="true"></canvas>
+              <div class="scrub-window" id="scrubWindow" aria-hidden="true"></div>
+              <button class="scrub-handle" id="scrubHandleA" type="button" role="slider" aria-label="First shown move" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" title="First shown move — drag right to hide earlier moves (arrow keys nudge it)"></button>
+              <button class="scrub-handle is-playhead" id="scrubHandleB" type="button" role="slider" aria-label="Print up to this move" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" title="Playhead — the job is printed up to here; drag or use arrow keys to step moves"></button>
+            </div>
+            <button class="scrub-button scrub-all" id="scrubShowAll" type="button" title="Show every move and pass">All</button>
+          </div>
+        </div>
+        <footer class="preview-footer">
+          <span id="coordinateReadout">Work area · X 17–398 · Y 12–393 mm</span>
+          <span>Preview derives from the exact export trace</span>
+        </footer>
+      </section>
+
+      <aside class="inspection-panel" aria-label="Warnings and job report">
+        <div class="inspector-heading">
+          <div><p class="eyebrow">Inspection</p><h2>Before you print</h2></div>
+          <span class="count-badge" id="warningBadge" title="Things worth a look before printing">0</span>
+          <button class="icon-button inspector-toggle" type="button" data-inspector-toggle aria-expanded="true" aria-label="Collapse the Before-you-print panel">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+          </button>
+        </div>
+        <p class="quiet-empty" id="inspectorQuiet">Slice to see the numbers.</p>
+        <section class="safety-callout" id="safetyCallout" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 20 7v5.2c0 4.3-3.2 7.4-8 8.8-4.8-1.4-8-4.5-8-8.8V7l8-3.5Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg>
+          <div><strong>Motion file, not a promise</strong><p>Review travels, clearance, flow and the real machine setup before running G-code.</p></div>
+        </section>
+        <section class="report-summary" id="reportSummary" hidden>
+          <div class="metric" title="Ordered physical passes in this job."><span>Passes</span><strong id="statPages">—</strong></div>
+          <div class="metric" title="Continuous strokes in the plan — 1 means the whole design draws without stopping. Repeats over passes count as passes, never as extra strokes."><span>Strokes</span><strong id="statStrokes">—</strong></div>
+          <div class="metric" title="Non-printing hops between strokes in the plan. Paste printers ooze during travels — fewer is better."><span>Travels</span><strong id="statTravels">—</strong></div>
+          <div class="metric" title="Pass count with the coil height used for each tier."><span>Pass pitch</span><strong id="statPasses">—</strong></div>
+          <div class="metric" title="Estimated printing time, including travels."><span>Print time</span><strong id="statTime">—</strong></div>
+          <div class="metric" title="Total extruded clay volume."><span>Clay volume</span><strong id="statVolume">—</strong></div>
+          <div class="metric" title="Estimated wet clay weight (1.8 g/cm³)."><span>Wet weight</span><strong id="statWeight">—</strong></div>
+          <div class="metric" title="How tall the finished piece builds. In drape mode this is the physical estimate — passes × coil height — because nominal nozzle Z cannot measure a draped stack."><span>Stack height</span><strong id="statStack">—</strong><em class="stat-tag" id="statStackTag" hidden title="Physical estimate: passes × coil height. The falling coil's exact stack depends on how it lands.">estimated</em></div>
+        </section>
+        <section class="construction-block" id="constructionBlock" hidden>
+          <div class="subheading"><h3>Construction</h3><span id="constructionScope" title="Neutral facts about how lines meet — how the tile holds together, not problems.">how lines meet</span></div>
+          <p class="construction-line" id="constructionLine">—</p>
+          <p class="construction-hint" id="constructionHint"></p>
+          <div class="construction-toggles">
+            <button class="overlay-toggle" id="toggleFuse" type="button" aria-pressed="false" title="Show fuse points in the preview — shallow intended contact where beads weld together while drying. These hold the tile in one piece."><span class="toggle-dot toggle-dot-fuse" aria-hidden="true"></span>Fuse points</button>
+            <button class="overlay-toggle" id="toggleLaps" type="button" aria-pressed="false" title="Show laps in the preview — spots where one line rides across another and the clay stacks double height."><span class="toggle-dot toggle-dot-lap" aria-hidden="true"></span>Laps</button>
+          </div>
+        </section>
+        <details class="audit-details" id="auditDetails">
+          <summary title="Exact totals, profile facts and every parameter used for this slice — the audit trail behind the preview.">Path, profile and parameters</summary>
+          <div class="audit-grid">
+            <span>Print path</span><strong id="printPathMetric">—</strong>
+            <span>Travel length</span><strong id="travelPathMetric">—</strong>
+            <span>Profile</span><strong id="reportProfile">—</strong>
+          </div>
+          <div class="parameter-dump" id="parameterDump"></div>
+          <p class="warning-type-summary" id="warningTypeSummary">Warning counts by type appear after Slice.</p>
+        </details>
+        <section class="warning-section" id="warningSection" hidden>
+          <div class="subheading"><h3 title="Only actionable findings — things you might want to change. Expected construction contact lives in the Construction block above.">Warnings</h3><span id="warningScope" title="Findings with one cause collapse into a single group; expand a group to visit each spot.">grouped by cause</span></div>
+          <div class="warning-list" id="warningList"><p class="quiet-empty">Anything worth a look before printing appears here, grouped by cause. Click a row to see the spot in the preview.</p></div>
+        </section>
+        <section class="page-sequence" id="pageSequence" hidden>
+          <div class="subheading"><h3>Pass sequence</h3><span id="pageSequenceMode">complete each</span></div>
+          <ol id="pageSequenceList"></ol>
+        </section>
+        <div class="export-actions" id="exportActions" hidden>
+          <button class="secondary-button" id="downloadButton" type="button" disabled title="Save the audited G-code exactly as previewed — nothing is re-planned at download time.">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 19h14"/></svg>
+            Download G-code
+          </button>
+          <p id="exportIdentity">Slice once to create an audited export.</p>
+          <div class="split-download-list" id="splitDownloadList"></div>
+        </div>
+      </aside>
+    </main>
+
+    <main class="workspace weave-workspace" id="weaveWorkspace" data-mode-panel="weave" hidden>
+      <aside class="parameter-rail weave-rail" aria-label="Weave mesh parameters">
+        <div class="rail-heading">
+          <div>
+            <p class="eyebrow">Weave workflow</p>
+            <h1>Design a surface pattern</h1>
+          </div>
+          <button class="icon-button" id="weaveResetButton" type="button" title="Reset Weave settings without changing Tiles" aria-label="Reset Weave parameters">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8v-4m0 0h4M4 4l3.2 3.2a7 7 0 1 1-1.5 7.6"/></svg>
+          </button>
+        </div>
+
+        <div class="rail-scroll">
+          <section class="rail-section weave-section is-active" data-weave-section="model">
+            <div class="section-index">01</div>
+            <div class="section-body">
+              <h2>Model</h2>
+              <div class="inches-banner" id="weaveInchesBanner" hidden role="status">
+                <span id="weaveInchesBannerText"></span>
+                <div class="inches-banner-actions">
+                  <button type="button" id="weaveInchesBannerApply" class="secondary-button compact-button" title="Fills the Scale control with 25.4 — the same visible control, nothing hidden. Undo by setting Scale back to 1.">×25.4 → <span id="weaveInchesBannerApplyValue"></span></button>
+                  <button type="button" id="weaveInchesBannerDismiss" class="secondary-button compact-button">Keep millimetres</button>
+                </div>
+              </div>
+              <p class="section-copy">Load the base mesh — the form your pattern wraps. Every honest ring and mesh warning is kept.</p>
+              <label class="drop-zone" id="weaveDropZone" for="weaveFileInput" title="Load one STL, OBJ, PLY, or 3MF mesh in millimetres, restore a saved Weave G-code recipe, or load a saved pattern.">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg>
+                <span><strong>Drop a file here</strong><small>mesh · saved G-code · saved pattern</small></span>
+                <input id="weaveFileInput" type="file" accept=".stl,.obj,.ply,.3mf,.gcode,.json,model/stl,model/obj,model/3mf,text/x-gcode,application/json">
+              </label>
+              <div class="file-summary" id="weaveFileSummary" aria-live="polite">No model loaded</div>
+              <div class="control-grid">
+                <label class="field" title="Which source axis points upward before placement. Rhino OBJ exports are usually Y up — if the sliced rings look like a tangled contour map instead of stacked walls, flip this."><span>Up axis</span><select id="weaveUpAxis"><option value="z" selected>Z up</option><option value="y">Y up</option></select></label>
+              </div>
+              <div class="model-size-line" id="weaveModelSize" hidden title="The placed size on the bed — width × depth × height. Type a new height and the form rescales uniformly; nothing hidden, same honest rescale.">
+                <span id="weaveSizeText"></span>
+                <label class="height-edit"><span>height</span><input id="weaveHeightEdit" type="number" min="0.1" step="0.5" data-unit="mm"><span id="weaveHeightUnit">mm</span></label>
+              </div>
+              <p class="field-hint" id="weaveModelFacts">Mesh units and watertightness appear once the mesh loads.</p>
+              <p class="field-hint">Click the form for move, rotate and resize handles — drag the form to slide it, a ring to rotate, the corner cube to resize. Empty space orbits. Numbers live under Advanced.</p>
+              <details class="advanced-controls">
+                <summary>Advanced</summary>
+                <div class="control-grid two-up">
+                  <label class="field" title="Multiplies the file's own size. To hit an exact height, type it in the size line above."><span>Scale factor</span><input id="weaveScale" type="number" value="1" min="0.0001" step="0.01"></label>
+                  <label class="field" title="Nudge the placed mesh along the printer X axis."><span>X nudge (mm)</span><input id="weaveOffsetX" type="number" value="0" step="1"></label>
+                  <label class="field" title="Nudge the placed mesh along the printer Y axis."><span>Y nudge (mm)</span><input id="weaveOffsetY" type="number" value="0" step="1"></label>
+                  <label class="field" title="Spin about the printer Z axis, in degrees. Real geometry; the sliced rings rotate, not just the picture."><span>Rotate Z (°)</span><input id="weaveRotate" type="number" value="0" step="1"></label>
+                  <label class="field" title="Spin about the printer X axis, in degrees. Applied before Rotate Z."><span>Rotate X (°)</span><input id="weaveRotateX" type="number" value="0" step="1"></label>
+                  <label class="field" title="Spin about the printer Y axis, in degrees. Applied before Rotate Z, after Rotate X."><span>Rotate Y (°)</span><input id="weaveRotateY" type="number" value="0" step="1"></label>
+                </div>
+                <button class="secondary-button compact-button" id="weaveResetPlacement" type="button" title="Zero every nudge and rotation — back to the file's own placement.">Reset placement</button>
+                <input id="weaveFitHeight" type="hidden" data-unit="mm">
+              </details>
+            </div>
+          </section>
+
+          <section class="rail-section weave-section" data-weave-section="slice">
+            <div class="section-index">02</div>
+            <div class="section-body">
+              <h2>Slice</h2>
+              <p class="section-copy">Horizontal sections become aligned, locally normalised wall rings.</p>
+              <div class="control-grid two-up">
+                <label class="field" title="Nozzle opening. Hardware, so it's always millimetres regardless of the display unit. The sizes listed come from the selected printer's profile. Coil width and coil height follow the nozzle until you type your own values."><span>Nozzle opening</span><select id="weaveNozzle"><option value="5" selected>⌀ 5 mm</option></select></label>
+                <label class="field" title="Starting heuristic: 30% of the nozzle (5 mm → 1.5 mm). It follows nozzle changes until you type a measured value; clay and machine setup can require a different layer height."><span><span class="field-word">Layer height (mm)</span> <button type="button" class="follow-chip" id="weaveLayerHeightFollow" aria-pressed="true" title="Starting at 30% of the nozzle. Type a measured value to take over; click to follow again.">auto</button></span><input id="weaveLayerHeight" type="number" value="1.5" min="0.1" step="0.1"></label>
+                <label class="field"><span>First layer Z (mm)</span><input id="weaveFirstLayer" type="number" value="1.5" min="0.1" step="0.1"></label>
+              </div>
+              <details class="advanced-controls">
+                <summary>Advanced</summary>
+                <div class="control-grid two-up">
+                  <label class="field" title="Coil width (mm). Follows the nozzle until you type your own. Sensible range ≈ 0.8–1.5 × the nozzle opening."><span><span class="field-word">Coil width (mm)</span> <button type="button" class="follow-chip" id="weaveBeadWidthFollow" aria-pressed="true" title="Following the nozzle diameter. Type a value to take over; click to follow again.">auto</button></span><input id="weaveBeadWidth" type="number" value="5" min="0.1" step="0.1"></label>
+                  <label class="field" title="How finely the printline follows the wave. Auto keeps it at half the coil width, capped at 1 mm — finer means smoother waves and heavier files."><span>Sample spacing (mm)</span><input id="weaveSampleSpacing" type="number" value="1" min="0.05" step="0.05" data-unit="mm"></label>
+                </div>
+                <p class="field-hint" id="weaveBeadWidthHint">Set by the nozzle size. Change only if your clay behaves differently. Coil width is flow, not the hole — pushing more clay per millimetre lays a fatter coil than the nozzle; less stretches it thinner.</p>
+              </details>
+              <div class="weave-fact-line" id="weaveSliceFacts" aria-live="polite"><span>Layers —</span><span>Rings —</span><span>Samples —</span></div>
+              <label class="switch-row">
+                <span><strong>Print selected layers</strong><small>Layer numbers are one-based; both ends included. The selected wall band is rebased to the bed.</small></span>
+                <input id="weaveRangeEnabled" type="checkbox" role="switch" disabled>
+              </label>
+              <div class="control-grid two-up">
+                <label class="field"><span>From layer</span><input id="weaveRangeFrom" type="number" value="1" min="1" step="1" disabled></label>
+                <label class="field"><span>To layer</span><input id="weaveRangeTo" type="number" value="1" min="1" step="1" disabled></label>
+              </div>
+              <p class="physical-readout" id="weaveRangeReadout" aria-live="polite">Slice the form to choose a print range.</p>
+              <div class="weave-control-block weave-seam-block">
+                <div class="scope-subhead"><span>Layer seam</span><strong>where each layer starts</strong></div>
+                <p class="field-hint">Choose how starts line up across discrete layers.</p>
+                <fieldset class="segmented weave-seam-control" id="weaveSeamControl" aria-label="Layer seam placement" aria-describedby="weaveSeamHint">
+                  <label><input type="radio" name="weaveSeam" value="chained" checked><span>Chained</span></label>
+                  <label><input type="radio" name="weaveSeam" value="scatter"><span>Scatter</span></label>
+                  <label><input type="radio" name="weaveSeam" value="pinned"><span>Pinned</span></label>
+                </fieldset>
+                <p class="field-hint" id="weaveSeamHint">Chained follows the nearest seam between layers.</p>
+                <label class="field" id="weavePinnedAngleField" hidden><span>Pinned angle (degrees)</span><input id="weavePinnedAngle" type="number" value="0" step="1"></label>
+              </div>
+            </div>
+          </section>
+
+          <section class="rail-section weave-section" data-weave-section="bottom">
+            <div class="section-index">03</div>
+            <div class="section-body">
+              <h2>Bottom</h2>
+              <p class="section-copy">Optional structural spirals print before the wall. Zero adds no unrequested clay.</p>
+              <div class="control-grid two-up">
+                <label class="field"><span>Bottom layers</span><input id="weaveBottomLayers" type="number" value="0" min="0" step="1" aria-describedby="weaveBottomLayersHint"><small class="dependent-control-hint" id="weaveBottomLayersHint" hidden>Bottom is available only when the print range starts at source layer 1.</small></label>
+                <label class="field" id="weaveBottomOverlapField" title="How much each neighbouring dense fill coil overlaps its neighbour — in the bottom, in a solid interior, and in an infill's base and cap skins. Sparse infill ribs are spaced by Rib spacing instead. More overlap closes the fill with more clay."><span>Fill overlap</span><input id="weaveBottomOverlap" type="number" value="0.2" min="0" max="0.95" step="0.05" aria-describedby="weaveBottomOverlapHint"><small class="dependent-control-hint" id="weaveBottomOverlapHint" hidden>Fill overlap spaces dense fill only — the bottom, a solid interior, or an infill's base and cap skins. Nothing here is laying dense fill.</small></label>
+              </div>
+              <label class="switch-row" id="weaveBottomAlternateRow">
+                <span><strong>Alternate bottom direction</strong><small id="weaveBottomAlternateHint">Crossing passes bond the base stronger.</small></span>
+                <input id="weaveBottomAlternate" type="checkbox" role="switch" checked aria-describedby="weaveBottomAlternateHint">
+              </label>
+              <label class="switch-row" id="weaveZBlendRow">
+                <span><strong>Vase mode · spiral rise</strong><small id="weaveZBlendHint">The wall climbs in one continuous coil — no layer seams.</small></span>
+                <input id="weaveZBlend" type="checkbox" role="switch">
+              </label>
+              <div class="nested-option" id="weaveLevelRimNest" hidden>
+                <label class="switch-row" id="weaveFollowTopRow">
+                  <span><strong>Z-blend</strong><small id="weaveFollowTopHint">Z relief grows from planar lower rows through the wall to one continuous top path. Any rim the clay cannot reach remains visible as the faded, ghosted source form — never emitted as a thread.</small></span>
+                  <input id="weaveFollowTop" type="checkbox" role="switch" checked aria-describedby="weaveFollowTopHint">
+                </label>
+                <label class="field zblend-reach-control" id="weaveTopFollowSlopeField" title="How steeply the continuous coil may climb while following the source rim. Higher values reach more profile with less clay support underneath.">
+                  <span>Z-blend reach (experimental) <output id="weaveTopFollowSlopeOutput">1.00×</output></span>
+                  <input id="weaveTopFollowSlope" type="range" value="1" min="1" max="3" step="0.25" aria-describedby="weaveTopFollowSlopeHint weaveZBlendReachReadout">
+                  <small class="zblend-reach-hint" id="weaveTopFollowSlopeHint">1.00× uses the existing geometric climb limit.</small>
+                </label>
+                <p class="physical-readout zblend-reach-readout" id="weaveZBlendReachReadout" aria-live="polite">Slice a split-top form to measure how much rim relief the continuous coil can reach.</p>
+                <label class="switch-row" id="weaveLevelRimRow">
+                  <span><strong>Finish with a level rim</strong><small id="weaveLevelRimHint">Instead of following the top, end on one flat revolution with the wobble fading out.</small></span>
+                  <input id="weaveLevelRim" type="checkbox" role="switch" aria-describedby="weaveLevelRimHint">
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <section class="rail-section weave-section" data-weave-section="interior">
+            <div class="section-index">04</div>
+            <div class="section-body">
+              <h2>Interior</h2>
+              <p class="section-copy">What the nozzle lays inside the wall. You choose it, and nothing here chooses for you: Vase mode has to be off before Solid or Infill can be picked at all. Choosing one does clear what a filled interior cannot print beside — Bottom layers, and profile blend if a loaded pattern carried it. Each says so where it lives.</p>
+              <fieldset class="segmented weave-seam-control weave-interior-control" id="weaveInteriorControl" aria-label="Interior fill" aria-describedby="weaveInteriorHint">
+                <label><input type="radio" name="weaveInterior" value="hollow" checked><span>Hollow</span></label>
+                <label><input type="radio" name="weaveInterior" value="solid"><span>Solid</span></label>
+                <label><input type="radio" name="weaveInterior" value="infill"><span>Infill</span></label>
+              </fieldset>
+              <p class="field-hint" id="weaveInteriorHint">Hollow prints the wall and nothing inside it — what Weave has always done.</p>
+              <p class="dependent-control-hint" id="weaveInteriorLockHint" hidden>A solid or infill interior needs discrete layers. Turn Vase mode · spiral rise off to fill the interior.</p>
+              <p class="dependent-control-hint" id="weaveInteriorProfileBlendHint" hidden>This pattern was fitted with profile blend, which rides the wall up and down in Z while a filled interior lays its fill flat. Profile blend is off for this print; choose Hollow to have it back.</p>
+              <div class="weave-control-block" id="weaveSolidBlock" hidden>
+                <div class="scope-subhead"><span>Solid</span><strong>dense on every layer</strong></div>
+                <p class="field-hint">Fills every layer densely and welds it to that layer's wall — for small functional pieces like a teapot lid. A solid piece is heavy; the report's wet weight is the honest number before you mix the clay.</p>
+                <fieldset class="segmented" id="weaveSolidPatternControl" aria-label="Solid fill pattern" aria-describedby="weaveSolidPatternHint">
+                  <label><input type="radio" name="weaveSolidPattern" value="crossing" checked><span>Crossing</span></label>
+                  <label><input type="radio" name="weaveSolidPattern" value="spiral"><span>Spiral</span></label>
+                </fieldset>
+                <p class="field-hint" id="weaveSolidPatternHint">Crossing alternates the middle layers 45° and 135°, which bonds stronger. Spiral rings every layer instead, and reads as thrown pottery. Either way the bed face and the show face are spiralled.</p>
+              </div>
+              <div class="weave-control-block" id="weaveInfillBlock" hidden>
+                <div class="scope-subhead"><span>Infill</span><strong>sparse continuous ribs</strong></div>
+                <p class="field-hint">Sparse continuous ribs so a big piece dries as thin, even walls instead of cracking the way solid clay would. Every ribbed layer repeats the same ribs, so those beads stack into continuous internal walls — the base, cap and ramp layers you set below are dense or tightening instead, by your own choice.</p>
+                <fieldset class="segmented" id="weaveInfillPatternControl" aria-label="Infill rib pattern" aria-describedby="weaveInfillPatternHint">
+                  <label><input type="radio" name="weaveInfillPattern" value="lines" checked><span>Lines</span></label>
+                  <label><input type="radio" name="weaveInfillPattern" value="concentric"><span>Concentric</span></label>
+                </fieldset>
+                <p class="field-hint" id="weaveInfillPatternHint">Lines run straight across the form at one angle, turning around on the wall so each rib welds to it. Concentric follows the wall inward in nested rings; its ring-to-ring step stacks into one internal ridge. Under a cap that ridge is sealed inside the piece; on a form left open at the top it is part of the interior surface you will look down into.</p>
+                <div class="control-grid two-up">
+                  <label class="field" title="Centre-to-centre rib spacing, counted in coil widths so it survives a nozzle change. It must be more than 1 — ribs a coil apart or closer touch, which is a dense fill under another name. What you type is what prints; nothing is rounded for you."><span>Rib spacing</span><input id="weaveInfillSpacing" type="number" value="3" min="1.01" step="0.1" aria-describedby="weaveInfillSpacingHint"><small>coil widths</small><small class="dependent-control-hint" id="weaveInfillSpacingHint" hidden>Base and cap layers together cover every printed layer, so no layer is ribbed and neither rib spacing nor rib angle shapes anything. Lower Base layers or Cap layers to leave a sparse body between them.</small></label>
+                  <label class="field" title="Which way the straight ribs run across the bed. The same angle on every layer is what lets the ribs stack."><span>Rib angle (°)</span><input id="weaveInfillAngle" type="number" value="45" step="5" aria-describedby="weaveInfillAngleHint"><small class="dependent-control-hint" id="weaveInfillAngleHint" hidden>Rib angle has no effect while the rib pattern is Concentric — nested rings follow the wall, not an angle.</small></label>
+                </div>
+                <p class="physical-readout" id="weaveInfillSpacingReadout">Slice the form to read rib spacing — the sliced coil width sets it.</p>
+                <div class="control-grid two-up">
+                  <label class="field" title="Dense fill on the first layers, giving the piece a closed bed face. Zero leaves an open lattice base."><span>Base layers</span><input id="weaveInfillBaseLayers" type="number" value="0" min="0" step="1" inputmode="numeric"><small>closed bed face</small></label>
+                  <label class="field" title="Dense fill on the last printed layers, giving the piece a roof skin. Zero leaves the form open at the top."><span>Cap layers</span><input id="weaveInfillCapLayers" type="number" value="0" min="0" step="1" inputmode="numeric"><small>roof skin</small></label>
+                  <label class="field" title="Just below the cap, rib spacing halves each layer so the roof has something to land on. Existing ribs stay exactly where they are; the new lines land midway. This is a ceiling, not a promise: the halving stops once the ribs reach the dense skin's own spacing, and stops early if the form has fewer sparse layers below the cap — so the ramp is often shorter than the number you type."><span>Ramp layers</span><input id="weaveInfillRampLayers" type="number" value="3" min="0" step="1" inputmode="numeric" aria-describedby="weaveInfillRampHint"><small>at most, below the cap</small><small class="dependent-control-hint" id="weaveInfillRampHint" hidden>Ramp layers have no effect while Cap layers is 0.</small></label>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="rail-section weave-section weave-scope-section" data-weave-section="oscilloscope">
+            <div class="section-index">05</div>
+            <div class="section-body">
+              <h2>Weave pattern</h2>
+              <p class="section-copy">The trace is one wrapped cycle. Drag a point; ghost cycles expose the seam before clay does.</p>
+              <div class="scope-frame">
+                <canvas id="weaveWaveCanvas" width="640" height="220" tabindex="0" aria-label="Editable periodic waveform with ghosted neighbouring cycles" title="Click blank space to add a point. Right-click a point to delete it; two points are always kept."></canvas>
+                <div class="scope-legend"><span>−1 ghost</span><strong id="weaveWaveState">flat · no wobble</strong><span>+1 ghost</span></div>
+              </div>
+              <div class="preset-row" id="weaveWavePresets" role="group" aria-label="Wave presets">
+                <button type="button" data-wave-preset="flat" class="is-active">Flat</button>
+                <button type="button" data-wave-preset="sine">Sine</button>
+                <button type="button" data-wave-preset="triangle">Triangle</button>
+                <button type="button" data-wave-preset="sawtooth">Saw</button>
+                <button type="button" data-wave-preset="rounded-square">Rounded</button>
+                <button type="button" data-wave-preset="pulse">Pulse</button>
+                <button type="button" data-wave-preset="noise">Noise</button>
+                <button type="button" id="weaveNoiseRegenerate" title="Deal a fresh random variation of the noise wave.">Regenerate</button>
+              </div>
+              <div class="scope-subhead weave-texture-subhead"><span>Textures</span><strong>complete patterns</strong></div>
+              <div class="preset-row" id="weaveTexturePresets" role="group" aria-label="Fitted texture presets">
+                <span class="texture-loading">Loading textures…</span>
+              </div>
+              <p class="field-hint" id="weaveTextureHint">A texture replaces the whole pattern with a wave traced from a real print — shapes the basic presets can't draw. Your flow, speed, and nozzle stay yours.</p>
+              <div class="control-grid two-up weave-pattern-controls">
+                <label class="field" id="weaveAmplitudeField" title="How far the wall moves inward and outward from the original form."><span>Amplitude <output id="weaveAmplitudeOutput">0.0 mm</output></span><input id="weaveAmplitude" type="range" value="0" min="0" max="15" step="0.1" aria-describedby="weaveAmplitudeHint"><small class="dependent-control-hint" id="weaveAmplitudeHint" hidden>Amplitude has no visible effect while the wave is flat.</small></label>
+                <label class="field" id="weaveWavelengthField" title="Physical crest-to-crest spacing in millimetres; each closed ring rounds to a whole wave count."><span><span class="field-word">Wavelength (mm)</span> <button type="button" class="follow-chip" id="weaveWavelengthFollow" aria-pressed="true" title="Following the coil width at 3.5× — one crest every 3.5 coils. Type a value to take over; click to follow again.">auto</button></span><input id="weaveWavelength" type="number" value="18" min="0.1" step="0.5" aria-describedby="weaveWavelengthHint"><small class="dependent-control-hint" id="weaveWavelengthHint" hidden>Wavelength has no visible effect while the wave is flat.</small></label>
+                <label class="field" id="weaveTwistField" title="How many waveform cycles the pattern turns between neighbouring layers."><span>Twist <output id="weaveTwistOutput">0 cycles · 0°</output></span><input id="weaveTwist" type="range" value="0" min="-1" max="1" step="0.01" aria-describedby="weaveTwistHint"></label>
+              </div>
+              <div class="weave-control-block layer-rhythm-block" id="weaveLayerRhythmBlock">
+                <label class="switch-row">
+                  <span><strong>Skip layers</strong><small>Alternate patterned and plain wall layers without restarting the weave.</small></span>
+                  <input id="weaveLayerSkipEnabled" type="checkbox" role="switch" aria-controls="weaveLayerRhythmControls">
+                </label>
+                <div id="weaveLayerRhythmControls" class="layer-rhythm-controls" aria-describedby="weaveLayerRhythmSummary">
+                  <div class="control-grid two-up">
+                    <label class="field"><span>Start plain</span><input id="weaveLayerSkipStart" type="number" value="0" min="0" step="1" inputmode="numeric"><small>layers</small></label>
+                    <label class="field"><span>Pattern on</span><input id="weaveLayerSkipOn" type="number" value="2" min="1" step="1" inputmode="numeric"><small>layers</small></label>
+                    <label class="field"><span>Pattern off</span><input id="weaveLayerSkipOff" type="number" value="2" min="1" step="1" inputmode="numeric"><small>layers</small></label>
+                    <label class="field"><span>End plain</span><input id="weaveLayerSkipEnd" type="number" value="0" min="0" step="1" inputmode="numeric"><small>layers</small></label>
+                  </div>
+                  <p class="physical-readout" id="weaveLayerRhythmSummary">2 patterned, then 2 plain · repeats to the top.</p>
+                </div>
+              </div>
+              <div class="weave-control-block follow-form-block" id="weaveFollowFormBlock">
+                <div class="scope-subhead"><span>Follow the form</span><strong>curvature response</strong></div>
+                <p class="field-hint">Use the same base-form curvature to shape the wave and clay flow independently.</p>
+                <div class="scope-subhead compact-subhead"><span>Wave depth</span><strong>amplitude only</strong></div>
+                <div class="control-grid two-up">
+                  <label class="field" id="weaveFollowLobesField" title="Make the wave shallower or deeper on outward lobes. Zero leaves it unchanged."><span>On the lobes <output id="weaveFollowLobesOutput">unchanged</output></span><input id="weaveFollowLobes" type="range" value="0" min="-1" max="2" step="0.05" aria-describedby="weaveFollowLobesHint"><small class="dependent-control-hint" id="weaveFollowLobesHint" hidden>Wave depth has no visible effect while the wave is flat.</small></label>
+                  <label class="field" id="weaveFollowCovesField" title="Make the wave shallower or deeper in inward coves. Zero leaves it unchanged."><span>In the coves <output id="weaveFollowCovesOutput">unchanged</output></span><input id="weaveFollowCoves" type="range" value="0" min="-1" max="2" step="0.05" aria-describedby="weaveFollowCovesHint"><small class="dependent-control-hint" id="weaveFollowCovesHint" hidden>Wave depth has no visible effect while the wave is flat.</small></label>
+                </div>
+                <div class="scope-subhead compact-subhead"><span>Clay flow</span><strong>works with a flat wave</strong></div>
+                <div class="control-grid two-up">
+                  <label class="field" title="Push less or more clay on outward lobes, independently of the wave. Zero leaves flow unchanged."><span>Flow on lobes <output id="weaveFlowLobesOutput">unchanged</output></span><input id="weaveFlowLobes" type="range" value="0" min="-0.75" max="2" step="0.05"></label>
+                  <label class="field" title="Push less or more clay in inward coves, independently of the wave. Zero leaves flow unchanged."><span>Flow in coves <output id="weaveFlowCovesOutput">unchanged</output></span><input id="weaveFlowCoves" type="range" value="0" min="-0.75" max="2" step="0.05"></label>
+                </div>
+              </div>
+              <div class="preset-row weave-twist-presets" id="weaveTwistPresets" role="group" aria-label="Twist presets" aria-describedby="weaveTwistHint">
+                <button type="button" data-twist-preset="0" title="Align neighbouring wave peaks into vertical ribs.">Ribs · 0</button>
+                <button type="button" data-twist-preset="0.5" title="Place each layer's peaks over the previous layer's valleys.">Weave · 0.5</button>
+                <button type="button" data-twist-preset="0.1" title="Turn the waveform gradually into a rising spiral.">Spiral · +0.1</button>
+              </div>
+              <p class="field-hint" id="weaveTwistHint">Twist shifts the waveform continuously from layer to layer.</p>
+              <p class="physical-readout" id="weavePhysicalReadout">Slice the form to calculate whole waves from real ring circumferences.</p>
+              <p class="physical-readout" id="weaveAmplitudeReadout">Local in/out swing is uniform until form following changes.</p>
+
+              <div class="scope-subhead"><span>Extrusion track</span><strong>baseline 1.0</strong></div>
+              <div class="scope-frame extrusion-frame">
+                <canvas id="weaveExtrusionCanvas" width="640" height="150" tabindex="0" aria-label="Editable periodic extrusion curve" title="Click blank space to add a point. Right-click a point to delete it; two points are always kept."></canvas>
+              </div>
+              <div class="preset-row" id="weaveExtrusionPresets" role="group" aria-label="Extrusion presets">
+                <button type="button" data-extrusion-preset="flat" class="is-active">Flat</button>
+                <button type="button" data-extrusion-preset="ridge-boost">Ridge boost</button>
+                <button type="button" data-extrusion-preset="trough-boost" title="Swells the clay in the wave's troughs — valleys round into soft beads instead of creases.">Trough boost</button>
+                <label class="compact-field" id="weaveExtrusionPhaseField" title="Shift the extrusion curve around the wall relative to the waveform."><span>Phase</span><input id="weaveExtrusionPhase" type="number" value="0" min="0" max="0.99" step="0.01" aria-describedby="weaveExtrusionPhaseHint"></label>
+              </div>
+              <p class="dependent-control-hint" id="weaveExtrusionPhaseHint" hidden>Extrusion phase has no effect while the extrusion track is flat.</p>
+
+              <div class="scope-subhead" title="The pot's wall unrolled flat, like a fabric swatch: several neighbouring layers of the wave drawn side by side, so you can see ribs lining up, weave alternating, or the pattern drifting where the wave count changes — before any clay moves."><span>Pattern preview</span><strong id="weaveStripLabel">from the sliced form</strong></div>
+              <div class="unrolled-frame">
+                <button class="pattern-preview-expand" id="weavePatternExpand" type="button" aria-haspopup="dialog" aria-controls="weavePatternOverlay" title="Slice a form before expanding its pattern preview." disabled>Expand</button>
+                <canvas id="weaveUnrolledCanvas" width="640" height="230" aria-label="Several neighbouring layers of the pattern, unrolled flat"></canvas>
+                <p id="weaveUnrolledEmpty">Slice a form to see neighbouring layers of the pattern side by side — ribs line up, weave alternates, drift slides.</p>
+              </div>
+              <p class="physical-readout" id="weaveCombCaption">0.0 mm swing · one cycle ≈ 18.0 mm → — waves at the widest ring.</p>
+
+              <div class="pattern-file-row">
+                <button class="secondary-button compact-button" id="weavePatternSave" type="button">Save pattern</button>
+                <button class="secondary-button compact-button" id="weavePatternLoad" type="button">Load pattern</button>
+                <input id="weavePatternFile" type="file" accept="application/json,.json" hidden>
+              </div>
+            </div>
+          </section>
+
+
+          <section class="rail-section weave-section" data-weave-section="printer">
+            <div class="section-index">06</div>
+            <div class="section-body">
+              <h2>Printer</h2>
+              <label class="field"><span>Printer</span><select id="weaveProfile"><option value="potterbot-xl" selected>PotterBot 10 XL · verified reference</option><option value="generic-reprap-paste">Generic RepRap paste · unverified</option><option value="generic-marlin-paste">Generic Marlin paste · unverified</option></select></label>
+              <label class="field"><span>Clay flow <output id="weaveFlowOutput">1.00×</output></span><input id="weaveFlow" type="range" value="1" min="0.5" max="1.5" step="0.01"></label>
+              <p class="profile-fact" id="weaveProfileFact">Profile truth supplies speeds, bounds, start/end blocks, and pressure travel.</p>
+            </div>
+          </section>
+
+          <section class="rail-section weave-section" data-weave-section="export">
+            <div class="section-index">07</div>
+            <div class="section-body">
+              <h2>Export</h2>
+              <label class="field"><span>Save as</span><input id="weaveFilename" type="text" placeholder="form-name.gcode" maxlength="180" spellcheck="false"></label>
+              <label class="switch-row"><span><strong>Reproducible output</strong><small>Same mesh and pattern, same bytes.</small></span><input id="weaveReproducible" type="checkbox" role="switch" checked></label>
+              <div class="pattern-file-row">
+                <button class="secondary-button compact-button" id="weaveRestoreButton" type="button">Restore from G-code…</button>
+                <input id="weaveRestoreFile" type="file" accept=".gcode,text/x-gcode,text/plain" hidden>
+              </div>
+              <p class="field-hint" id="weaveRestoreStatus" aria-live="polite">A saved Clayline header can restore every Weave setting; the source mesh is matched by content hash.</p>
+              <p class="field-hint">Export unlocks after the final path passes every check.</p>
+            </div>
+          </section>
+        </div>
+
+        <div class="slice-dock weave-slice-dock">
+          <button class="primary-button" id="weaveSettleButton" type="button" disabled title="Cuts the mesh into printable rings — the pattern controls then play against them live.">
+            <span id="weaveSettleLabel">Slice form</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+          </button>
+          <p id="weaveSettleFootnote">Load a mesh to begin.</p>
+        </div>
+      </aside>
+
+      <section class="preview-shell weave-preview-shell" aria-label="Weave toolpath preview">
+        <div class="preview-toolbar weave-preview-toolbar">
+          <div>
+            <p class="eyebrow">Form preview</p>
+            <strong id="weavePreviewTitle">No mesh staged</strong>
+          </div>
+          <div class="preview-actions">
+            <span class="nominal-chip weave-status-chip" id="weaveResponseState">Empty</span>
+            <span class="nominal-chip weave-flow-legend" id="weaveFlowLegend" hidden>flow —</span>
+            <button class="icon-button" id="weaveFlowColorButton" type="button" title="This path has no local flow variation to color." aria-label="Color by clay flow" aria-pressed="false" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5c3.2 4.1 6 7.2 6 10.6a6 6 0 1 1-12 0c0-3.4 2.8-6.5 6-10.6Z"/><path d="M9.5 14a2.6 2.6 0 0 0 2.4 2.7"/></svg>
+            </button>
+            <button class="icon-button" id="weaveGcodeButton" type="button" title="Review the exact exported G-code beside the preview — the same bytes Download saves, line-synced with the scrubber." aria-label="Toggle the G-code review panel" aria-pressed="false" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H6.5A1.5 1.5 0 0 0 5 5.5v13A1.5 1.5 0 0 0 6.5 20H8m8-16h1.5A1.5 1.5 0 0 1 19 5.5v13a1.5 1.5 0 0 1-1.5 1.5H16M9.5 9l-2 3 2 3m5-6 2 3-2 3"/></svg>
+            </button>
+            <span class="nominal-chip weave-tool-readout" id="weavePreviewToolReadout" hidden aria-live="polite"></span>
+            <button class="icon-button" id="weaveFitButton" type="button" title="Reset 3D view" aria-label="Reset Weave 3D view" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5m13 5h5v-5"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="preview-stage weave-preview-stage" id="weavePreviewStage">
+          <div class="bed-grid" aria-hidden="true"></div>
+          <div class="empty-state" id="weaveEmptyState">
+            <svg class="weave-empty-illustration" viewBox="0 0 200 180" aria-hidden="true"><path d="M51 134c4-19 12-32 14-51 2-16-4-31 0-42 8-20 62-20 70 0 4 11-2 26 0 42 2 19 10 32 14 51"/><path d="M56 118c25 8 63 8 88 0M61 91c22 7 56 7 78 0M64 62c21 6 51 6 72 0"/></svg>
+            <h2>Load a base mesh</h2>
+            <p>Clayline slices it into real rings before any pattern is applied.</p>
+          </div>
+          <div class="weave-loading-state" id="weaveLoadingState" role="status" aria-live="polite" hidden>
+            <div class="weave-skeleton skeleton-form" aria-hidden="true"></div>
+            <div class="weave-skeleton skeleton-line" aria-hidden="true"></div>
+            <p id="weaveLoadingLabel">Reading mesh triangles…</p>
+          </div>
+          <div class="error-state" id="weaveErrorState" role="alert" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v5m0 3.5v.5M4.7 19h14.6L12 5 4.7 19Z"/></svg>
+            <h2>Weave couldn't finish</h2>
+            <p id="weaveErrorMessage"></p>
+            <button class="secondary-button compact-button" id="weaveErrorRecoveryButton" type="button" hidden></button>
+            <button class="secondary-button compact-button" id="weaveRetryButton" type="button">Try again</button>
+          </div>
+          <div class="weave-active-state" id="weaveActiveState" hidden>
+            <div id="weaveToolpathHost" class="weave-toolpath-host" aria-label="Weave toolpath preview"></div>
+            <div class="transient-stamp" id="weaveTransientStamp" role="status" aria-live="polite" aria-atomic="true" aria-busy="false" hidden title="A quick sketch of the change while you drag — release to rebuild the exact final path.">
+              <span>Rough preview</span>
+              <span class="transient-working" id="weaveTransientWorking" hidden>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h10M7 21h10M8 3c0 4 1.6 6.2 4 9-2.4 2.8-4 5-4 9m8-18c0 4-1.6 6.2-4 9 2.4 2.8 4 5 4 9"/></svg>
+                <span>Working…</span>
+              </span>
+            </div>
+          </div>
+          <aside class="gcode-panel" id="weaveGcodePanel" hidden aria-label="Exact exported G-code, line-synced with the scrubber">
+            <div class="gcode-panel-head">
+              <strong>Exported G-code</strong>
+              <span class="gcode-panel-meta" id="weaveGcodeMeta">—</span>
+              <button class="icon-button gcode-panel-close" id="weaveGcodeClose" type="button" title="Close the G-code panel" aria-label="Close the G-code panel">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+              </button>
+            </div>
+            <button class="gcode-header-fold" id="weaveGcodeFold" type="button" hidden>Show header</button>
+            <div class="gcode-scroll" id="weaveGcodeScroll" tabindex="0">
+              <div class="gcode-spacer" id="weaveGcodeSpacer">
+                <div class="gcode-lines" id="weaveGcodeLines"></div>
+              </div>
+            </div>
+            <p class="gcode-panel-foot">Same bytes as Download · click a line to move the playhead</p>
+          </aside>
+        </div>
+        <footer class="preview-footer">
+          <span id="weaveCoordinateReadout">Work area from selected printer profile</span>
+          <span>The preview is the exact path the export writes</span>
+        </footer>
+      </section>
+
+      <aside class="inspection-panel weave-inspection" aria-label="Weave warnings and job report">
+        <div class="inspector-heading">
+          <div><p class="eyebrow">Inspection</p><h2>Before you print</h2></div>
+          <span class="count-badge" id="weaveWarningBadge">0</span>
+          <button class="icon-button inspector-toggle" type="button" data-inspector-toggle aria-expanded="true" aria-label="Collapse the Before-you-print panel">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+          </button>
+        </div>
+        <p class="quiet-empty" id="weaveInspectorQuiet">Slice the form to see the numbers.</p>
+        <section class="safety-callout weave-print-guidance" id="weaveSafetyCallout" aria-labelledby="weavePrintGuidanceTitle" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h8m4 0h4M4 17h3m4 0h9M12 4v6M7 14v6"/></svg>
+          <div><h3 id="weavePrintGuidanceTitle">Expect to tune each print</h3><p>Ceramic printers and clay can vary from one print to the next, so some trial and error is normal. Monitor every print closely and adjust speed and flow as needed.</p></div>
+        </section>
+        <section class="report-summary weave-report-summary" id="weaveReportSummary" hidden>
+          <div class="metric"><span>Layers</span><strong id="weaveStatLayers">—</strong></div>
+          <div class="metric"><span>Waves</span><strong id="weaveStatWaves">—</strong></div>
+          <div class="metric"><span>Strokes</span><strong id="weaveStatStrokes">—</strong></div>
+          <div class="metric"><span>Travels</span><strong id="weaveStatTravels">—</strong></div>
+          <div class="metric"><span>Print time</span><strong id="weaveStatTime">—</strong></div>
+          <div class="metric"><span>Clay volume</span><strong id="weaveStatVolume">—</strong></div>
+          <div class="metric"><span>Wet weight</span><strong id="weaveStatWeight">—</strong></div>
+          <div class="metric"><span>Stack height</span><strong id="weaveStatStack">—</strong></div>
+        </section>
+        <details class="audit-details" id="weaveAuditDetails">
+          <summary>Path, mesh, profile and pattern</summary>
+          <div class="audit-grid" id="weaveAuditGrid"><span>State</span><strong>No final path yet</strong></div>
+          <div class="parameter-dump" id="weaveParameterDump"></div>
+        </details>
+        <section class="warning-section" id="weaveWarningSection" hidden>
+          <div class="subheading"><h3>Warnings</h3><span id="weaveWarningScope">source layers</span></div>
+          <div class="warning-list" id="weaveWarningList"><p class="quiet-empty">Mesh facts and final-path warnings appear here.</p></div>
+        </section>
+        <div class="export-actions" id="weaveExportActions" hidden>
+          <button class="secondary-button" id="weaveDownloadButton" type="button" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 19h14"/></svg>
+            Download G-code
+          </button>
+          <p id="weaveExportIdentity">Slice a form — the final path builds automatically.</p>
+        </div>
+      </aside>
+    </main>
+
+    <div class="pattern-preview-overlay" id="weavePatternOverlay" role="dialog" aria-modal="true" aria-labelledby="weavePatternOverlayTitle" hidden>
+      <section class="pattern-preview-dialog">
+        <header>
+          <div><p class="eyebrow">Unrolled wall</p><h2 id="weavePatternOverlayTitle">Pattern preview</h2></div>
+          <button class="icon-button" id="weavePatternOverlayClose" type="button" title="Close expanded pattern preview" aria-label="Close expanded pattern preview">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </header>
+        <div class="pattern-preview-stage">
+          <canvas id="weaveUnrolledExpandedCanvas" width="1280" height="620" aria-label="Expanded unrolled pattern preview"></canvas>
+        </div>
+        <p class="field-hint">The same sliced-form rows as the rail preview, enlarged without resampling the path.</p>
+      </section>
+    </div>
+
+    <!-- three.js r147 (three@0.147.0 UMD build), MIT License; see three.min.js header for attribution -->
+    <script src="/static/three.min.js"></script>
+    <!-- three@0.147.0 examples/js/lines fat-line addons, MIT License (three.js authors) -->
+    <script src="/static/three-lines/LineSegmentsGeometry.js"></script>
+    <script src="/static/three-lines/LineGeometry.js"></script>
+    <script src="/static/three-lines/LineMaterial.js"></script>
+    <script src="/static/three-lines/LineSegments2.js"></script>
+    <script src="/static/three-lines/Line2.js"></script>
+    <script src="/static/shell.js" defer></script>
+    <script src="/static/scrubber.js" defer></script>
+    <script src="/static/studio-state.js" defer></script>
+    <script src="/static/reference-store.js" defer></script>
+    <script src="/static/app.js" defer></script>
+    <script src="/static/draw-core.js" defer></script>
+    <script src="/static/draw-canvas.js" defer></script>
+    <script src="/static/draw-input.js" defer></script>
+    <script src="/static/draw.js" defer></script>
+    <script src="/static/viewport3d.js" defer></script>
+    <script src="/static/weave.js" defer></script>
+  </body>
+</html>

@@ -1,0 +1,155 @@
+{
+  "canonicalization": {
+    "algorithm": "sha256",
+    "encoding": "utf-8",
+    "json": "sort_keys=true,separators=(',',':'),ensure_ascii=false",
+    "scope": "source_facts"
+  },
+  "schema": "clayline.weave.entry-continuity-fixture.v3",
+  "source_facts": {
+    "baseline_source_commit": "10978de39725bd919b7b0bd4529e1d38b3940803",
+    "candidates": [
+      {
+        "anchored_rows_mm": [
+          0.0,
+          10.5
+        ],
+        "layer_range": [
+          1,
+          47
+        ],
+        "pocket_layer_index_zero_based": 45,
+        "pocket_layer_number_one_based": 46,
+        "proof": {
+          "current_material": true,
+          "lower_supported": true,
+          "planner_classification": "reachable/projected-row",
+          "swept_wall_corridor": true
+        },
+        "recipe_id": "half2-3.5-1.05",
+        "rotated_y_bounds_mm": [
+          1.386664,
+          6.840931
+        ],
+        "route_points_xy_mm": [
+          [
+            188.843463,
+            189.04696
+          ],
+          [
+            188.199163,
+            190.674036
+          ],
+          [
+            188.886655,
+            191.361529
+          ],
+          [
+            189.674976,
+            189.376746
+          ]
+        ],
+        "route_total_xy_mm": 4.857867,
+        "slice": {
+          "bead_width": null,
+          "first_layer_height": 1.05,
+          "layer_height": 1.05,
+          "nozzle": 3.5,
+          "sample_spacing": 1.0
+        },
+        "transition_layers_zero_based": [
+          44,
+          45
+        ]
+      },
+      {
+        "anchored_rows_mm": [
+          0.0,
+          12.39
+        ],
+        "layer_range": [
+          1,
+          40
+        ],
+        "pocket_layer_index_zero_based": 38,
+        "pocket_layer_number_one_based": 39,
+        "proof": {
+          "current_material": true,
+          "lower_supported": true,
+          "planner_classification": "reachable/projected-row",
+          "swept_wall_corridor": true
+        },
+        "recipe_id": "half2-4.13-1.24",
+        "rotated_y_bounds_mm": [
+          1.85933,
+          6.930522
+        ],
+        "route_points_xy_mm": [
+          [
+            188.976867,
+            189.214718
+          ],
+          [
+            188.212818,
+            191.133169
+          ],
+          [
+            188.587127,
+            191.507478
+          ],
+          [
+            189.428599,
+            189.394626
+          ]
+        ],
+        "route_total_xy_mm": 4.868604,
+        "slice": {
+          "bead_width": null,
+          "first_layer_height": 1.24,
+          "layer_height": 1.24,
+          "nozzle": 4.13,
+          "sample_spacing": 1.0
+        },
+        "transition_layers_zero_based": [
+          37,
+          38
+        ]
+      }
+    ],
+    "diagnosis_source_commit": "d0ce5ddabc483a4a53658293ba4da0e594b80657",
+    "fixture_purpose": "Distilled adjacent-layer final-pocket entry candidates for the two mandatory exact half2 jobs.",
+    "measurement_precision_decimals": 6,
+    "mesh": {
+      "filename": "half2.obj",
+      "sha256": "894b261ac2ef448e6c86493b56d7d4b0c4eecd510aca68bdb9d846d917727cd3"
+    },
+    "mesh_params": {
+      "fit_height": 50,
+      "rotation_y_deg": 90,
+      "up": "z"
+    },
+    "modulate": {
+      "amplitude": 1.0,
+      "bottom_layers": 0,
+      "end_early_mm": 0.0,
+      "infill_angle_deg": 45.0,
+      "infill_base_layers": 0,
+      "infill_cap_layers": 0,
+      "infill_pattern": "lines",
+      "infill_ramp_layers": 3,
+      "infill_spacing_beads": 3.0,
+      "interior": "infill",
+      "island_range_auto": false,
+      "level_rim": true,
+      "prime_mm": 0.0,
+      "quality": "settle",
+      "reproducible": true,
+      "seam": "chained",
+      "twist": 0.0,
+      "wave": "sine",
+      "wavelength": 17.5,
+      "z_blend": false
+    }
+  },
+  "source_facts_sha256": "57db00964bd77d0f76d4e4cd0e1c73b18e64116bf362c133b0ae5b371b6b2cbe"
+}

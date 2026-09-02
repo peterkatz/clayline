@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="152.4mm" height="152.4mm" viewBox="0 0 152.4 152.4">
+  <title>clayline tile: quatrefoil-grid — Sevillian azulejo quatrefoils</title>
+  <g fill="none" stroke="rgb(139, 125, 116)" stroke-width="4.572" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="54.864" cy="38.100" r="16.764"/>
+    <circle cx="21.336" cy="38.100" r="16.764"/>
+    <circle cx="38.100" cy="54.864" r="16.764"/>
+    <circle cx="38.100" cy="21.336" r="16.764"/>
+    <circle cx="38.100" cy="38.100" r="6.858"/>
+    <circle cx="54.864" cy="114.300" r="16.764"/>
+    <circle cx="21.336" cy="114.300" r="16.764"/>
+    <circle cx="38.100" cy="131.064" r="16.764"/>
+    <circle cx="38.100" cy="97.536" r="16.764"/>
+    <circle cx="38.100" cy="114.300" r="6.858"/>
+    <circle cx="131.064" cy="38.100" r="16.764"/>
+    <circle cx="97.536" cy="38.100" r="16.764"/>
+    <circle cx="114.300" cy="54.864" r="16.764"/>
+    <circle cx="114.300" cy="21.336" r="16.764"/>
+    <circle cx="114.300" cy="38.100" r="6.858"/>
+    <circle cx="131.064" cy="114.300" r="16.764"/>
+    <circle cx="97.536" cy="114.300" r="16.764"/>
+    <circle cx="114.300" cy="131.064" r="16.764"/>
+    <circle cx="114.300" cy="97.536" r="16.764"/>
+    <circle cx="114.300" cy="114.300" r="6.858"/>
+    <circle cx="76.200" cy="38.100" r="5.715"/>
+    <circle cx="76.200" cy="114.300" r="5.715"/>
+    <circle cx="38.100" cy="76.200" r="5.715"/>
+    <circle cx="114.300" cy="76.200" r="5.715"/>
+  </g>
+</svg>

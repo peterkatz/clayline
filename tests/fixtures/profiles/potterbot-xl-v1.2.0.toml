@@ -1,0 +1,66 @@
+name = "potterbot-xl"
+version = "1.2.0"
+description = "Verified from Pete's successful January 2026 PotterBot 10 XL print. 10 mm nozzle added per Pete 2026-07-15. v1.2.0: travel speed corrected to print speed — the reference Cura profile only used 120 outside spiralize mode and the first clay print (2026-07-17) showed fast travels tear the thread."
+verified = true
+verification_source = "docs/reference/potterbot-10xl-reference-header-footer.gcode"
+flavor = "marlin"
+nozzle_diameters = [3.5, 4.13, 5.0, 6.4, 10.0]
+default_nozzle_diameter = 5.0
+virtual_filament_diameter = 1.75
+extrusion_mode = "absolute"
+speed_default = 40.0
+speed_first_layer = 30.0
+speed_travel = 40.0
+start_gcode = [
+  "M105",
+  "M109 S0",
+  "M82 ;absolute extrusion mode",
+  "G28 ;Home",
+  "G1 X207.5 Y202.5 Z20 F10000 ;Move X and Y to center, Z to 20mm high",
+  "G92 E0",
+  "G1 E3000 F40000 ; Prine Extruder",
+  "G92 E0",
+  "G92 E0",
+  "G92 E0",
+  "M107",
+]
+end_gcode = [
+  "M83 ;Set to Relative Extrusion Mode",
+  "G91 ;Set to Relative Positioning",
+  "G1 Z150 E-3000 F40000 ;Move Z Axis up and depressurize Extruder slightly",
+  "G90 ;Set to Absolute Positioning",
+  "G28 Z ;Home Z",
+  "G1 X207.5 Y0 F500 ;Move X and Y slow to home position",
+  "M82 ;absolute extrusion mode",
+]
+gcode_whitelist = ["G0", "G1", "G4", "G21", "G28", "G90", "G91", "G92", "M82", "M83", "M105", "M107", "M109"]
+
+[work_bounds]
+min_x = 17.0
+max_x = 398.0
+min_y = 12.0
+max_y = 393.0
+min_z = 0.0
+max_z = 710.0
+
+[machine_envelope]
+min_x = 0.0
+max_x = 490.0
+min_y = 0.0
+max_y = 490.0
+min_z = 0.0
+max_z = 710.0
+
+[center]
+x = 207.5
+y = 202.5
+
+[travel_policy]
+lift = 2.0
+reprime_e = 0.0
+dwell_seconds = 0.0
+page_pause_command = "G4 S{seconds}"
+
+[emission]
+prime_mm = 15.0
+end_early_mm = 5.0

@@ -1,0 +1,102 @@
+{
+  "cases": {
+    "calibrated-versionless-positive": {
+      "body_sha256": "8ea6e4aa3dd6a7f0588b9630dc919a4ca8f85ad412d51d778996e933128f2461",
+      "gcode_sha256": "d12ef26aea6090d492b4220131159578ec1a9ed2c1eb97eb39ebab9e64f57fd2",
+      "purpose": "Versionless HTTP-shaped calibrated +50% crossing fixture.",
+      "report_sha256": "c32d02e8949a09334bbcb3b7b0ef399c474e651a505f64bc2d0c726333fef0ec"
+    },
+    "direct-missing-release-source-positive": {
+      "body_sha256": "c815f23c2ee3e8922bca833f86b67fe1a961c856da997409d3d9589316847fe2",
+      "gcode_sha256": "bc37dbf18257c9c36d8150e504444554b3eb982ae95d95d2eacb7341e44c2643",
+      "purpose": "Direct positive Job with end_early_mm=0 and therefore no attached-tail source.",
+      "report_sha256": "7e3c936517be8b314d1458d459c3f9e85294cc0a7ffec77e24dad04d8c428805"
+    },
+    "direct-subquantum-positive": {
+      "body_sha256": "612fa2e722c9fcf95b910b25b8f3e6d0ebbafdf3b169e3d15a41f0069d604a78",
+      "gcode_sha256": "cb52bef8dae66e9eedf9fc1bc0a9d9941f3d712b212d951c7304fa8f315990ac",
+      "purpose": "Direct positive Job using a pre-tranche-valid 1e-12 mm travel lift.",
+      "report_sha256": "5b2642c29c9c97aa10b3692ba26546d610eb12f0f15df0c65f8e2f7ba312fbfc"
+    },
+    "direct-zero-lift-positive": {
+      "body_sha256": "35c72ddec4228fb8df51a23aa08b94bdb69ac8a12bc1945b284355e231b0a25f",
+      "gcode_sha256": "1024d0d279fa22c2fc5ad95761c0c0d39948c0eb2c69ac7a1788a4ac12964715",
+      "purpose": "Direct positive Job using a pre-tranche-valid in-memory profile with lift=0.",
+      "report_sha256": "04264969b6011c3c2b334798c18dd43e46d4389b86e6d84b472019ecaf22f464"
+    },
+    "drape-versionless-positive-pause": {
+      "body_sha256": "c4bf96d66492295e90ecb2f9d57be6a8eea1cb3fe14c2b436503796956a90402",
+      "gcode_sha256": "d583d007af188e01bfd59c258b0813e1ff3d3f6d0032ce0b76fe49d56c753586",
+      "purpose": "Versionless HTTP-shaped two-page Drape +50% fixture with a 3 s pause.",
+      "report_sha256": "ed3f4f01e61214d702fd86a2b916735c75ef28ffc9980f3cb8b3771a6e789d43"
+    },
+    "versionless-distinct-z-step-fit": {
+      "body_sha256": "4800477ef35cd9fb4f73e92384830888fe12fcba5aff8ff8860a1e7f6784d4f2",
+      "gcode_sha256": "cc9729973a169bbebe446cb047c376877e15465bb9c66c30cd68b707410f0cda",
+      "purpose": "Versionless Off layout compatibility fixture: copies=2, layers=2, page_pause_seconds=0, z_step=1.25, scale='fit:100'.",
+      "report_sha256": "eba1734ab48345f00b7fa1193d54ca10f08d6eb892db064a0267101b3162e448"
+    },
+    "versionless-distinct-z-step-null": {
+      "body_sha256": "4800477ef35cd9fb4f73e92384830888fe12fcba5aff8ff8860a1e7f6784d4f2",
+      "gcode_sha256": "5b070a493c22b51478cae20357b73a7601a177e09b3d4ffc9772dc995e83c29a",
+      "purpose": "Versionless Off layout compatibility fixture: copies=2, layers=2, page_pause_seconds=0, z_step=1.25, scale=None.",
+      "report_sha256": "a8607db53baf71430433bad7640437c9f4634182b1888c027e4f6d7ed8b23a8f"
+    },
+    "versionless-distinct-z-step-number": {
+      "body_sha256": "4800477ef35cd9fb4f73e92384830888fe12fcba5aff8ff8860a1e7f6784d4f2",
+      "gcode_sha256": "5b070a493c22b51478cae20357b73a7601a177e09b3d4ffc9772dc995e83c29a",
+      "purpose": "Versionless Off layout compatibility fixture: copies=2, layers=2, page_pause_seconds=0, z_step=1.25, scale=1.0.",
+      "report_sha256": "a8607db53baf71430433bad7640437c9f4634182b1888c027e4f6d7ed8b23a8f"
+    },
+    "versionless-distinct-z-step-numeric-string": {
+      "body_sha256": "4800477ef35cd9fb4f73e92384830888fe12fcba5aff8ff8860a1e7f6784d4f2",
+      "gcode_sha256": "5b070a493c22b51478cae20357b73a7601a177e09b3d4ffc9772dc995e83c29a",
+      "purpose": "Versionless Off layout compatibility fixture: copies=2, layers=2, page_pause_seconds=0, z_step=1.25, scale='1'.",
+      "report_sha256": "a8607db53baf71430433bad7640437c9f4634182b1888c027e4f6d7ed8b23a8f"
+    },
+    "versionless-loaded-zero-lift-positive": {
+      "body_sha256": "2b6bdd837335648138ecbb8d2e36bee54a82a2829ee45f139a58bf114f76be43",
+      "gcode_sha256": "344b1181138d366712f065eaadb0036f0575e147f3df7be549a5b5f60b70aa41",
+      "purpose": "Versionless PipelineRequest using a loaded profile fixture with lift=0.",
+      "report_sha256": "dbefe31abf46b867152c358aef97a41f634a907b4dcd5b52187056b39f6b00da"
+    },
+    "versionless-missing-release-source-positive": {
+      "body_sha256": "53969af1d2d763c7cf6ef8ab14025281756d826cab2f9f08fef1cfe4fd61e1b4",
+      "gcode_sha256": "2b69e0c23c3a8e1c1d57d7887457d96a9c6cd70d3989b2e3153304b0bd90464a",
+      "purpose": "Versionless PipelineRequest with end_early_mm=0 and no attached-tail source.",
+      "report_sha256": "aa7ea89a9440da811d2b96328a9224b18ecb6eb14787d44414e9721ca555fe6c"
+    },
+    "versionless-subquantum-positive": {
+      "body_sha256": "2b6bdd837335648138ecbb8d2e36bee54a82a2829ee45f139a58bf114f76be43",
+      "gcode_sha256": "344b1181138d366712f065eaadb0036f0575e147f3df7be549a5b5f60b70aa41",
+      "purpose": "Versionless PipelineRequest using a positive 1e-12 mm travel lift.",
+      "report_sha256": "107e6fe95b7146b5dbe9d1aa2497c5ef72e3d1c192c0375b6adc56595d4408d3"
+    },
+    "versionless-zero-z-step-fit": {
+      "body_sha256": "1b71041d62d7e2cf2e20b28a8d196751bb1bdb59a80a4718e1ccb3e073d2c03c",
+      "gcode_sha256": "6ef7e798636e51cdb3515e1039b14e67916912117605729eea1a0bc8b4e169dd",
+      "purpose": "Versionless Off layout compatibility fixture: copies=2, layers=2, page_pause_seconds=0, z_step=0.0, scale='fit:100'.",
+      "report_sha256": "88208f89651cf2ea58e3174cac783538a31c18763d8a067159fb60d5c3d16056"
+    },
+    "versionless-zero-z-step-null": {
+      "body_sha256": "1b71041d62d7e2cf2e20b28a8d196751bb1bdb59a80a4718e1ccb3e073d2c03c",
+      "gcode_sha256": "0f0a2575e39c85f69ee6433fea6a7f359db7ca1272918d8072f369c1da6f15ec",
+      "purpose": "Versionless Off layout compatibility fixture: copies=2, layers=2, page_pause_seconds=0, z_step=0.0, scale=None.",
+      "report_sha256": "fa51f260180fe43d6fd7bc135e8fa98ffd58cfc65c0e50c0a4b07a04fed0ad9c"
+    },
+    "versionless-zero-z-step-number": {
+      "body_sha256": "1b71041d62d7e2cf2e20b28a8d196751bb1bdb59a80a4718e1ccb3e073d2c03c",
+      "gcode_sha256": "0f0a2575e39c85f69ee6433fea6a7f359db7ca1272918d8072f369c1da6f15ec",
+      "purpose": "Versionless Off layout compatibility fixture: copies=2, layers=2, page_pause_seconds=0, z_step=0.0, scale=1.0.",
+      "report_sha256": "fa51f260180fe43d6fd7bc135e8fa98ffd58cfc65c0e50c0a4b07a04fed0ad9c"
+    },
+    "versionless-zero-z-step-numeric-string": {
+      "body_sha256": "1b71041d62d7e2cf2e20b28a8d196751bb1bdb59a80a4718e1ccb3e073d2c03c",
+      "gcode_sha256": "0f0a2575e39c85f69ee6433fea6a7f359db7ca1272918d8072f369c1da6f15ec",
+      "purpose": "Versionless Off layout compatibility fixture: copies=2, layers=2, page_pause_seconds=0, z_step=0.0, scale='1'.",
+      "report_sha256": "fa51f260180fe43d6fd7bc135e8fa98ffd58cfc65c0e50c0a4b07a04fed0ad9c"
+    }
+  },
+  "engine_commit": "bab888c",
+  "schema": "clayline.thread-protection-baseline.v1"
+}

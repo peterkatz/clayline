@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="100mm" height="80mm" viewBox="0 0 100 80">
+  <defs><path id="lens" d="M0 0 C10 -12 20 -12 30 0 C20 12 10 12 0 0 Z"/></defs>
+  <g transform="translate(15 20) rotate(8)">
+    <g transform="scale(1.5)"><use id="nested-use-a" xlink:href="#lens" fill="none" stroke="black"/></g>
+    <use id="nested-use-b" href="#lens" x="30" y="20" fill="none" stroke="black"/>
+  </g>
+</svg>

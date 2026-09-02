@@ -1,0 +1,20 @@
+# Current M21 SVG-mode full-file pins; historical pre-cutover pins remain in svg-mode-gcode.sha256.
+6654a11d671980c05ff7090ffe44f44fdac87a1191e273821fd8384d587d4aab  tests/golden/F4.7/stack-job-calibrated.gcode
+0f108f8baac2a6a8d0ce2cfb802eef22f8b8660b468b5dc3a91a13484c31aa15  tests/golden/F4.7/stack-job-drape.gcode
+3e1d923c5e688e1e215fa35273a7cb31043dd91a8e6cb3b0a4797586f555473c  tests/golden/M2/flow-ladder.gcode
+30876202030bf540026c5c312aecbb7459efb5da6cb6e69532b68b7a0e6cc978  tests/golden/M2/hardcoded-line.gcode
+b5aa2d5592c5ae72d4811f51cde4b9d141dfac848fe01974a4eef85731adc577  tests/golden/M2/kiss-pair.gcode
+10695bb2e604801b84b00dace5580bc08ceebdf9de53ebf7cc11c7af1e8f50b4  tests/golden/M2/ring.gcode
+ffd095ae9b99e72a4c861b5bf0b84be485ecd99716c801b160853670a8aab462  tests/golden/M4/calibrated-page-01-golden-loop.gcode
+7fe67cf919012b963479604d72b5aab680937b9587db5d8efe8ca7e4c5423a37  tests/golden/M4/calibrated.gcode
+d1948062bdb68a7878a7ac86a17d0c178b76035e402acdeeafd23f3fb85e1ce6  tests/golden/M4/drape-zstep-0-page-01-golden-loop.gcode
+14ff17519d15b06613a4923685cb91436ba329c02e327e022bbcbf75e6b399c0  tests/golden/M4/drape-zstep-0.gcode
+f94b84c9949468941df9aa29366ec3bae54bbef9bf65e17e1d9a1a6d658a578c  tests/golden/M4/drape-zstep-height-page-01-golden-loop.gcode
+d66ef10bd0e9bfb27c9b0f239fe141ae79a671ffd932e2731c8276a9a6deb9f0  tests/golden/M4/drape-zstep-height.gcode
+8bba6d7725dead095f7d5aa741a71351de8e64f703e466646c5efb51aa300514  tests/golden/M4/helical-page-01-golden-loop.gcode
+7332b0189e135bc585f30f1a70f8a940b6da5ac76d0005180b1e2218966a7f66  tests/golden/M4/helical.gcode
+90d6e53670cec82fb53e9267c273c8624737d794167e5d15b14fbf825767b3b6  tests/golden/M4/pages-job-page-01-rings-grid.gcode
+938d52d70243c3199b0f09aed93346a7289baac418117eeb0eeaf4fb99b72bfa  tests/golden/M4/pages-job-page-02-rosette.gcode
+ed543dba108edae1f9837dfdc3c8981aea3a85930836478b6057467001f46e9c  tests/golden/M4/pages-job-page-03-petal-flower.gcode
+293841944aa7474ed0ec652c24f076a8a8c9d6068f9d82c9782c88e71a6303d6  tests/golden/M4/pages-job-page-04-petal-flower.gcode
+8ac10e096d2f6ceabce6a96ceb0a08dcb9dd086976e4437bc578b3a42ab03d58  tests/golden/M4/pages-job.gcode

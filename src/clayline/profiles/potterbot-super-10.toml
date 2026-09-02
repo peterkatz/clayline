@@ -1,0 +1,47 @@
+# Primary source: https://3dpotter.com/product/3d-potterbot-super-10/
+# Retrieved 2026-07-22. Rectangular work area and listed nozzle sizes are manufacturer specs.
+name = "potterbot-super-10"
+version = "1.0.0"
+description = "Community profile from current 3D Potter specifications: 415 x 405 x 500 mm work area. Not yet verified on hardware."
+verified = false
+flavor = "marlin"
+nozzle_diameters = [3.0, 4.0, 5.0, 6.0]
+default_nozzle_diameter = 5.0
+virtual_filament_diameter = 1.75
+extrusion_mode = "absolute"
+speed_default = 30.0
+speed_first_layer = 20.0
+speed_travel = 30.0
+start_gcode = ["G21 ; millimeters", "G90 ; absolute XYZ", "M82 ; absolute extrusion", "G28 ; home", "G92 E0"]
+end_gcode = ["G92 E0"]
+gcode_whitelist = ["G0", "G1", "G4", "G21", "G28", "G90", "G91", "G92", "M0", "M82", "M83"]
+
+[work_bounds]
+min_x = 0.0
+max_x = 415.0
+min_y = 0.0
+max_y = 405.0
+min_z = 0.0
+max_z = 500.0
+
+[machine_envelope]
+min_x = 0.0
+max_x = 415.0
+min_y = 0.0
+max_y = 405.0
+min_z = 0.0
+max_z = 500.0
+
+[center]
+x = 207.5
+y = 202.5
+
+[travel_policy]
+lift = 2.0
+reprime_e = 0.0
+dwell_seconds = 0.0
+page_pause_command = "G4 S{seconds}"
+
+[emission]
+prime_mm = 15.0
+end_early_mm = 5.0

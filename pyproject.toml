@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "clayline"
+version = "0.1.0.dev0"
+description = "SVG centerlines to auditable paste-printer G-code"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Pete" }]
+dependencies = [
+  "lxml>=5.3",
+  "networkx>=3.4",
+  "numpy>=1.26",
+  "plotly>=5.24",
+  "shapely>=2.0",
+  "svgelements>=1.9.6",
+  "trimesh==4.12.2",
+]
+
+[project.optional-dependencies]
+ui = ["fastapi>=0.115", "pillow>=11", "pillow-heif>=0.18", "uvicorn>=0.30"]
+dev = [
+  "fastapi>=0.115",
+  "httpx>=0.27",
+  "hypothesis>=6.100",
+  "pillow>=11",
+  "pillow-heif>=0.18",
+  "pytest>=8.0",
+  "ruff>=0.9",
+  "uvicorn>=0.30",
+]
+
+[dependency-groups]
+mac-app = [
+  "pyinstaller==6.16.0",
+  "pyinstaller-hooks-contrib==2026.6",
+]
+
+[project.scripts]
+clayline = "clayline.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/clayline"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = [
+  "performance: exact wall-clock release budgets that need isolation from concurrent load",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]

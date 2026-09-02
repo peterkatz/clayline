@@ -1,0 +1,66 @@
+name = "potterbot-xl"
+version = "1.4.0"
+description = "Verified from Pete's successful January 2026 PotterBot 10 XL print. 10 mm nozzle added per Pete 2026-07-15. v1.2.0: travel speed corrected to print speed — the reference Cura profile only used 120 outside spiralize mode and the first clay print (2026-07-17) showed fast travels tear the thread. v1.3.0: end-of-job depressurize and matching start prime reduced 3000->100 — the Cura-inherited full depressurize left back-to-back jobs printing dry for 30-40s (Pete, 2026-08-02). v1.4.0: the start prime goes back to the reference 3000 — cutting it too was unsupported. Pete's own diagnostic was that cancelling and reprinting fixed the dry start, and a cancel skips the footer, so the working case was no relief plus a full 3000 charge; E100 is 0.24 cc into a barrel the reference charges with 7.2 cc, so jobs began with nothing at the nozzle (Pete, 2026-08-15). The end relief stays at 100: enough to stop ooze during the homing moves without emptying the barrel."
+verified = true
+verification_source = "docs/reference/potterbot-10xl-reference-header-footer.gcode"
+flavor = "marlin"
+nozzle_diameters = [3.5, 4.13, 5.0, 6.4, 10.0]
+default_nozzle_diameter = 5.0
+virtual_filament_diameter = 1.75
+extrusion_mode = "absolute"
+speed_default = 40.0
+speed_first_layer = 30.0
+speed_travel = 40.0
+start_gcode = [
+  "M105",
+  "M109 S0",
+  "M82 ;absolute extrusion mode",
+  "G28 ;Home",
+  "G1 X207.5 Y202.5 Z20 F10000 ;Move X and Y to center, Z to 20mm high",
+  "G92 E0",
+  "G1 E3000 F40000 ; Prime Extruder (v1.4.0: back to the reference charge; E100 started every job dry)",
+  "G92 E0",
+  "G92 E0",
+  "G92 E0",
+  "M107",
+]
+end_gcode = [
+  "M83 ;Set to Relative Extrusion Mode",
+  "G91 ;Set to Relative Positioning",
+  "G1 Z150 E-100 F40000 ;Move Z Axis up and relieve Extruder pressure (v1.3.0: was E-3000, which left the next job dry)",
+  "G90 ;Set to Absolute Positioning",
+  "G28 Z ;Home Z",
+  "G1 X207.5 Y0 F500 ;Move X and Y slow to home position",
+  "M82 ;absolute extrusion mode",
+]
+gcode_whitelist = ["G0", "G1", "G4", "G21", "G28", "G90", "G91", "G92", "M82", "M83", "M105", "M107", "M109"]
+
+[work_bounds]
+min_x = 17.0
+max_x = 398.0
+min_y = 12.0
+max_y = 393.0
+min_z = 0.0
+max_z = 710.0
+
+[machine_envelope]
+min_x = 0.0
+max_x = 490.0
+min_y = 0.0
+max_y = 490.0
+min_z = 0.0
+max_z = 710.0
+
+[center]
+x = 207.5
+y = 202.5
+
+[travel_policy]
+lift = 2.0
+reprime_e = 0.0
+dwell_seconds = 0.0
+page_pause_command = "G4 S{seconds}"
+
+[emission]
+prime_mm = 15.0
+end_early_mm = 5.0

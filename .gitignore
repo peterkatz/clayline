@@ -1,0 +1,16 @@
+.DS_Store
+.build/
+.venv/
+.pytest_cache/
+.playwright-cli/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+htmlcov/
+output/
+.coverage
+*.tmp
+tests/private-assets.json

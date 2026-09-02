@@ -1,0 +1,196 @@
+{
+  "construction": {
+    "fuse_points": 0,
+    "fuse_xy": [],
+    "lap_xy": [],
+    "laps": 0
+  },
+  "generated_utc": "reproducible",
+  "job_id": "m5-shared-trace",
+  "lint_cross_check": {
+    "bounds_match": true,
+    "calculated_volume_mm3": 3576.255111,
+    "lint_bounds": [
+      50.0,
+      290.0,
+      50.0,
+      270.0,
+      2.0,
+      35.0
+    ],
+    "lint_ok": true,
+    "lint_page_count": 2,
+    "lint_volume_mm3": 3576.25511,
+    "page_count_match": true,
+    "passed": true,
+    "prepared_bounds": [
+      50.0,
+      290.0,
+      50.0,
+      270.0,
+      2.0,
+      35.0
+    ],
+    "prepared_page_count": 2,
+    "volume_delta_mm3": 1.028e-06,
+    "volume_tolerance_mm3": 0.00715251
+  },
+  "nominal_label": "calibrated synthetic",
+  "pages": [
+    {
+      "clay_volume_mm3": 1676.155114,
+      "deposited_path_mm": 177.093659,
+      "estimated_print_time_seconds": 13.76256,
+      "layer_count": 1,
+      "motion_time_seconds": 13.76256,
+      "name": "Tile A",
+      "page_id": "tile-a",
+      "page_index": 0,
+      "pause_time_seconds": 0.0,
+      "pressure_time_seconds": 0.0,
+      "print_path_mm": 187.093659,
+      "stroke_count": 2,
+      "total_motion_path_mm": 503.046631,
+      "travel_count": 5,
+      "travel_path_mm": 315.952972,
+      "warning_counts_by_code": {
+        "lap": 1
+      },
+      "wet_weight_g": 3.017079,
+      "z_max_mm": 4.0,
+      "z_min_mm": 2.0
+    },
+    {
+      "clay_volume_mm3": 1900.099998,
+      "deposited_path_mm": 195.01,
+      "estimated_print_time_seconds": 11.952363,
+      "layer_count": 1,
+      "motion_time_seconds": 9.452363,
+      "name": "Tile B",
+      "page_id": "tile-b",
+      "page_index": 1,
+      "pause_time_seconds": 2.5,
+      "pressure_time_seconds": 0.0,
+      "print_path_mm": 200.01,
+      "stroke_count": 1,
+      "total_motion_path_mm": 328.092039,
+      "travel_count": 3,
+      "travel_path_mm": 128.082039,
+      "warning_counts_by_code": {
+        "tight_radius": 1
+      },
+      "wet_weight_g": 3.42018,
+      "z_max_mm": 7.0,
+      "z_min_mm": 5.0
+    }
+  ],
+  "parameters": {
+    "bead_width_mm": 5.0,
+    "end_early_mm": 5.0,
+    "first_layer_z_mm": null,
+    "flow_multiplier": 1.0,
+    "layer_height_mm": 2.0,
+    "prime_mm": 10.0,
+    "reproducible": true,
+    "user": {
+      "flow_modulation": 0.25,
+      "helical": true,
+      "page_travel_clearance": 20.0,
+      "z_mode": "calibrated"
+    },
+    "wet_density_g_cm3": 1.8
+  },
+  "profile": {
+    "default_nozzle_diameter_mm": 5.0,
+    "description": "Verified from Pete's successful January 2026 PotterBot 10 XL print. 10 mm nozzle added per Pete 2026-07-15. v1.2.0: travel speed corrected to print speed — the reference Cura profile only used 120 outside spiralize mode and the first clay print (2026-07-17) showed fast travels tear the thread. v1.3.0: end-of-job depressurize and matching start prime reduced 3000->100 — the Cura-inherited full depressurize left back-to-back jobs printing dry for 30-40s (Pete, 2026-08-02); 100 is enough to stop ooze during the homing moves without emptying the barrel.",
+    "extrusion_mode": "absolute",
+    "flavor": "marlin",
+    "machine_envelope": {
+      "max_x": 490.0,
+      "max_y": 490.0,
+      "max_z": 710.0,
+      "min_x": 0.0,
+      "min_y": 0.0,
+      "min_z": 0.0
+    },
+    "name": "potterbot-xl",
+    "speed_default_mm_s": 40.0,
+    "speed_first_layer_mm_s": 30.0,
+    "speed_travel_mm_s": 40.0,
+    "verification_source": "docs/reference/potterbot-10xl-reference-header-footer.gcode",
+    "verified": true,
+    "version": "1.3.0",
+    "virtual_filament_diameter_mm": 1.75,
+    "work_bounds": {
+      "max_x": 398.0,
+      "max_y": 393.0,
+      "max_z": 710.0,
+      "min_x": 17.0,
+      "min_y": 12.0,
+      "min_z": 0.0
+    }
+  },
+  "schema": "clayline.report.v1",
+  "totals": {
+    "clay_volume_mm3": 3576.255111,
+    "deposited_path_mm": 372.103659,
+    "estimated_print_time_seconds": 25.714924,
+    "layer_count": 2,
+    "motion_time_seconds": 23.214924,
+    "page_count": 2,
+    "pause_time_seconds": 2.5,
+    "pressure_time_seconds": 0.0,
+    "print_path_mm": 387.103659,
+    "stroke_count": 3,
+    "total_motion_path_mm": 831.13867,
+    "total_stack_height_mm": 7.0,
+    "travel_count": 8,
+    "travel_path_mm": 444.035012,
+    "warning_count": 3,
+    "warning_counts_by_code": {
+      "lap": 1,
+      "open_end": 1,
+      "tight_radius": 1
+    },
+    "warning_counts_by_severity": {
+      "info": 1,
+      "warning": 2
+    },
+    "wet_weight_g": 6.437259
+  },
+  "warnings": [
+    {
+      "code": "lap",
+      "message": "nominal lap",
+      "page_id": "tile-a",
+      "point": {
+        "x": 110.0,
+        "y": 110.0
+      },
+      "provenance": null,
+      "severity": "warning"
+    },
+    {
+      "code": "tight_radius",
+      "message": "tight corner",
+      "page_id": "tile-b",
+      "point": {
+        "x": 290.0,
+        "y": 270.0
+      },
+      "provenance": null,
+      "severity": "warning"
+    },
+    {
+      "code": "open_end",
+      "message": "open source path",
+      "page_id": null,
+      "point": {
+        "x": 50.0,
+        "y": 50.0
+      },
+      "provenance": null,
+      "severity": "info"
+    }
+  ]
+}

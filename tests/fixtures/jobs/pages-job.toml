@@ -1,0 +1,20 @@
+name = "pages-job"
+profile = "potterbot-xl"
+page_gap = 30.0
+page_pause = true
+expected_pages = 4
+
+[[pages]]
+svg = "../svg/rings-grid.svg"
+name = "rings-grid"
+copies = 1
+
+[[pages]]
+svg = "../svg/rosette.svg"
+name = "rosette"
+copies = 1
+
+[[pages]]
+svg = "../svg/petal-flower.svg"
+name = "petal-flower"
+copies = 2

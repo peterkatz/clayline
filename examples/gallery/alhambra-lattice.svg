@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="152.4mm" height="152.4mm" viewBox="0 0 152.4 152.4">
+  <title>clayline tile: alhambra-lattice — Alhambra overlapping-circle weave</title>
+  <g fill="none" stroke="rgb(139, 125, 116)" stroke-width="4.572" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="25.146" cy="25.146" r="22.860"/>
+    <circle cx="25.146" cy="59.182" r="22.860"/>
+    <circle cx="25.146" cy="93.218" r="22.860"/>
+    <circle cx="25.146" cy="127.254" r="22.860"/>
+    <circle cx="59.182" cy="25.146" r="22.860"/>
+    <circle cx="59.182" cy="59.182" r="22.860"/>
+    <circle cx="59.182" cy="93.218" r="22.860"/>
+    <circle cx="59.182" cy="127.254" r="22.860"/>
+    <circle cx="93.218" cy="25.146" r="22.860"/>
+    <circle cx="93.218" cy="59.182" r="22.860"/>
+    <circle cx="93.218" cy="93.218" r="22.860"/>
+    <circle cx="93.218" cy="127.254" r="22.860"/>
+    <circle cx="127.254" cy="25.146" r="22.860"/>
+    <circle cx="127.254" cy="59.182" r="22.860"/>
+    <circle cx="127.254" cy="93.218" r="22.860"/>
+    <circle cx="127.254" cy="127.254" r="22.860"/>
+  </g>
+</svg>

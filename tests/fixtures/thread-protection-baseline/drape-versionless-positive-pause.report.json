@@ -1,0 +1,314 @@
+{
+  "construction": {
+    "fuse_points": 0,
+    "fuse_xy": [],
+    "lap_xy": [],
+    "laps": 0
+  },
+  "generated_utc": "reproducible",
+  "job_id": "drape-a-job",
+  "lint_cross_check": {
+    "bounds_match": true,
+    "calculated_volume_mm3": 7177.220053,
+    "lint_bounds": [
+      147.5,
+      247.5,
+      172.5,
+      242.5,
+      20.0,
+      26.0
+    ],
+    "lint_ok": true,
+    "lint_page_count": 2,
+    "lint_volume_mm3": 7177.220054,
+    "page_count_match": true,
+    "passed": true,
+    "prepared_bounds": [
+      147.5,
+      247.5,
+      172.5,
+      242.5,
+      20.0,
+      26.0
+    ],
+    "prepared_page_count": 2,
+    "volume_delta_mm3": 2.45e-07,
+    "volume_tolerance_mm3": 0.01435444
+  },
+  "nominal_label": "nominal \u2014 drape mode: physical bead placement depends on fall",
+  "pages": [
+    {
+      "clay_volume_mm3": 3588.610027,
+      "deposited_path_mm": 261.36068,
+      "estimated_print_time_seconds": 12.285262,
+      "layer_count": 1,
+      "motion_time_seconds": 12.285262,
+      "name": "drape-a",
+      "page_id": "page-01-drape-a",
+      "page_index": 0,
+      "pause_time_seconds": 0.0,
+      "pressure_time_seconds": 0.0,
+      "print_path_mm": 272.36068,
+      "stroke_count": 2,
+      "total_motion_path_mm": 344.471705,
+      "travel_count": 2,
+      "travel_path_mm": 72.111026,
+      "warning_counts_by_code": {
+        "open_end": 4
+      },
+      "wet_weight_g": 6.459498,
+      "z_max_mm": 20.0,
+      "z_min_mm": 20.0
+    },
+    {
+      "clay_volume_mm3": 3588.610027,
+      "deposited_path_mm": 261.36068,
+      "estimated_print_time_seconds": 14.232486,
+      "layer_count": 1,
+      "motion_time_seconds": 11.232486,
+      "name": "drape-b",
+      "page_id": "page-02-drape-b",
+      "page_index": 1,
+      "pause_time_seconds": 3.0,
+      "pressure_time_seconds": 0.0,
+      "print_path_mm": 272.36068,
+      "stroke_count": 2,
+      "total_motion_path_mm": 302.36068,
+      "travel_count": 4,
+      "travel_path_mm": 30.0,
+      "warning_counts_by_code": {
+        "open_end": 4
+      },
+      "wet_weight_g": 6.459498,
+      "z_max_mm": 22.0,
+      "z_min_mm": 22.0
+    }
+  ],
+  "parameters": {
+    "bead_width_mm": 5.0,
+    "end_early_mm": 0.0,
+    "first_layer_z_mm": 20.0,
+    "flow_multiplier": 1.0,
+    "layer_height_mm": 2.0,
+    "prime_mm": 0.0,
+    "reproducible": true,
+    "user": {
+      "alternate": "true",
+      "drape_draw": 0.6,
+      "drape_landing_mm": 20.0,
+      "first_layer_height": 2.0,
+      "flow_modulation": 0.0,
+      "hardware_default_status": "calibration pending; provisional reference defaults",
+      "helical": "false",
+      "joint_boost": 0.5,
+      "layers": 1,
+      "overlap_fraction_provisional": 0.2,
+      "page_gap": 30.0,
+      "page_mode": "stack",
+      "page_pause_seconds": 3.0,
+      "page_travel_clearance": 50.0,
+      "page_travel_lift": 4.0,
+      "provisional_flow_multiplier": 1.0,
+      "stack_job_page_count": 2,
+      "stack_page_0_path_start_z_mm": 20.0,
+      "stack_page_0_z_max_mm": 20.0,
+      "stack_page_0_z_min_mm": 20.0,
+      "stack_page_1_path_start_z_mm": 22.0,
+      "stack_page_1_prior_top_mm": 2.0,
+      "stack_page_1_z_max_mm": 22.0,
+      "stack_page_1_z_min_mm": 22.0,
+      "stack_page_material_height_mm": 2.0,
+      "stack_total_height_mm": 4.0,
+      "standoff_z": 20.0,
+      "z_mode": "drape",
+      "z_modulation": 0.0,
+      "z_step_per_layer": 2.0
+    },
+    "wet_density_g_cm3": 1.8
+  },
+  "profile": {
+    "default_nozzle_diameter_mm": 5.0,
+    "description": "Verified from Pete's successful January 2026 PotterBot 10 XL print. 10 mm nozzle added per Pete 2026-07-15. v1.2.0: travel speed corrected to print speed \u2014 the reference Cura profile only used 120 outside spiralize mode and the first clay print (2026-07-17) showed fast travels tear the thread.",
+    "extrusion_mode": "absolute",
+    "flavor": "marlin",
+    "machine_envelope": {
+      "max_x": 490.0,
+      "max_y": 490.0,
+      "max_z": 710.0,
+      "min_x": 0.0,
+      "min_y": 0.0,
+      "min_z": 0.0
+    },
+    "name": "potterbot-xl",
+    "speed_default_mm_s": 40.0,
+    "speed_first_layer_mm_s": 30.0,
+    "speed_travel_mm_s": 40.0,
+    "verification_source": "docs/reference/potterbot-10xl-reference-header-footer.gcode",
+    "verified": true,
+    "version": "1.2.0",
+    "virtual_filament_diameter_mm": 1.75,
+    "work_bounds": {
+      "max_x": 398.0,
+      "max_y": 393.0,
+      "max_z": 710.0,
+      "min_x": 17.0,
+      "min_y": 12.0,
+      "min_z": 0.0
+    }
+  },
+  "schema": "clayline.report.v1",
+  "totals": {
+    "clay_volume_mm3": 7177.220053,
+    "deposited_path_mm": 522.72136,
+    "estimated_print_time_seconds": 26.517748,
+    "layer_count": 2,
+    "motion_time_seconds": 23.517748,
+    "page_count": 2,
+    "pause_time_seconds": 3.0,
+    "pressure_time_seconds": 0.0,
+    "print_path_mm": 544.72136,
+    "stroke_count": 4,
+    "total_motion_path_mm": 646.832385,
+    "total_stack_height_mm": 4.0,
+    "travel_count": 4,
+    "travel_path_mm": 102.111026,
+    "warning_count": 8,
+    "warning_counts_by_code": {
+      "open_end": 8
+    },
+    "warning_counts_by_severity": {
+      "warning": 8
+    },
+    "wet_weight_g": 12.918996
+  },
+  "warnings": [
+    {
+      "code": "open_end",
+      "message": "Open endpoint on element[0] is not anchored to another bead; freestanding coil ends can crack while drying.",
+      "page_id": "page-01-drape-a",
+      "point": {
+        "x": 147.5,
+        "y": 242.5
+      },
+      "provenance": {
+        "element_id": null,
+        "element_index": 0,
+        "source_path": "drape-a.svg",
+        "subpath_index": 0
+      },
+      "severity": "warning"
+    },
+    {
+      "code": "open_end",
+      "message": "Open endpoint on element[0] is not anchored to another bead; freestanding coil ends can crack while drying.",
+      "page_id": "page-01-drape-a",
+      "point": {
+        "x": 237.5,
+        "y": 192.5
+      },
+      "provenance": {
+        "element_id": null,
+        "element_index": 0,
+        "source_path": "drape-a.svg",
+        "subpath_index": 0
+      },
+      "severity": "warning"
+    },
+    {
+      "code": "open_end",
+      "message": "Open endpoint on element[1] is not anchored to another bead; freestanding coil ends can crack while drying.",
+      "page_id": "page-01-drape-a",
+      "point": {
+        "x": 247.5,
+        "y": 172.5
+      },
+      "provenance": {
+        "element_id": null,
+        "element_index": 1,
+        "source_path": "drape-a.svg",
+        "subpath_index": 0
+      },
+      "severity": "warning"
+    },
+    {
+      "code": "open_end",
+      "message": "Open endpoint on element[1] is not anchored to another bead; freestanding coil ends can crack while drying.",
+      "page_id": "page-01-drape-a",
+      "point": {
+        "x": 157.5,
+        "y": 172.5
+      },
+      "provenance": {
+        "element_id": null,
+        "element_index": 1,
+        "source_path": "drape-a.svg",
+        "subpath_index": 0
+      },
+      "severity": "warning"
+    },
+    {
+      "code": "open_end",
+      "message": "Open endpoint on element[0] is not anchored to another bead; freestanding coil ends can crack while drying.",
+      "page_id": "page-02-drape-b",
+      "point": {
+        "x": 147.5,
+        "y": 242.5
+      },
+      "provenance": {
+        "element_id": null,
+        "element_index": 0,
+        "source_path": "drape-b.svg",
+        "subpath_index": 0
+      },
+      "severity": "warning"
+    },
+    {
+      "code": "open_end",
+      "message": "Open endpoint on element[0] is not anchored to another bead; freestanding coil ends can crack while drying.",
+      "page_id": "page-02-drape-b",
+      "point": {
+        "x": 237.5,
+        "y": 192.5
+      },
+      "provenance": {
+        "element_id": null,
+        "element_index": 0,
+        "source_path": "drape-b.svg",
+        "subpath_index": 0
+      },
+      "severity": "warning"
+    },
+    {
+      "code": "open_end",
+      "message": "Open endpoint on element[1] is not anchored to another bead; freestanding coil ends can crack while drying.",
+      "page_id": "page-02-drape-b",
+      "point": {
+        "x": 247.5,
+        "y": 172.5
+      },
+      "provenance": {
+        "element_id": null,
+        "element_index": 1,
+        "source_path": "drape-b.svg",
+        "subpath_index": 0
+      },
+      "severity": "warning"
+    },
+    {
+      "code": "open_end",
+      "message": "Open endpoint on element[1] is not anchored to another bead; freestanding coil ends can crack while drying.",
+      "page_id": "page-02-drape-b",
+      "point": {
+        "x": 157.5,
+        "y": 172.5
+      },
+      "provenance": {
+        "element_id": null,
+        "element_index": 1,
+        "source_path": "drape-b.svg",
+        "subpath_index": 0
+      },
+      "severity": "warning"
+    }
+  ]
+}

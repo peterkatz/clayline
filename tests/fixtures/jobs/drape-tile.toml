@@ -1,0 +1,7 @@
+name = "drape-tile"
+profile = "potterbot-xl"
+svg = "../svg/rings-grid.svg"
+z_mode = "drape"
+standoff_z = 20.0
+layer_height = 2.0
+z_steps = [0.0, 2.0]

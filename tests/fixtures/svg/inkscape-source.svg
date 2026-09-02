@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+     width="120mm" height="80mm" viewBox="0 0 120 80">
+  <sodipodi:namedview id="namedview1" pagecolor="#ffffff" inkscape:document-units="mm"/>
+  <g id="layer1" inkscape:groupmode="layer" inkscape:label="Coils" transform="translate(4,3)">
+    <path id="inkscape-arc" d="M 15,40 A 25,25 0 1 1 65,40 A 25,25 0 1 1 15,40 Z"
+          fill="none" stroke="#000" stroke-width="0.5"/>
+    <use href="#inkscape-arc" transform="translate(42,0) scale(.75)"/>
+  </g>
+</svg>

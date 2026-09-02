@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="160mm" height="160mm" viewBox="0 0 160 160">
+  <title>Photo-derived petal flower tile, after IMG_3071</title>
+  <g fill="none" stroke="#111" stroke-width="1">
+    <rect id="rounded-border" x="9" y="9" width="142" height="142" rx="24"/>
+    <circle id="hub" cx="80" cy="80" r="12"/>
+    <path id="petal-n" d="M80 80 C58 61 61 35 80 22 C99 35 102 61 80 80 Z"/>
+    <path id="petal-ne" d="M80 80 C82 51 103 35 126 39 C130 62 109 82 80 80 Z"/>
+    <path id="petal-e" d="M80 80 C99 58 125 61 138 80 C125 99 99 102 80 80 Z"/>
+    <path id="petal-se" d="M80 80 C109 78 130 98 126 121 C103 125 82 109 80 80 Z"/>
+    <path id="petal-s" d="M80 80 C102 99 99 125 80 138 C61 125 58 99 80 80 Z"/>
+    <path id="petal-sw" d="M80 80 C78 109 57 125 34 121 C30 98 51 78 80 80 Z"/>
+    <path id="petal-w" d="M80 80 C61 102 35 99 22 80 C35 61 61 58 80 80 Z"/>
+    <path id="petal-nw" d="M80 80 C51 82 30 62 34 39 C57 35 78 51 80 80 Z"/>
+    <path id="deliberate-crossing-a" d="M66 66 L94 94"/>
+    <path id="deliberate-crossing-b" d="M94 66 L66 94"/>
+  </g>
+</svg>

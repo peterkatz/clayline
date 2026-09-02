@@ -1,0 +1,196 @@
+{
+  "construction": {
+    "fuse_points": 0,
+    "fuse_xy": [],
+    "lap_xy": [],
+    "laps": 0
+  },
+  "generated_utc": "reproducible",
+  "job_id": "thread-protection-line",
+  "lint_cross_check": {
+    "bounds_match": true,
+    "calculated_volume_mm3": 508.75,
+    "lint_bounds": [
+      187.5,
+      227.5,
+      202.5,
+      202.5,
+      2.0,
+      20.0
+    ],
+    "lint_ok": true,
+    "lint_page_count": 1,
+    "lint_volume_mm3": 508.749999,
+    "page_count_match": true,
+    "passed": true,
+    "prepared_bounds": [
+      187.5,
+      227.5,
+      202.5,
+      202.5,
+      2.0,
+      20.0
+    ],
+    "prepared_page_count": 1,
+    "volume_delta_mm3": 7.43e-07,
+    "volume_tolerance_mm3": 0.0010175
+  },
+  "nominal_label": "calibrated centerline",
+  "pages": [
+    {
+      "clay_volume_mm3": 508.75,
+      "deposited_path_mm": 40.0,
+      "estimated_print_time_seconds": 2.283333,
+      "layer_count": 1,
+      "motion_time_seconds": 2.283333,
+      "name": "thread-protection-line",
+      "page_id": "page-01-thread-protection-line",
+      "page_index": 0,
+      "pause_time_seconds": 0.0,
+      "pressure_time_seconds": 0.0,
+      "print_path_mm": 40.0,
+      "stroke_count": 1,
+      "total_motion_path_mm": 78.0,
+      "travel_count": 2,
+      "travel_path_mm": 38.0,
+      "warning_counts_by_code": {
+        "open_end": 2
+      },
+      "wet_weight_g": 0.91575,
+      "z_max_mm": 2.0,
+      "z_min_mm": 2.0
+    }
+  ],
+  "parameters": {
+    "bead_width_mm": 5.0,
+    "end_early_mm": 0.0,
+    "first_layer_z_mm": 2.0,
+    "flow_multiplier": 1.0,
+    "layer_height_mm": 2.0,
+    "prime_mm": 15.0,
+    "reproducible": true,
+    "user": {
+      "alternate": "true",
+      "collision_lift": "bounded-clearance-v1",
+      "first_layer_flow_factor": 1.1,
+      "first_layer_height": 2.0,
+      "first_layer_speed_factor": 0.6,
+      "flow_modulation": 0.0,
+      "hardware_default_status": "calibration pending; provisional reference defaults",
+      "helical": "false",
+      "joint_boost": 0.5,
+      "layers": 1,
+      "overlap_fraction_provisional": 0.2,
+      "page_gap": 30.0,
+      "page_mode": "stack",
+      "page_pause_seconds": "disabled",
+      "page_travel_clearance": 50.0,
+      "provisional_flow_multiplier": 1.0,
+      "stack_job_page_count": 1,
+      "stack_page_0_datum_top_z_mm": 2.0,
+      "stack_page_0_material_z_max_mm": 2.0,
+      "stack_page_0_material_z_min_mm": 2.0,
+      "stack_page_0_nominal_path_start_z_mm": 2.0,
+      "stack_page_0_nominal_top_z_mm": 2.0,
+      "stack_page_0_path_start_z_mm": 2.0,
+      "stack_page_0_z_max_mm": 2.0,
+      "stack_page_0_z_min_mm": 2.0,
+      "stack_page_material_height_mm": 2.0,
+      "stack_total_height_mm": 2.0,
+      "standoff_z": 20.0,
+      "z_mode": "calibrated",
+      "z_modulation": 0.0,
+      "z_step_per_layer": 2.0
+    },
+    "wet_density_g_cm3": 1.8
+  },
+  "profile": {
+    "default_nozzle_diameter_mm": 5.0,
+    "description": "Verified from Pete's successful January 2026 PotterBot 10 XL print. 10 mm nozzle added per Pete 2026-07-15. v1.2.0: travel speed corrected to print speed \u2014 the reference Cura profile only used 120 outside spiralize mode and the first clay print (2026-07-17) showed fast travels tear the thread.",
+    "extrusion_mode": "absolute",
+    "flavor": "marlin",
+    "machine_envelope": {
+      "max_x": 490.0,
+      "max_y": 490.0,
+      "max_z": 710.0,
+      "min_x": 0.0,
+      "min_y": 0.0,
+      "min_z": 0.0
+    },
+    "name": "potterbot-xl",
+    "speed_default_mm_s": 40.0,
+    "speed_first_layer_mm_s": 30.0,
+    "speed_travel_mm_s": 40.0,
+    "verification_source": "docs/reference/potterbot-10xl-reference-header-footer.gcode",
+    "verified": true,
+    "version": "1.2.0",
+    "virtual_filament_diameter_mm": 1.75,
+    "work_bounds": {
+      "max_x": 398.0,
+      "max_y": 393.0,
+      "max_z": 710.0,
+      "min_x": 17.0,
+      "min_y": 12.0,
+      "min_z": 0.0
+    }
+  },
+  "schema": "clayline.report.v1",
+  "totals": {
+    "clay_volume_mm3": 508.75,
+    "deposited_path_mm": 40.0,
+    "estimated_print_time_seconds": 2.283333,
+    "layer_count": 1,
+    "motion_time_seconds": 2.283333,
+    "page_count": 1,
+    "pause_time_seconds": 0.0,
+    "pressure_time_seconds": 0.0,
+    "print_path_mm": 40.0,
+    "stroke_count": 1,
+    "total_motion_path_mm": 78.0,
+    "total_stack_height_mm": 2.0,
+    "travel_count": 2,
+    "travel_path_mm": 38.0,
+    "warning_count": 2,
+    "warning_counts_by_code": {
+      "open_end": 2
+    },
+    "warning_counts_by_severity": {
+      "warning": 2
+    },
+    "wet_weight_g": 0.91575
+  },
+  "warnings": [
+    {
+      "code": "open_end",
+      "message": "Open endpoint on release-line is not anchored to another bead; freestanding coil ends can crack while drying.",
+      "page_id": "page-01-thread-protection-line",
+      "point": {
+        "x": 187.5,
+        "y": 202.5
+      },
+      "provenance": {
+        "element_id": "release-line",
+        "element_index": 0,
+        "source_path": "thread-protection-line.svg",
+        "subpath_index": 0
+      },
+      "severity": "warning"
+    },
+    {
+      "code": "open_end",
+      "message": "Open endpoint on release-line is not anchored to another bead; freestanding coil ends can crack while drying.",
+      "page_id": "page-01-thread-protection-line",
+      "point": {
+        "x": 227.5,
+        "y": 202.5
+      },
+      "provenance": {
+        "element_id": "release-line",
+        "element_index": 0,
+        "source_path": "thread-protection-line.svg",
+        "subpath_index": 0
+      },
+      "severity": "warning"
+    }
+  ]
+}
