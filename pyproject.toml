@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clayline"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "SVG centerlines to auditable paste-printer G-code"
 readme = "README.md"
 requires-python = ">=3.11"

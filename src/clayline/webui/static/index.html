@@ -109,6 +109,7 @@
               <label title="Drape — the nozzle rides high above the work and the coil falls onto the canvas. The openwork technique."><input type="radio" name="zMode" value="drape"><span>Drape</span></label>
             </fieldset>
             <p class="mode-note z-mode-note" id="modeNote">Nozzle Z follows calibrated layer height.</p>
+            <label class="field" title="Work surface offset (mm). How high the surface you print on sits above the printer's Z zero — a board, canvas, or slab on the bed. Added to every nozzle height in both Z modes; first layer height and standoff stay relative to that surface. 0 = printing straight on the bed."><span>Work surface above Z zero (mm)</span><input id="bedOffset" type="number" value="0" min="0" step="0.5"></label>
             <div class="z-mode-panel calibrated-only" id="calibratedModePanel">
               <label class="field" title="First layer height (mm). Bed squish only: nozzle height for the very first pass. Follows layer height until you change it, and never affects the spacing of later passes."><span>First layer height (mm)</span><input id="firstLayerHeight" type="number" value="1.5" min="0.1" step="0.01"></label>
             </div>
@@ -195,6 +196,7 @@
             <label class="field" title="Printer profile. Bed size, speeds, start/end blocks and the extrusion model all come from this. “Verified” means proven on the real machine."><span>Printer</span><select id="profile"><option value="potterbot-xl" selected>PotterBot 10 XL · verified reference</option><option value="generic-reprap-paste">Generic RepRap paste · unverified</option><option value="generic-marlin-paste">Generic Marlin paste · unverified</option></select></label>
             <div class="profile-fact"><span class="fact-mark"></span><span id="profileFact">Absolute E · 1.75 mm virtual filament · 381 × 381 mm work area</span></div>
             <label class="field" title="Flow multiplier. Scales how much clay is pushed per millimetre: above 1× lays a fatter bead, below 1× a leaner one. Tune it on the calibration flow ladder before a long print."><span>Clay flow <output id="flowOutput">1.00×</output></span><input id="flow" type="range" value="1" min="0.5" max="1.5" step="0.01"></label>
+            <label class="field" title="Start charge before the first line, in the printer's E units. The profile's start block pushes this much clay out over the bed centre before printing so the barrel is under pressure. Blank keeps the profile's own charge; 0 skips the charge entirely. The profile's amount shows as the placeholder."><span>Start charge (E)</span><input id="startCharge" type="number" min="0" step="100" placeholder="profile"></label>
           </div>
         </section>
 
@@ -694,6 +696,7 @@
               <h2>Printer</h2>
               <label class="field"><span>Printer</span><select id="weaveProfile"><option value="potterbot-xl" selected>PotterBot 10 XL · verified reference</option><option value="generic-reprap-paste">Generic RepRap paste · unverified</option><option value="generic-marlin-paste">Generic Marlin paste · unverified</option></select></label>
               <label class="field"><span>Clay flow <output id="weaveFlowOutput">1.00×</output></span><input id="weaveFlow" type="range" value="1" min="0.5" max="1.5" step="0.01"></label>
+              <label class="field" title="Start charge before the first line, in the printer's E units. The profile's start block pushes this much clay out over the bed centre before printing so the barrel is under pressure. Blank keeps the profile's own charge; 0 skips the charge entirely. The profile's amount shows as the placeholder."><span>Start charge (E)</span><input id="weaveStartCharge" type="number" min="0" step="100" placeholder="profile"></label>
               <p class="profile-fact" id="weaveProfileFact">Profile truth supplies speeds, bounds, start/end blocks, and pressure travel.</p>
             </div>
           </section>

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from clayline.emit import (
@@ -63,6 +63,8 @@ class WeaveRestoreRecipe:
     end_early_mm: float
     reproducible: bool
     job_id: str | None
+    # Barrel charge before the first line; None keeps the profile's start block.
+    start_charge_e: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +91,7 @@ def parse_weave_gcode(value: str | bytes | Path) -> WeaveRestoreRecipe:
     if capsule is not None:
         decoded = decode_restore_capsule(capsule)
         _validate_capsule_projection(facts, decoded, pattern_text=pattern_text)
-        return _recipe_from_decoded(decoded)
+        return replace(_recipe_from_decoded(decoded), start_charge_e=_optional_charge(facts))
 
     source_name = _required(facts, "parameter.source_mesh")
     if Path(source_name).name != source_name or not source_name.strip():
@@ -134,6 +136,7 @@ def parse_weave_gcode(value: str | bytes | Path) -> WeaveRestoreRecipe:
         layer_range=(first, last),
         source_layer_total=total,
         flow_multiplier=_number(facts, "flow_multiplier", minimum=0.0, exclusive=True),
+        start_charge_e=_optional_charge(facts),
         wet_density_g_cm3=_number(
             facts,
             "wet_density_g_cm3",
@@ -347,6 +350,7 @@ def restore_weave_result(
         profile_prime_mm=recipe.profile_prime_mm,
         profile_end_early_mm=recipe.profile_end_early_mm,
         flow=recipe.flow_multiplier,
+        start_charge=recipe.start_charge_e,
         wet_density_g_cm3=recipe.wet_density_g_cm3,
         reproducible=recipe.reproducible,
         prime_mm=recipe.prime_mm,
@@ -398,6 +402,14 @@ def _required(facts: dict[str, str], key: str) -> str:
     if value is None or not value:
         raise ValueError(f"G-code header is missing {key}")
     return value
+
+
+def _optional_charge(facts: dict[str, str]) -> float | None:
+    """The job's start charge from its header line, or None when the profile's own was used."""
+
+    if "start_charge_e" not in facts:
+        return None
+    return _number(facts, "start_charge_e", minimum=0.0)
 
 
 def _number(

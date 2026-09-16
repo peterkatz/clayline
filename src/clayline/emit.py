@@ -63,8 +63,16 @@ class EmissionSettings:
     # explicit single-pass report can use pass semantics without changing the
     # protection-Off byte contract.
     pass_model: str | None = None
+    # Barrel charge pushed by the profile's start block before the first line.
+    # None keeps the profile's start block verbatim; a number replaces the E
+    # amount of its single charge line; 0 removes the charge move entirely.
+    start_charge_e: float | None = None
 
     def __post_init__(self) -> None:
+        if self.start_charge_e is not None and (
+            not math.isfinite(self.start_charge_e) or self.start_charge_e < 0
+        ):
+            raise EmissionError("start_charge_e must be finite and nonnegative")
         for label, value in (
             ("bead_width", self.bead_width),
             ("layer_height", self.layer_height),
@@ -249,6 +257,77 @@ def emit_gcode(
     return emit_gcode_with_motion_lines(stream, profile, settings=settings, prepared=prepared)[0]
 
 
+def start_charge_line_index(profile: Profile) -> int | None:
+    """Index of the profile start block's barrel charge line.
+
+    The charge is the single ``G1`` in ``start_gcode`` that carries an ``E`` word
+    and no ``X``/``Y``/``Z`` word (the PotterBot reference's ``G1 E3000 F40000``).
+    ``None`` when the block has no such line or more than one.
+    """
+
+    matches = []
+    for index, line in enumerate(profile.start_gcode):
+        code = line.split(";", 1)[0].split()
+        if not code or code[0] != "G1":
+            continue
+        letters = {word[0] for word in code[1:] if word}
+        if "E" in letters and not letters & {"X", "Y", "Z"}:
+            matches.append(index)
+    return matches[0] if len(matches) == 1 else None
+
+
+def profile_start_charge_e(profile: Profile) -> float | None:
+    """The E amount the profile's start block pushes before printing, if it has one."""
+
+    index = start_charge_line_index(profile)
+    if index is None:
+        return None
+    for word in profile.start_gcode[index].split(";", 1)[0].split()[1:]:
+        if word[0] == "E":
+            try:
+                return float(word[1:])
+            except ValueError:
+                return None
+    return None
+
+
+def render_start_block(profile: Profile, start_charge_e: float | None) -> tuple[str, ...]:
+    """The profile start block, with its charge line replaced when the job asks.
+
+    ``None`` returns the profile's lines verbatim so every existing job stays
+    byte-identical. A positive amount rewrites the charge line's ``E`` word and
+    keeps its feed; ``0`` turns the line into a comment so no charge move is
+    emitted. The line count never changes, so motion line numbers stay honest.
+    """
+
+    if start_charge_e is None:
+        return profile.start_gcode
+    if not math.isfinite(start_charge_e) or start_charge_e < 0:
+        raise EmissionError("start_charge_e must be finite and nonnegative")
+    index = start_charge_line_index(profile)
+    if index is None:
+        raise EmissionError(
+            f"profile {profile.name!r} has no single start charge line "
+            "(a G1 with only an E word) for start_charge_e to replace"
+        )
+    reference = profile_start_charge_e(profile)
+    reference_text = "unknown" if reference is None else f"E{_format_number(reference)}"
+    code = profile.start_gcode[index].split(";", 1)[0].split()
+    feed = next((word for word in code[1:] if word[0] == "F"), None)
+    if start_charge_e > 0:
+        words = ["G1", f"E{_format_number(start_charge_e)}", *([feed] if feed else [])]
+        replacement = (
+            " ".join(words)
+            + f" ; Prime Extruder (start charge {_format_number(start_charge_e)} E set by the "
+            + f"job; profile reference is {reference_text})"
+        )
+    else:
+        replacement = f"; start charge skipped by the job (profile reference is {reference_text})"
+    lines = list(profile.start_gcode)
+    lines[index] = replacement
+    return tuple(lines)
+
+
 def emit_gcode_with_motion_lines(
     stream: MoveStream,
     profile: Profile,
@@ -300,10 +379,11 @@ def emit_gcode_with_motion_lines(
         prepared_trace_sha256(trace),
         body_sha256,
     )
+    start_block = render_start_block(profile, settings.start_charge_e)
     lines = [
         *header,
         "; CLAYLINE_PROFILE_START_BEGIN",
-        *profile.start_gcode,
+        *start_block,
         "; CLAYLINE_PROFILE_START_END",
         "; CLAYLINE_BODY_BEGIN",
         *body_lines,
@@ -317,7 +397,7 @@ def emit_gcode_with_motion_lines(
         ]
     )
     preamble_count = len(body_lines) - len(rendered_body)
-    rendered_body_start = len(header) + 1 + len(profile.start_gcode) + 2 + preamble_count
+    rendered_body_start = len(header) + 1 + len(start_block) + 2 + preamble_count
     motion_lines = tuple(rendered_body_start + offset + 1 for offset in motion_offsets)
     return "\n".join(lines) + "\n", motion_lines
 
@@ -1448,6 +1528,11 @@ def _header(
         f"; bead_width_mm={_format_number(settings.bead_width)}",
         f"; layer_height_mm={_format_number(settings.layer_height)}",
         f"; flow_multiplier={_format_number(settings.flow_multiplier)}",
+        *(
+            [f"; start_charge_e={_format_number(settings.start_charge_e)}"]
+            if settings.start_charge_e is not None
+            else []
+        ),
         f"; wet_density_g_cm3={_format_number(settings.wet_density_g_cm3)}",
         f"; prime_mm={_format_number(prime_mm)}",
         f"; end_early_mm={_format_number(end_early_mm)}",

@@ -20,7 +20,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from clayline import defaults as _defaults
-from clayline.emit import DEFAULT_WET_DENSITY_G_CM3
+from clayline.emit import DEFAULT_WET_DENSITY_G_CM3, profile_start_charge_e
 from clayline.models import PageMode, PassModel, Point, Profile, ZMode
 
 _STATIC = Path(__file__).with_name("static")
@@ -237,6 +237,7 @@ def create_app(
                     "verified": profile.verified,
                     "extrusion_mode": profile.extrusion_mode.value,
                     "virtual_filament_diameter": profile.virtual_filament_diameter,
+                    "start_charge_e": profile_start_charge_e(profile),
                     "work_bounds": {
                         "min_x": profile.work_bounds.min_x,
                         "max_x": profile.work_bounds.max_x,
@@ -712,6 +713,7 @@ def _slice_payload(payload: dict[str, Any]) -> dict[str, Any]:
             helical=_boolean(payload, "helical", False),
             z_mode=ZMode(_string(payload, "z_mode", _defaults.DEFAULT_Z_MODE)),
             standoff_z=_finite(payload, "standoff_z", _defaults.DEFAULT_STANDOFF_Z_MM, minimum=0.0),
+            bed_offset=_finite(payload, "bed_offset", _defaults.DEFAULT_BED_OFFSET_MM, minimum=0.0),
             # F5.6: absent/null z-step follows layer_height downstream; 0 stays
             # a supported explicit choice.
             z_step_per_layer=_optional_finite(
@@ -733,6 +735,7 @@ def _slice_payload(payload: dict[str, Any]) -> dict[str, Any]:
             flow_multiplier=_finite(
                 payload, "flow_multiplier", _defaults.DEFAULT_FLOW_MULTIPLIER, minimum=0.001
             ),
+            start_charge_e=_optional_finite(payload, "start_charge_e", minimum=0.0),
             page_mode=page_mode,
             page_gap=_finite(payload, "page_gap", _defaults.DEFAULT_PAGE_GAP_MM, minimum=0.0),
             page_pause_seconds=page_pause_seconds,
@@ -1476,6 +1479,7 @@ def _modulate_weave_payload(
         raise UiRequestError("flow_multiplier must be finite and positive")
     prime_mm = _optional_finite(payload, "prime_mm", minimum=0.0)
     end_early_mm = _optional_finite(payload, "end_early_mm", minimum=0.0)
+    start_charge_e = _optional_finite(payload, "start_charge_e", minimum=0.0)
     reproducible = _boolean(payload, "reproducible", False)
     wet_density = (
         DEFAULT_WET_DENSITY_G_CM3
@@ -1498,6 +1502,7 @@ def _modulate_weave_payload(
         profile_end_early_mm=profile_end_early_mm,
         flow_multiplier=flow,
         wet_density_g_cm3=wet_density,
+        start_charge_e=start_charge_e,
         prime_mm=prime_mm,
         end_early_mm=end_early_mm,
         reproducible=reproducible,
@@ -1605,6 +1610,7 @@ def _weave_settings_snapshot(prepared_result: Any, payload: dict[str, Any]) -> d
             "reproducible": settings.reproducible,
             "prime_mm": settings.prime_mm,
             "end_early_mm": settings.end_early_mm,
+            "start_charge_e": settings.start_charge_e,
             "filename": payload.get("filename"),
         },
         "source": {

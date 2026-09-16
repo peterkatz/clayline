@@ -37,6 +37,7 @@ EXCLUDED_PREFIXES = (
 # Individual files under excluded prefixes that are still published.
 INCLUDED_EXACT = {
     "docs/assets/clayline-demo.gif",
+    "docs/index.html",  # GitHub Pages landing page (served from main:/docs)
     "docs/reference/potterbot-10xl-reference-header-footer.gcode",  # machine facts, not a job
     "docs/verification/M7/rings-grid-plan.png",
     "docs/verification/M7/rosette-plan.png",

@@ -133,6 +133,12 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--z-mode", choices=("calibrated", "drape"), default=_defaults.DEFAULT_Z_MODE)
     plan.add_argument("--standoff", type=float, default=_defaults.DEFAULT_STANDOFF_Z_MM)
     plan.add_argument(
+        "--bed-offset",
+        type=float,
+        default=_defaults.DEFAULT_BED_OFFSET_MM,
+        help="height of the work surface above the printer's Z zero in mm, added to every Z",
+    )
+    plan.add_argument(
         "--z-step",
         type=float,
         default=_defaults.DEFAULT_Z_STEP_PER_LAYER_MM,
@@ -157,6 +163,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=_defaults.DEFAULT_FLOW_MULTIPLIER,
         help="global flow multiplier",
+    )
+    plan.add_argument(
+        "--start-charge",
+        type=float,
+        default=None,
+        help=(
+            "E pushed by the profile's start block before the first line; "
+            "default keeps the profile's own charge, 0 skips it"
+        ),
     )
     plan.add_argument("-o", "--output", type=Path, help="combined G-code path")
     plan.add_argument("--preview", type=Path, help="offline 3D HTML path")
@@ -411,6 +426,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="global flow multiplier",
     )
     weave.add_argument(
+        "--start-charge",
+        type=float,
+        default=None,
+        help=(
+            "E pushed by the profile's start block before the first line; "
+            "default keeps the profile's own charge, 0 skips it"
+        ),
+    )
+    weave.add_argument(
         "--wet-density",
         type=float,
         help="wet clay density in g/cm3 for report estimates",
@@ -544,10 +568,12 @@ def _plan_command(args: argparse.Namespace) -> int:
         z_mode=args.z_mode,
         standoff_z=args.standoff,
         z_step_per_layer=args.z_step,
+        bed_offset=args.bed_offset,
         flow_modulation=args.flow_modulation,
         z_modulation=args.z_modulation,
         modulation_wavelength=args.modulation_wavelength,
         flow_multiplier=args.flow,
+        start_charge_e=args.start_charge,
         overlap_fraction=args.overlap,
         page_mode=args.page_mode,
         page_gap=args.page_gap,
@@ -747,6 +773,11 @@ def _weave_command(args: argparse.Namespace) -> int:
         profile_prime_mm=None if recipe is None else recipe.profile_prime_mm,
         profile_end_early_mm=None if recipe is None else recipe.profile_end_early_mm,
         flow=restored("--flow", args.flow, None if recipe is None else recipe.flow_multiplier),
+        start_charge=restored(
+            "--start-charge",
+            args.start_charge,
+            None if recipe is None else recipe.start_charge_e,
+        ),
         wet_density_g_cm3=(DEFAULT_WET_DENSITY_G_CM3 if wet_density is None else wet_density),
         reproducible=restored(
             "--reproducible",

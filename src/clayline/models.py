@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from math import hypot
+from math import hypot, isfinite
 from pathlib import Path
 from typing import Any
 
@@ -296,14 +296,20 @@ class JobSettings:
     # instead of bridging in air — off keeps every job unchanged.
     settle_valleys: bool = False
     # Semantics discriminator only; joint_boost remains the one strength.
-    # Keep this last so existing positional JobSettings construction is stable.
     thread_protection_model: ThreadProtectionModel | None = None
+    # Height of the work surface above the printer's Z zero (a board, canvas,
+    # or slab on the bed). Added to every commanded Z in both Z modes; the
+    # first-layer squish and drape standoff stay relative to that surface.
+    # New fields go after this one so positional construction stays stable.
+    bed_offset: float = 0.0
 
     def __post_init__(self) -> None:
         if self.layers < 1:
             raise ValueError("layers must be at least one")
         if self.layer_height <= 0:
             raise ValueError("layer_height must be positive")
+        if not isfinite(self.bed_offset) or self.bed_offset < 0:
+            raise ValueError("bed_offset must be zero or a positive finite height")
         if self.z_step_per_layer is not None and self.z_step_per_layer < 0:
             raise ValueError("z_step_per_layer cannot be negative")
         if self.z_mode is ZMode.DRAPE and self.helical:

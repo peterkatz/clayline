@@ -7,9 +7,13 @@ into place. Calibrated layer-by-layer Z is available for more conventional work.
 
 ![Clayline's real local UI, drape controls, and generated 3D toolpath](docs/assets/clayline-demo.gif)
 
-This is a **pre-release** (`0.1.0.dev0`). The software pipeline has substantial
-local verification, but Clayline has not yet passed its required full-tile physical
-print. It is not on PyPI and there is no tagged public v0.1 release yet.
+**Download for Mac:** the [latest release](https://github.com/peterkatz/clayline/releases/latest)
+is a Developer ID-signed, notarized app for Apple-silicon Macs on macOS 14 or
+newer. Unzip it and drag Clayline to Applications.
+
+This is release `0.1.0`, the first public one. The software pipeline has
+substantial local verification, but Clayline has not yet passed its required
+full-tile physical print. It is not on PyPI.
 
 > **G-code moves real machinery; use it at your own risk.** A lint PASS means the
 > file is internally consistent with the selected profile. It does not prove that
@@ -23,6 +27,11 @@ Status is based on committed evidence bundles under `docs/verification/` in the
 maintainer's development repository. They are not part of this public snapshot
 because they were built from the maintainer's own print jobs.
 
+A fresh checkout does not pass the whole test suite yet: the golden-file and
+evidence tests that still encode printer profile 1.3.0 fail against the current
+1.4.0 profile and await regeneration. They test recorded output, not the
+planner, and the shipped app is built from this tree.
+
 | Milestone | Current verdict | Evidence / remaining gate |
 |---|---|---|
 | M0 — contracts and fixtures | PASS | M0 status |
@@ -33,7 +42,7 @@ because they were built from the maintainer's own print jobs.
 | M5 — preview and report | Software PASS | M5 status |
 | M6 — CLI, Python facade, local UI | Software PASS, independently clean-clone verified | M6 status |
 | M7 — kiss-hop and release | Software PASS; physical product exit remains open | M7 status |
-| M8 — native macOS app | Software PASS locally; public signing/notarization pending | M8 status |
+| M8 — native macOS app | PASS; Developer ID-signed and notarized 0.1.0 download published | M8 status |
 | M9 — artist-first UX overhaul (scrubber, honest defaults, fuse/lap re-cut, pages sidebar, live bed fit) | PASS — verified live in-app + two independent clean-env verifiers | M9 status |
 | M10–M14 — Weave mesh mode | Software PASS; synthetic, real TwistTumbler/GH parity, clean-snapshot, and installed-app gates verified | M13 status · M14 status · completion audit; current nozzle confirmation remains pending |
 | M16 — Weave print range + reprint-this | Software PASS; real tumbler broken-rim trim restores Z-blend and reproducible restore is byte-identical | M16 status |
@@ -84,10 +93,11 @@ new private session cookie is required on every launch, and the helper exits whe
 Clayline quits. It is not a cloud service and does not expose the studio to the
 LAN.
 
-The current pre-release app is an arm64 development build signed for local use.
-There is not yet a public Developer ID-signed and notarized download. Developers
-can assemble the same `build/Clayline.app` with `make mac-app`; that build step is
-not part of the ceramicist workflow.
+The public download on the [Releases page](https://github.com/peterkatz/clayline/releases/latest)
+is a Developer ID-signed and notarized arm64 build; macOS opens it without any
+warning. Developers can assemble the same `build/Clayline.app` with `make mac-app`
+and notarize their own with `make notarize`; that build step is not part of the
+ceramicist workflow.
 
 ## Developer/source install (optional)
 

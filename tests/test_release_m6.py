@@ -160,7 +160,7 @@ def test_extracted_wheel_runs_cli_and_serves_vendored_ui_assets(
         check=False,
     )
     assert version.returncode == 0, version.stdout + version.stderr
-    assert version.stdout.strip() == "clayline 0.1.0.dev0"
+    assert version.stdout.strip() == "clayline 0.1.0"
 
     output = tmp_path / "wheel-smoke.gcode"
     planned = subprocess.run(

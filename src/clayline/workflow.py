@@ -74,6 +74,7 @@ class PipelineRequest:
     z_mode: ZMode = _DEFAULT_Z_MODE_ENUM
     standoff_z: float = 20.0
     z_step_per_layer: float | None = None
+    bed_offset: float = 0.0
     flow_modulation: float = 0.0
     z_modulation: float = 0.0
     modulation_wavelength: float = 50.0
@@ -82,6 +83,9 @@ class PipelineRequest:
     # F5.10: calibrated stacked tiers dip into open gaps instead of bridging.
     settle_valleys: bool = False
     flow_multiplier: float = PROVISIONAL_FLOW_MULTIPLIER
+    # Barrel charge before the first line: None keeps the profile's start block
+    # verbatim, a number replaces its E amount, 0 skips the charge.
+    start_charge_e: float | None = None
     page_gap: float = 30.0
     page_pause_seconds: float | None = None
     wet_density_g_cm3: float = DEFAULT_WET_DENSITY_G_CM3
@@ -149,6 +153,7 @@ class PipelineRequest:
         object.__setattr__(self, "z_mode", _z_mode(self.z_mode))
         _nonnegative(self.standoff_z, "standoff_z")
         _optional_nonnegative(self.z_step_per_layer, "z_step_per_layer")
+        _nonnegative(self.bed_offset, "bed_offset")
         _fraction_below_one(self.flow_modulation, "flow_modulation")
         _nonnegative(self.z_modulation, "z_modulation")
         _positive(self.modulation_wavelength, "modulation_wavelength")
@@ -176,6 +181,7 @@ class PipelineRequest:
         )
         _boolean(self.settle_valleys, "settle_valleys")
         _positive(self.flow_multiplier, "flow_multiplier")
+        _optional_nonnegative(self.start_charge_e, "start_charge_e")
         object.__setattr__(self, "page_mode", _page_mode(self.page_mode))
         if self.draw_schema_version == 2 and self.page_mode is not PageMode.STACK:
             raise WorkflowError("draw_schema_version 2 pass rows require page_mode='stack'")
@@ -410,6 +416,7 @@ def build_pipeline(request: PipelineRequest) -> PipelineResult:
         z_mode=request.z_mode,
         standoff_z=request.standoff_z,
         z_step_per_layer=request.z_step_per_layer,
+        bed_offset=request.bed_offset,
         flow_modulation=request.flow_modulation,
         z_modulation=request.z_modulation,
         modulation_wavelength=request.modulation_wavelength,
@@ -441,6 +448,7 @@ def build_pipeline(request: PipelineRequest) -> PipelineResult:
         prime_mm=request.prime_mm,
         end_early_mm=request.end_early_mm,
         artifact_stem=request.artifact_stem,
+        start_charge_e=request.start_charge_e,
     )
 
 
@@ -456,12 +464,14 @@ def build_plan_pipeline(
     z_mode: ZMode = _DEFAULT_Z_MODE_ENUM,
     standoff_z: float = 20.0,
     z_step_per_layer: float | None = None,
+    bed_offset: float = 0.0,
     flow_modulation: float = 0.0,
     z_modulation: float = 0.0,
     modulation_wavelength: float = 50.0,
     joint_boost: float = 0.0,
     thread_protection_model: ThreadProtectionModel | None = None,
     flow_multiplier: float = PROVISIONAL_FLOW_MULTIPLIER,
+    start_charge_e: float | None = None,
     page_mode: PageMode = _DEFAULT_PAGE_MODE_ENUM,
     page_gap: float = 30.0,
     page_pause_seconds: float | None = None,
@@ -480,12 +490,14 @@ def build_plan_pipeline(
     _boolean(helical, "helical")
     _nonnegative(standoff_z, "standoff_z")
     _optional_nonnegative(z_step_per_layer, "z_step_per_layer")
+    _nonnegative(bed_offset, "bed_offset")
     _fraction_below_one(flow_modulation, "flow_modulation")
     _nonnegative(z_modulation, "z_modulation")
     _positive(modulation_wavelength, "modulation_wavelength")
     _bounded(joint_boost, "joint_boost", 0.0, 2.0)
     resolved_protection_model = _thread_protection_model(thread_protection_model)
     _positive(flow_multiplier, "flow_multiplier")
+    _optional_nonnegative(start_charge_e, "start_charge_e")
     resolved_page_mode = _page_mode(page_mode)
     _nonnegative(page_gap, "page_gap")
     _optional_nonnegative(page_pause_seconds, "page_pause_seconds")
@@ -507,6 +519,7 @@ def build_plan_pipeline(
         z_mode=mode,
         standoff_z=standoff_z,
         z_step_per_layer=z_step_per_layer,
+        bed_offset=bed_offset,
         flow_modulation=flow_modulation,
         z_modulation=z_modulation,
         modulation_wavelength=modulation_wavelength,
@@ -536,6 +549,7 @@ def build_plan_pipeline(
         prime_mm=prime_mm,
         end_early_mm=end_early_mm,
         artifact_stem=None,
+        start_charge_e=start_charge_e,
     )
 
 
@@ -605,6 +619,7 @@ def _finish_pipeline(
     prime_mm: float | None,
     end_early_mm: float | None,
     artifact_stem: str | None,
+    start_charge_e: float | None = None,
 ) -> PipelineResult:
     emission = emit_job(
         job,
@@ -615,6 +630,7 @@ def _finish_pipeline(
         overlap_fraction=overlap_fraction,
         prime_mm=prime_mm,
         end_early_mm=end_early_mm,
+        start_charge_e=start_charge_e,
         stem=artifact_stem,
     )
     try:
@@ -646,6 +662,7 @@ def _finish_pipeline(
             overlap_fraction=overlap_fraction,
             prime_mm=prime_mm,
             end_early_mm=end_early_mm,
+            start_charge_e=start_charge_e,
             stem=artifact_stem,
         )
         outcome = SettleOutcome(

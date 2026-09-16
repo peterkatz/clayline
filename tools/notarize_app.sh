@@ -28,14 +28,18 @@ fail() {
 
 [[ -d "$APP" ]] || fail "app bundle not found: $APP (run make mac-app first)"
 
-if ! /usr/bin/codesign -dv --verbose=2 "$APP" 2>&1 | grep -q "Authority=Developer ID Application"; then
+# Read the signature once; piping codesign into grep -q under pipefail makes
+# grep close the pipe on the first match and codesign fail with SIGPIPE.
+SIGNATURE="$(/usr/bin/codesign -d --verbose=2 "$APP" 2>&1 || true)"
+if ! grep -q "Authority=Developer ID Application" <<<"$SIGNATURE"; then
   fail "$APP is not Developer ID signed; rebuild with CLAYLINE_CODESIGN_IDENTITY set"
 fi
-if ! /usr/bin/codesign -d --verbose=2 "$APP" 2>&1 | grep -q "flags=.*runtime"; then
+if ! grep -q "flags=.*runtime" <<<"$SIGNATURE"; then
   fail "$APP was not signed with the hardened runtime"
 fi
 
-if ! /usr/bin/security find-generic-password -s "com.apple.gke.notary.tool" -a "$PROFILE" >/dev/null 2>&1; then
+# Ask notarytool itself; the keychain item it stores is not a plain generic password.
+if ! xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1; then
   cat >&2 <<MSG
 notarize_app.sh: no notarytool keychain profile named "$PROFILE".
 Store one once (interactive, requires an app-specific password for the Apple ID):

@@ -69,6 +69,7 @@ def test_schema_v2_snapshot_uses_the_exact_prd_allowlists() -> None:
         "standoff_z",
         "z_step_per_layer",
         "z_step_follows_layer_height",
+        "bed_offset",
         "alternate",
         "helical",
         "settle_valleys",
@@ -78,6 +79,7 @@ def test_schema_v2_snapshot_uses_the_exact_prd_allowlists() -> None:
         "joint_boost",
         "thread_protection_model",
         "flow_multiplier",
+        "start_charge_e",
         "reproducible",
         "filename",
     ]

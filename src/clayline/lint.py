@@ -284,7 +284,7 @@ def lint_gcode(
     _validate_header(header, profile, issue)
     _validate_page_mode_header(header, issue)
     _validate_body_hash(lines, positions, header, issue)
-    _validate_profile_blocks(lines, positions, profile, issue)
+    _validate_profile_blocks(lines, positions, header, profile, issue)
     _validate_body_modal_setup(lines, positions, profile, issue)
     weave_z_monotonic = header.get("parameter.mode") == "weave"
 
@@ -1432,6 +1432,12 @@ def _validate_stack_page_z(
         issue("stack_z", "stack G-code requires parameter.z_mode calibrated or drape")
         return
     first_height = _required_header_float(header, "parameter.first_layer_height", issue, "stack_z")
+    # The declared work-surface height lifts every page start; absent means
+    # the job was printed straight on the bed.
+    bed_offset = _header_float(header, "parameter.bed_offset", fallback=0.0)
+    if bed_offset is None or bed_offset < 0.0:
+        issue("stack_z", "parameter.bed_offset must be a nonnegative height when declared")
+        bed_offset = 0.0
     declared_material_height = _required_header_float(
         header, "parameter.stack_page_material_height_mm", issue, "stack_z"
     )
@@ -1638,7 +1644,7 @@ def _validate_stack_page_z(
                 continue
             nominal_start, _, _ = facts
             if source_page == 0:
-                expected_nominal_start = first_height
+                expected_nominal_start = bed_offset + first_height
             else:
                 previous_page = seen_pages[position - 1]
                 previous_facts = terrain_datums.get(previous_page)
@@ -1714,9 +1720,9 @@ def _validate_stack_page_z(
                         "explicit-pass drape stack requires nonnegative parameter.z_step_per_layer",
                     )
                     continue
-                expected_start = standoff + source_page * z_step
+                expected_start = bed_offset + standoff + source_page * z_step
             else:
-                physical_top = source_page * material_height
+                physical_top = bed_offset + source_page * material_height
                 if source_page > 0:
                     prior_key = f"parameter.stack_page_{page}_prior_top_mm"
                     declared_prior = _required_header_float(header, prior_key, issue, "stack_z")
@@ -1731,7 +1737,7 @@ def _validate_stack_page_z(
                         )
                 expected_start = physical_top + standoff
         elif source_page == 0:
-            expected_start = first_height
+            expected_start = bed_offset + first_height
         else:
             previous_page = seen_pages[position - 1]
             prior_top = actual_ranges.get(previous_page, (0.0, math.nan))[1]
@@ -1966,20 +1972,89 @@ def _validate_body_hash(
 
 
 def _validate_profile_blocks(
-    lines: list[str], positions: dict[str, int], profile: Profile, issue: Any
+    lines: list[str],
+    positions: dict[str, int],
+    header: dict[str, str],
+    profile: Profile,
+    issue: Any,
 ) -> None:
+    declared_charge = _header_float(header, "start_charge_e")
     pairs = (
-        ("; CLAYLINE_PROFILE_START_BEGIN", "; CLAYLINE_PROFILE_START_END", profile.start_gcode),
-        ("; CLAYLINE_PROFILE_END_BEGIN", "; CLAYLINE_PROFILE_END_END", profile.end_gcode),
+        (
+            "; CLAYLINE_PROFILE_START_BEGIN",
+            "; CLAYLINE_PROFILE_START_END",
+            profile.start_gcode,
+            True,
+        ),
+        ("; CLAYLINE_PROFILE_END_BEGIN", "; CLAYLINE_PROFILE_END_END", profile.end_gcode, False),
     )
-    for begin_marker, end_marker, expected in pairs:
+    for begin_marker, end_marker, expected, is_start in pairs:
         begin = positions.get(begin_marker)
         end = positions.get(end_marker)
         if begin is None or end is None or begin >= end:
             continue
         actual = tuple(lines[begin + 1 : end])
-        if actual != expected:
-            issue("profile_block", f"{begin_marker} block differs from loaded profile")
+        if actual == expected:
+            continue
+        if is_start and declared_charge is not None:
+            problem = _start_charge_mismatch(actual, expected, declared_charge)
+            if problem is None:
+                continue
+            issue("profile_block", f"{begin_marker} start charge override is wrong: {problem}")
+            continue
+        issue("profile_block", f"{begin_marker} block differs from loaded profile")
+
+
+def _start_charge_line_index(block: tuple[str, ...]) -> int | None:
+    """The single ``G1`` in a start block that carries E and no XYZ, if exactly one."""
+
+    matches = []
+    for index, line in enumerate(block):
+        code = line.split(";", 1)[0].split()
+        if not code or code[0] != "G1":
+            continue
+        letters = {word[0] for word in code[1:] if word}
+        if "E" in letters and not letters & {"X", "Y", "Z"}:
+            matches.append(index)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _start_charge_mismatch(
+    actual: tuple[str, ...], expected: tuple[str, ...], declared: float
+) -> str | None:
+    """Independently check that only the charge line changed, and changed as declared."""
+
+    if not math.isfinite(declared) or declared < 0:
+        return "header start_charge_e must be finite and nonnegative"
+    if len(actual) != len(expected):
+        return "line count differs from the loaded profile"
+    index = _start_charge_line_index(expected)
+    if index is None:
+        return "the loaded profile has no single start charge line to override"
+    for position, (got, want) in enumerate(zip(actual, expected, strict=True)):
+        if position != index and got != want:
+            return f"line {position + 1} differs from the loaded profile"
+    line = actual[index]
+    if declared == 0:
+        if line.split(";", 1)[0].strip():
+            return "start_charge_e=0 but the charge line still carries a command"
+        return None
+    code = line.split(";", 1)[0].split()
+    if not code or code[0] != "G1":
+        return "charge line is not a G1"
+    words = {word[0]: word[1:] for word in code[1:] if word}
+    if set(words) - {"E", "F"}:
+        return "charge line carries words other than E and F"
+    try:
+        emitted = float(words["E"])
+    except (KeyError, ValueError):
+        return "charge line has no numeric E word"
+    if not math.isclose(emitted, declared, rel_tol=0.0, abs_tol=1e-6):
+        return f"charge line E{emitted:g} != header start_charge_e={declared:g}"
+    expected_words = {w[0]: w[1:] for w in expected[index].split(";", 1)[0].split()[1:] if w}
+    if words.get("F") != expected_words.get("F"):
+        return "charge line feed differs from the loaded profile"
+    return None
 
 
 def _validate_body_modal_setup(

@@ -575,6 +575,7 @@
       pattern: patternObject(),
       profile: $("#weaveProfile").value,
       flow_multiplier: numberValue("#weaveFlow", 1),
+      start_charge_e: numberValue("#weaveStartCharge", null),
       reproducible: $("#weaveReproducible").checked,
       layer_range: autoCrown ? null : rangePayload(),
       island_range_auto: S.rangeAutoIslandStop,
@@ -768,6 +769,7 @@
       },
       export: {
         flow_multiplier: numberValue("#weaveFlow", 1),
+        start_charge_e: numberValue("#weaveStartCharge", null),
         reproducible: $("#weaveReproducible").checked,
         filename: $("#weaveFilename").value,
       },
@@ -843,6 +845,9 @@
     // whose settings did not yet carry this follow flag.
     S.wavelengthFollows = slice.wavelength_follows_nozzle !== false;
     setControlValue("#weaveFlow", exportSettings.flow_multiplier);
+    $("#weaveStartCharge").value = Number.isFinite(exportSettings.start_charge_e)
+      ? String(exportSettings.start_charge_e)
+      : "";
     $("#weaveReproducible").checked = exportSettings.reproducible !== false;
     $("#weaveFilename").value = typeof exportSettings.filename === "string"
       ? exportSettings.filename
@@ -2877,6 +2882,12 @@
     select.value = sizes.includes(previous)
       ? String(previous)
       : String(profile.default_nozzle_diameter ?? sizes[0]);
+    const charge = $("#weaveStartCharge");
+    if (charge) {
+      charge.placeholder = Number.isFinite(profile.start_charge_e)
+        ? `${profile.start_charge_e} (profile)`
+        : "profile";
+    }
     applyNozzleFollows();
   }
 

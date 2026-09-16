@@ -26,6 +26,7 @@ DEFAULT_LAYER_HEIGHT_MM = 2.0
 DEFAULT_FIRST_LAYER_HEIGHT_MM: float | None = None  # None = layer_height
 DEFAULT_Z_STEP_PER_LAYER_MM: float | None = None  # None = layer_height (F5.6)
 DEFAULT_STANDOFF_Z_MM = 20.0
+DEFAULT_BED_OFFSET_MM = 0.0  # work surface sits on the bed unless the artist says otherwise
 DEFAULT_NOZZLE_DIAMETER_MM = 5.0
 DEFAULT_BEAD_WIDTH_MM = 5.0
 DEFAULT_WELD_TOL_MM = 0.25
@@ -200,6 +201,7 @@ def ui_defaults() -> dict[str, Any]:
         "z_step_per_layer": resolved_z_step(DEFAULT_Z_STEP_PER_LAYER_MM, DEFAULT_LAYER_HEIGHT_MM),
         "z_step_follows_layer_height": DEFAULT_Z_STEP_PER_LAYER_MM is None,
         "standoff_z": DEFAULT_STANDOFF_Z_MM,
+        "bed_offset": DEFAULT_BED_OFFSET_MM,
         "nozzle": DEFAULT_NOZZLE_DIAMETER_MM,
         "bead_width": DEFAULT_BEAD_WIDTH_MM,
         "weld_tol": DEFAULT_WELD_TOL_MM,
@@ -213,6 +215,7 @@ def ui_defaults() -> dict[str, Any]:
         "page_mode": DEFAULT_PAGE_MODE,
         "page_gap": DEFAULT_PAGE_GAP_MM,
         "flow_multiplier": DEFAULT_FLOW_MULTIPLIER,
+        "start_charge_e": None,  # follow the printer profile's start block
         "modulation_wavelength": DEFAULT_MODULATION_WAVELENGTH_MM,
         # W10.5: the Weave shell consumes this nested table verbatim.  The
         # two auto sentinels are resolved for number inputs while companion

@@ -73,6 +73,7 @@ class SlicedFormFacade(SlicedForm):
         reproducible: bool = False,
         prime_mm: float | None = None,
         end_early_mm: float | None = None,
+        start_charge: float | None = None,
         job_id: str | None = None,
         layer_range: tuple[int, int] | None = None,
     ) -> WeaveResult:
@@ -154,6 +155,7 @@ class SlicedFormFacade(SlicedForm):
             reproducible=reproducible,
             prime_mm=prime_mm,
             end_early_mm=end_early_mm,
+            start_charge_e=start_charge,
             job_id=job_id,
             layer_range=layer_range,
         )

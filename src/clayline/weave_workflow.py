@@ -196,6 +196,7 @@ def prepare_weave_result(
     reproducible: bool = False,
     job_id: str | None = None,
     layer_range: LayerRangeInput = None,
+    start_charge_e: float | None = None,
 ) -> PreparedWeaveResult:
     """Build the exact immutable export trace without serializing artifacts."""
 
@@ -413,6 +414,7 @@ def prepare_weave_result(
         wet_density_g_cm3=wet_density_g_cm3,
         prime_mm=prime_mm,
         end_early_mm=end_early_mm,
+        start_charge_e=start_charge_e,
         first_layer_z=(
             None
             if resolved_pattern.settings.z_blend and resolved_pattern.settings.bottom_layers == 0
@@ -528,6 +530,7 @@ def build_weave_result(
     wet_density_g_cm3: float = DEFAULT_WET_DENSITY_G_CM3,
     prime_mm: float | None = None,
     end_early_mm: float | None = None,
+    start_charge_e: float | None = None,
     reproducible: bool = False,
     job_id: str | None = None,
     layer_range: LayerRangeInput = None,
@@ -545,6 +548,7 @@ def build_weave_result(
             wet_density_g_cm3=wet_density_g_cm3,
             prime_mm=prime_mm,
             end_early_mm=end_early_mm,
+            start_charge_e=start_charge_e,
             reproducible=reproducible,
             job_id=job_id,
             layer_range=layer_range,

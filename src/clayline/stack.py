@@ -1262,6 +1262,7 @@ def emit_job(
     prime_mm: float | None = None,
     end_early_mm: float | None = None,
     stem: str | None = None,
+    start_charge_e: float | None = None,
 ) -> JobEmission:
     """Emit a job, dropping optional valley settlement if it cannot stay safe.
 
@@ -1294,6 +1295,7 @@ def emit_job(
                 overlap_fraction=overlap_fraction,
                 prime_mm=prime_mm,
                 end_early_mm=end_early_mm,
+                start_charge_e=start_charge_e,
                 stem=stem,
                 settle_exclusions=exclusions,
             )
@@ -1354,6 +1356,7 @@ def emit_job(
         overlap_fraction=overlap_fraction,
         prime_mm=prime_mm,
         end_early_mm=end_early_mm,
+        start_charge_e=start_charge_e,
         stem=stem,
     )
     attempted = failure.outcome if isinstance(failure, _OptionalSettleRejected) else None
@@ -1494,6 +1497,7 @@ def _emit_job_once(
     end_early_mm: float | None = None,
     stem: str | None = None,
     settle_exclusions: frozenset[tuple[int, int, str, int]] = frozenset(),
+    start_charge_e: float | None = None,
 ) -> tuple[JobEmission, _SettleEvidence]:
     """Lay out, stack, emit, and independently lint one exact geometry choice."""
 
@@ -1527,6 +1531,7 @@ def _emit_job_once(
             prime_mm=prime_mm,
             end_early_mm=end_early_mm,
             stream=stream,
+            start_charge_e=start_charge_e,
         )
         settings, prepared = _prepare_with_actual_first_z(stream, profile, settings)
         gcode, motion_lines = emit_gcode_with_motion_lines(
@@ -1589,6 +1594,7 @@ def _emit_job_once(
                 end_early_mm=end_early_mm,
                 stream=page_stream,
                 extra_parameters={"split_source_page": source_index + 1},
+                start_charge_e=start_charge_e,
             )
             page_settings, page_prepared = _prepare_with_actual_first_z(
                 page_stream,
@@ -1685,6 +1691,7 @@ def write_job_gcode(
     overlap_fraction: float = PROVISIONAL_OVERLAP_FRACTION,
     prime_mm: float | None = None,
     end_early_mm: float | None = None,
+    start_charge_e: float | None = None,
 ) -> JobExport:
     """Write a lint-clean combined file and optional standalone page files."""
 
@@ -1706,6 +1713,7 @@ def write_job_gcode(
         overlap_fraction=overlap_fraction,
         prime_mm=prime_mm,
         end_early_mm=end_early_mm,
+        start_charge_e=start_charge_e,
         stem=output.stem,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -3729,7 +3737,7 @@ def _stack_stroke(
         # Explicit rows share one global pass axis.  The legacy page topology
         # deliberately keeps its historical page-height offset in z_offset.
         base_z = (
-            settings.standoff_z + global_pass_index * settings.resolved_z_step
+            settings.bed_offset + settings.standoff_z + global_pass_index * settings.resolved_z_step
             if global_pass_index is not None
             else z_offset + settings.standoff_z + layer * settings.resolved_z_step
         )
@@ -4084,9 +4092,10 @@ def _emission_settings(
     end_early_mm: float | None,
     stream: MoveStream | None = None,
     extra_parameters: dict[str, object] | None = None,
+    start_charge_e: float | None = None,
 ) -> EmissionSettings:
     settings = job.settings
-    first_z = (
+    first_z = settings.bed_offset + (
         settings.resolved_first_layer_height
         if job.z_mode is ZMode.CALIBRATED
         else settings.standoff_z
@@ -4127,6 +4136,10 @@ def _emission_settings(
         "z_modulation": settings.z_modulation,
         "z_step_per_layer": settings.resolved_z_step,
     }
+    if settings.bed_offset > 0.0:
+        # Recorded only when it moves something, so jobs printed straight on
+        # the bed keep their byte-identical headers.
+        parameters["bed_offset"] = settings.bed_offset
     if _uses_explicit_pass_stack(job) and len(job.pages) * settings.layers > 1:
         # The independent linter needs the declared schema boundary to apply
         # global-pass Z rules.  A single-pass schema-2 job deliberately omits
@@ -4199,7 +4212,9 @@ def _emission_settings(
                 parameters[f"{prefix}_valley_min_mm"] = page_stats.valley_min
             if page_index > 0:
                 if job.z_mode is ZMode.DRAPE and not _uses_explicit_pass_stack(job):
-                    parameters[f"{prefix}_prior_top_mm"] = page_index * material_height
+                    parameters[f"{prefix}_prior_top_mm"] = (
+                        settings.bed_offset + page_index * material_height
+                    )
                 elif job.z_mode is ZMode.CALIBRATED:
                     parameters[f"{prefix}_prior_datum_top_z_mm"] = terrain_datums[page_index - 1][2]
     if extra_parameters:
@@ -4231,6 +4246,7 @@ def _emission_settings(
         ),
         parameters=parameters,
         pass_model=job.pass_model.value,
+        start_charge_e=start_charge_e,
     )
 
 
@@ -4345,7 +4361,7 @@ def _validate_job(job: Job, profile: Profile) -> None:
         # partway through the slice quoting an internal stroke id and a raw
         # float, and only for strokes long enough to reach the trough (Pete
         # 2026-07-31: 8.75 mm of ripple over a 1.5 mm first layer).
-        floor_z = (
+        floor_z = settings.bed_offset + (
             settings.standoff_z
             if settings.z_mode is ZMode.DRAPE
             else settings.resolved_first_layer_height
@@ -4426,12 +4442,14 @@ def _page_z_offset(
     previous_stack_max: float | None,
 ) -> float:
     if job.page_mode is PageMode.BED or page_index == 0:
-        return 0.0
+        # Every page that starts from the work surface starts from the
+        # declared surface height, not from machine Z zero.
+        return job.settings.bed_offset
     if job.z_mode is ZMode.DRAPE:
         if _uses_explicit_pass_stack(job):
             # _stack_stroke addresses Drape Z directly from global pass index.
             return 0.0
-        return page_index * _nominal_page_material_height(job)
+        return job.settings.bed_offset + page_index * _nominal_page_material_height(job)
     if previous_stack_max is None:
         raise StackError("calibrated stack lost the preceding page top")
     # The unshifted first path point is exactly resolved_first_layer_height,

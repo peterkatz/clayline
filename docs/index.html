@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clayline</title>
+<meta name="description" content="Clayline turns SVG centerlines and meshes into audited G-code for clay paste printers. Free download for Apple-silicon Macs.">
+<style>
+  :root {
+    --bg: #f7f3ee; --ink: #23201c; --muted: #6b635a; --accent: #a5502a; --accent-ink: #fff;
+    --card: #fffdfa; --line: #e3dbd1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1c1917; --ink: #f1ebe3; --muted: #aaa196; --accent: #d9784d; --accent-ink: #1c1917;
+      --card: #262220; --line: #3a342f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1c1917; --ink: #f1ebe3; --muted: #aaa196; --accent: #d9784d; --accent-ink: #1c1917;
+    --card: #262220; --line: #3a342f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.55 -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 56px 16px 72px; }
+  h1 { font-size: 44px; line-height: 1.1; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .tagline { font-size: 20px; color: var(--muted); margin: 0 0 28px; }
+  .download { display: inline-block; background: var(--accent); color: var(--accent-ink); text-decoration: none; font-weight: 600; padding: 14px 22px; border-radius: 10px; font-size: 18px; }
+  .download:hover { filter: brightness(1.08); }
+  .req { color: var(--muted); font-size: 15px; margin: 10px 0 36px; }
+  img.demo { width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line); display: block; margin: 0 0 36px; }
+  h2 { font-size: 22px; margin: 36px 0 10px; }
+  ul { padding-left: 20px; } li { margin: 6px 0; }
+  .note { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin: 28px 0; font-size: 15.5px; }
+  a { color: var(--accent); }
+  footer { margin-top: 48px; color: var(--muted); font-size: 14.5px; border-top: 1px solid var(--line); padding-top: 18px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Clayline</h1>
+  <p class="tagline">SVG centerlines and meshes in. Audited G-code for clay paste printers out.</p>
+
+  <a class="download" href="https://github.com/peterkatz/clayline/releases/latest">Download for Mac</a>
+  <p class="req">Apple-silicon Macs, macOS 14 or newer. Signed and notarized, so it opens without warnings. Unzip and drag Clayline to Applications. Free, open source under GPL-3.0.</p>
+
+  <img class="demo" src="assets/clayline-demo.gif" alt="Clayline's local UI with drape controls and a generated 3D toolpath">
+
+  <h2>What it does</h2>
+  <ul>
+    <li><strong>Tiles mode:</strong> draw a pattern as stroked centerlines in any SVG editor, and Clayline plans one continuous coil path per layer, welding strokes, hopping across kiss points, and laying pages out across the bed.</li>
+    <li><strong>Weave mode:</strong> open a mesh such as a tumbler or vessel, and Clayline slices it into a single unbroken thread with controllable ribs, interiors, and print range.</li>
+    <li><strong>Drape or calibrated Z:</strong> keep the nozzle high and let the coil fall into place, or print layer by layer at measured heights.</li>
+    <li><strong>Audited output:</strong> every file passes an independent lint against the printer profile before it reaches you, and the header records every parameter the job used.</li>
+  </ul>
+
+  <p>Built for the PotterBot 10 XL and shaped around real prints. The engine runs entirely on your Mac: no account, no cloud, no network.</p>
+
+  <div class="note">
+    <strong>G-code moves real machinery.</strong> A lint pass means the file is consistent with the selected profile, not that your printer, clay, nozzle, or clearances are safe. Read the G-code, keep the emergency stop reachable, and stay with the printer.
+  </div>
+
+  <h2>Source and contributing</h2>
+  <p>The code lives at <a href="https://github.com/peterkatz/clayline">github.com/peterkatz/clayline</a>, with a Python engine, a local web studio, and a native macOS shell. Issues and pull requests are welcome; contributors sign a short agreement described in the repository's CONTRIBUTING file.</p>
+
+  <footer>Copyright © 2026 Pete Katz. Clayline is released under the GNU General Public License, version 3.</footer>
+</main>
+</body>
+</html>

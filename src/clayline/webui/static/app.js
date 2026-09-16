@@ -175,6 +175,13 @@ function numberValue(id) {
   return control?.dataset.unit === "mm" ? window.claylineUnits.toMm(value) : value;
 }
 
+function optionalNumberValue(id) {
+  const raw = String($(id)?.value ?? "").trim();
+  if (raw === "") return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
 function nonnegativeNumberValue(id, fallback = 0) {
   const control = $(id);
   if (!control || control.value.trim() === "") return fallback;
@@ -206,7 +213,7 @@ function derivedDrawLayerHeight(nozzleMm) {
 
 // Interface charter: Draw-mode dimension fields display the chosen unit.
 [
-  "#layerHeight", "#firstLayerHeight", "#standoff", "#zStep", "#beadWidth",
+  "#layerHeight", "#firstLayerHeight", "#standoff", "#zStep", "#bedOffset", "#beadWidth",
   "#weldTol", "#zModulation", "#wavelength",
 ].forEach((selector) => {
   const control = document.querySelector(selector);
@@ -507,6 +514,7 @@ function applyDefaults(d) {
   setMmField("#layerHeight", startingLayerMm);
   setMmField("#firstLayerHeight", startingLayerMm);
   setMmField("#standoff", d.standoff_z);
+  setMmField("#bedOffset", Number.isFinite(d.bed_offset) ? d.bed_offset : 0);
   setMmField("#zStep", startingLayerMm);
   state.zStepFollows = true;
   state.firstLayerFollows = true;
@@ -522,6 +530,7 @@ function applyDefaults(d) {
   $("#zModulation").value = "0";
   setMmField("#wavelength", d.modulation_wavelength);
   $("#flow").value = String(d.flow_multiplier);
+  $("#startCharge").value = Number.isFinite(d.start_charge_e) ? String(d.start_charge_e) : "";
   $("#filename").value = "";
   $("#reproducible").checked = true;
 }
@@ -550,6 +559,13 @@ function updateProfileFacts() {
   nozzle.value = profile.nozzle_diameters.includes(previous)
     ? String(previous)
     : String(profile.default_nozzle_diameter);
+  // The profile's own charge is what blank means; show it rather than restate it.
+  const charge = $("#startCharge");
+  if (charge) {
+    charge.placeholder = Number.isFinite(profile.start_charge_e)
+      ? `${profile.start_charge_e} (profile)`
+      : "profile";
+  }
 }
 
 function declaredDesignSize(svgText) {
@@ -1991,7 +2007,9 @@ function updateDependencies() {
   // reads the same floor assuming the bed sits at Z 0, as every shipped
   // profile does, so it can only ever be the more permissive of the two.
   const rippleMm = numberValue("#zModulation");
-  const rippleFloorMm = drape ? numberValue("#standoff") : numberValue("#firstLayerHeight");
+  const surfaceMm = nonnegativeNumberValue("#bedOffset") ?? 0;
+  const rippleFloorMm = surfaceMm
+    + (drape ? numberValue("#standoff") : numberValue("#firstLayerHeight"));
   const rippleFloorLabel = drape ? "standoff" : "first pass height";
   const rippleTooDeep = Number.isFinite(rippleMm)
     && Number.isFinite(rippleFloorMm)
@@ -2057,9 +2075,9 @@ const DRAW_JOB_KEYS = Object.freeze([
   "weld_tol", "kiss", "overlap_fraction", "pause_between_passes_seconds",
   "layer_height", "layer_height_follows_nozzle", "first_layer_height",
   "first_layer_follows_coil_height", "z_mode", "standoff_z", "z_step_per_layer",
-  "z_step_follows_layer_height", "alternate", "helical", "settle_valleys",
+  "z_step_follows_layer_height", "bed_offset", "alternate", "helical", "settle_valleys",
   "flow_modulation", "z_modulation", "modulation_wavelength", "joint_boost",
-  "thread_protection_model", "flow_multiplier", "reproducible", "filename",
+  "thread_protection_model", "flow_multiplier", "start_charge_e", "reproducible", "filename",
 ]);
 
 function drawSettingsSnapshot() {
@@ -2093,6 +2111,7 @@ function drawSettingsSnapshot() {
       standoff_z: numberValue("#standoff"),
       z_step_per_layer: numberValue("#zStep"),
       z_step_follows_layer_height: state.zStepFollows,
+      bed_offset: nonnegativeNumberValue("#bedOffset"),
       alternate: $("#alternate").checked,
       helical: $("#helical").checked,
       settle_valleys: $("#settleValleys").checked,
@@ -2102,6 +2121,7 @@ function drawSettingsSnapshot() {
       joint_boost: selectedJointBoost(),
       thread_protection_model: selectedThreadProtectionModel(),
       flow_multiplier: numberValue("#flow"),
+      start_charge_e: optionalNumberValue("#startCharge"),
       reproducible: $("#reproducible").checked,
       filename: $("#filename").value,
     },
@@ -2187,6 +2207,7 @@ function requestPayload(snapshot = drawSettingsSnapshot()) {
     z_mode: job.z_mode,
     standoff_z: job.standoff_z,
     z_step_per_layer: job.z_mode === "drape" ? job.z_step_per_layer : null,
+    bed_offset: Number.isFinite(job.bed_offset) ? job.bed_offset : 0,
     alternate: job.alternate,
     helical: job.helical,
     settle_valleys: job.settle_valleys,
@@ -2195,6 +2216,7 @@ function requestPayload(snapshot = drawSettingsSnapshot()) {
     modulation_wavelength: job.modulation_wavelength,
     joint_boost: job.joint_boost,
     flow_multiplier: job.flow_multiplier,
+    start_charge_e: Number.isFinite(job.start_charge_e) ? job.start_charge_e : null,
     split_pages: false,
     reproducible: job.reproducible,
     filename: job.filename ? job.filename : null,
@@ -2231,6 +2253,7 @@ function applyDrawSettings(snapshot) {
   setMm("#firstLayerHeight", job.first_layer_height);
   setMm("#standoff", job.standoff_z);
   setMm("#zStep", job.z_step_per_layer);
+  setMm("#bedOffset", Number.isFinite(job.bed_offset) ? job.bed_offset : 0);
   state.zStepFollows = job.z_step_follows_layer_height !== false;
   state.firstLayerFollows = job.first_layer_follows_coil_height !== false;
   state.layerHeightFollows = job.layer_height_follows_nozzle !== false;
@@ -2247,6 +2270,7 @@ function applyDrawSettings(snapshot) {
   );
   if (joint) joint.checked = true;
   setValue("#flow", job.flow_multiplier);
+  $("#startCharge").value = Number.isFinite(job.start_charge_e) ? String(job.start_charge_e) : "";
   $("#reproducible").checked = job.reproducible !== false;
   $("#filename").value = typeof job.filename === "string" ? job.filename : "";
 
