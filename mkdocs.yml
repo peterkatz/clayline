@@ -1,0 +1,56 @@
+site_name: Clayline
+site_url: https://peterkatz.github.io/clayline/
+site_description: Drawings and 3D models in. Print files for clay paste printers out.
+repo_url: https://github.com/peterkatz/clayline
+repo_name: peterkatz/clayline
+edit_uri: ""
+docs_dir: guide
+site_dir: build/site
+copyright: Copyright &copy; 2026 Pete Katz. Released under the GNU General Public License, version 3.
+
+theme:
+  name: material
+  language: en
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.footer
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+
+nav:
+  - Home: index.md
+  - Install: install.md
+  - Draw in Clay: tiles.md
+  - Weave: weave.md
+  - Printing: printing.md
+  - Calibration: calibration.md
+  - Troubleshooting: troubleshooting.md
+  - Safety: safety.md
+  - Glossary: glossary.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search

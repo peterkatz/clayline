@@ -9,7 +9,9 @@ into place. Calibrated layer-by-layer Z is available for more conventional work.
 
 **Download for Mac:** the [latest release](https://github.com/peterkatz/clayline/releases/latest)
 runs on Apple silicon Macs with macOS 14 or later. Unzip it, then drag Clayline
-into your Applications folder.
+into your Applications folder. The **[user guide](https://peterkatz.github.io/clayline/)**
+covers installing, both modes, printing, calibration, and troubleshooting in
+plain language; this README is the developer's view.
 
 This is release `0.1.0`, the first public one. The software pipeline has
 substantial local verification, but Clayline has not yet passed its required
