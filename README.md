@@ -8,8 +8,8 @@ into place. Calibrated layer-by-layer Z is available for more conventional work.
 ![Clayline's real local UI, drape controls, and generated 3D toolpath](docs/assets/clayline-demo.gif)
 
 **Download for Mac:** the [latest release](https://github.com/peterkatz/clayline/releases/latest)
-is a Developer ID-signed, notarized app for Apple-silicon Macs on macOS 14 or
-newer. Unzip it and drag Clayline to Applications.
+runs on Apple silicon Macs with macOS 14 or later. Unzip it, then drag Clayline
+into your Applications folder.
 
 This is release `0.1.0`, the first public one. The software pipeline has
 substantial local verification, but Clayline has not yet passed its required
@@ -94,10 +94,9 @@ Clayline quits. It is not a cloud service and does not expose the studio to the
 LAN.
 
 The public download on the [Releases page](https://github.com/peterkatz/clayline/releases/latest)
-is a Developer ID-signed and notarized arm64 build; macOS opens it without any
-warning. Developers can assemble the same `build/Clayline.app` with `make mac-app`
-and notarize their own with `make notarize`; that build step is not part of the
-ceramicist workflow.
+is a signed arm64 build. Developers can assemble the same `build/Clayline.app`
+with `make mac-app` and notarize their own with `make notarize`; that build step
+is not part of the ceramicist workflow.
 
 ## Developer/source install (optional)
 
