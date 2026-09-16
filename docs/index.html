@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Clayline</title>
-<meta name="description" content="Clayline turns SVG centerlines and meshes into audited G-code for clay paste printers. Free download for Apple-silicon Macs.">
+<meta name="description" content="Clayline turns drawings and 3D models into print files for clay paste printers. Free download for Apple silicon Macs.">
 <style>
   :root {
     --bg: #f7f3ee; --ink: #23201c; --muted: #6b635a; --accent: #a5502a; --accent-ink: #fff;
@@ -39,7 +39,7 @@
 <body>
 <main>
   <h1>Clayline</h1>
-  <p class="tagline">SVG centerlines and meshes in. Audited G-code for clay paste printers out.</p>
+  <p class="tagline">Drawings and 3D models in. Print files for clay paste printers out.</p>
 
   <a class="download" href="https://github.com/peterkatz/clayline/releases/latest">Download for Mac</a>
   <p class="req">For Apple silicon Macs running macOS 14 or later. Unzip it, then drag Clayline into your Applications folder. Free and open source.</p>
@@ -48,20 +48,20 @@
 
   <h2>What it does</h2>
   <ul>
-    <li><strong>Tiles mode:</strong> draw a pattern as stroked centerlines in any SVG editor, and Clayline plans one continuous coil path per layer, welding strokes, hopping across kiss points, and laying pages out across the bed.</li>
-    <li><strong>Weave mode:</strong> open a mesh such as a tumbler or vessel, and Clayline slices it into a single unbroken thread with controllable ribs, interiors, and print range.</li>
-    <li><strong>Drape or calibrated Z:</strong> keep the nozzle high and let the coil fall into place, or print layer by layer at measured heights.</li>
-    <li><strong>Audited output:</strong> every file passes an independent lint against the printer profile before it reaches you, and the header records every parameter the job used.</li>
+    <li><strong>Tiles mode:</strong> draw a pattern as lines in any vector drawing app, save it as an SVG, and Clayline turns it into one continuous coil per layer, joining lines where they meet, hopping across touching loops, and laying out several tiles across the bed.</li>
+    <li><strong>Weave mode:</strong> open a 3D model of a tumbler or vessel, and Clayline turns it into a single unbroken thread of clay, with control over ribs, interior walls, and which part of the form to print.</li>
+    <li><strong>Drape or layer by layer:</strong> keep the nozzle high and let the coil fall into place, or print layer by layer at heights you set.</li>
+    <li><strong>Checked output:</strong> every file is checked against your printer's limits before you see it, and the top of the file records every setting the job used.</li>
   </ul>
 
-  <p>Built for the PotterBot 10 XL and shaped around real prints. The engine runs entirely on your Mac: no account, no cloud, no network.</p>
+  <p>Built for the PotterBot 10 XL and shaped around real prints. Everything runs on your Mac: no account, no cloud, no internet connection needed.</p>
 
   <div class="note">
-    <strong>G-code moves real machinery.</strong> A lint pass means the file is consistent with the selected profile, not that your printer, clay, nozzle, or clearances are safe. Read the G-code, keep the emergency stop reachable, and stay with the printer.
+    <strong>Printer files move real machinery.</strong> Clayline checks each file against the printer's limits, not against your actual printer, clay, nozzle, or the space around it. Look the file over, keep the emergency stop within reach, and stay with the printer.
   </div>
 
-  <h2>Source and contributing</h2>
-  <p>The code lives at <a href="https://github.com/peterkatz/clayline">github.com/peterkatz/clayline</a>, with a Python engine, a local web studio, and a native macOS shell. Issues and pull requests are welcome; contributors sign a short agreement described in the repository's CONTRIBUTING file.</p>
+  <h2>Open source</h2>
+  <p>Clayline is open source. The code is at <a href="https://github.com/peterkatz/clayline">github.com/peterkatz/clayline</a>, and that is also the place to report a problem or offer an improvement. People who contribute code agree to a short contributor agreement described there.</p>
 
   <footer>Copyright © 2026 Pete Katz. Clayline is released under the GNU General Public License, version 3.</footer>
 </main>
