@@ -17,9 +17,9 @@
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>0.2.0</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>2</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>ClaylineEngineExecutable</key>
@@ -36,6 +36,18 @@
       <key>LSItemContentTypes</key>
       <array>
         <string>public.svg-image</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Clayline project</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>com.clayline.project</string>
       </array>
     </dict>
     <dict>
@@ -69,6 +81,25 @@
   </dict>
   <key>UTExportedTypeDeclarations</key>
   <array>
+    <dict>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeDescription</key>
+      <string>Clayline project</string>
+      <key>UTTypeIdentifier</key>
+      <string>com.clayline.project</string>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>clayline</string>
+        </array>
+        <key>public.mime-type</key>
+        <string>application/vnd.clayline.project+zip</string>
+      </dict>
+    </dict>
     <dict>
       <key>UTTypeConformsTo</key>
       <array>

@@ -12,8 +12,17 @@ final class FileTypeAndImportTests: XCTestCase {
                 "public.standard-tesselated-geometry-format",
                 "com.clayline.mesh.3mf",
                 "public.polygon-file-format",
+                "com.clayline.project",
             ]
         )
+    }
+
+    func testProjectTypeIsOwnedByClaylineAndKeepsItsOwnExtension() {
+        XCTAssertEqual(
+            ClaylineFileTypes.projectTypes.map(\.identifier),
+            ["com.clayline.project"]
+        )
+        XCTAssertEqual(ClaylineFileTypes.projectExtension, "clayline")
     }
 
     func testExtensionRoutingIsCaseInsensitiveAndRejectsLookalikes() {
@@ -24,8 +33,13 @@ final class FileTypeAndImportTests: XCTestCase {
                 .mesh
             )
         }
+        XCTAssertEqual(
+            ClaylineFileTypes.kind(for: URL(fileURLWithPath: "/tmp/lantern.CLAYLINE")),
+            .project
+        )
         XCTAssertNil(ClaylineFileTypes.kind(for: URL(fileURLWithPath: "/tmp/form.obj.txt")))
         XCTAssertNil(ClaylineFileTypes.kind(for: URL(fileURLWithPath: "/tmp/no-extension")))
+        XCTAssertNil(ClaylineFileTypes.kind(for: URL(fileURLWithPath: "/tmp/lantern.clayline.zip")))
     }
 
     func testFinderSelectionUsesFirstSupportedModeAndOnlyOneMesh() throws {
@@ -35,6 +49,20 @@ final class FileTypeAndImportTests: XCTestCase {
         let selection = try XCTUnwrap(ClaylineFileTypes.importSelection(from: urls))
 
         XCTAssertEqual(selection.mode, .weave)
+        XCTAssertEqual(selection.urls, [urls[0]])
+        XCTAssertEqual(selection.ignoredCount, 2)
+    }
+
+    func testFinderSelectionOpensOneProjectAndCarriesNoModeOfItsOwn() throws {
+        // A project names its own rail inside the file, so the shell does not
+        // choose one for it.
+        let urls = ["lantern.clayline", "second.clayline", "tile.svg"].map {
+            URL(fileURLWithPath: "/tmp/\($0)")
+        }
+        let selection = try XCTUnwrap(ClaylineFileTypes.importSelection(from: urls))
+
+        XCTAssertEqual(selection.kind, .project)
+        XCTAssertNil(selection.mode)
         XCTAssertEqual(selection.urls, [urls[0]])
         XCTAssertEqual(selection.ignoredCount, 2)
     }
@@ -85,6 +113,10 @@ final class FileTypeAndImportTests: XCTestCase {
         XCTAssertTrue(identifiers.contains("public.heic"))
     }
 
+    func testProjectHandoffIsBoundedAtNinetySixMebibytes() {
+        XCTAssertEqual(WebActions.maximumProjectBytes, 96 * 1_024 * 1_024)
+    }
+
     func testOpenRequestParsesModeAndOneShotPhotoMarker() {
         XCTAssertEqual(
             ClaylineOpenRequest(raw: "tiles:reference-photo"),
@@ -99,5 +131,17 @@ final class FileTypeAndImportTests: XCTestCase {
         XCTAssertEqual(ClaylineOpenRequest(raw: nil).mode, .tiles)
         XCTAssertFalse(ClaylineOpenRequest(raw: nil).isReferencePhoto)
         XCTAssertFalse(ClaylineOpenRequest(raw: "tiles").isReferencePhoto)
+        XCTAssertFalse(ClaylineOpenRequest(raw: "tiles:reference-photo").isProject)
+        XCTAssertFalse(ClaylineOpenRequest(raw: nil).isProject)
+    }
+
+    func testOpenRequestParsesTheProjectMarkerFromEitherRail() {
+        for raw in ["tiles:project", "weave:project"] {
+            let request = ClaylineOpenRequest(raw: raw)
+            XCTAssertTrue(request.isProject)
+            XCTAssertFalse(request.isReferencePhoto)
+        }
+        XCTAssertEqual(ClaylineOpenRequest(raw: "weave:project").mode, .weave)
+        XCTAssertFalse(ClaylineOpenRequest(raw: "tiles:projects").isProject)
     }
 }

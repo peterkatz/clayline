@@ -23,6 +23,9 @@ from typing import Any, TextIO
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_STATIC = ROOT / "src" / "clayline" / "webui" / "static"
 BUNDLED_STATIC_RELATIVE = Path("Contents/Resources/Engine/_internal/clayline/webui/static")
+GALLERY_MANIFEST = ROOT / "examples" / "gallery-manifest.json"
+GALLERY_SCHEMA = "clayline.gallery.v1"
+BUNDLED_GALLERY_RELATIVE = Path("Contents/Resources/Gallery")
 SESSION_COOKIE = "clayline_session"
 READY_SCHEMA = "clayline.desktop.ready.v1"
 MACHO_MAGICS = {
@@ -173,6 +176,31 @@ def _audit_plist(info: dict[str, Any], resources: Path, audit: Audit) -> Path | 
         "CFBundleDocumentTypes must declare OBJ, STL, 3MF, and PLY mesh types",
     )
 
+    audit.require(
+        "com.clayline.project" in declared_types,
+        "CFBundleDocumentTypes must declare the Clayline project type",
+    )
+
+    exported_types = info.get("UTExportedTypeDeclarations", [])
+    exported_project = next(
+        (
+            item
+            for item in exported_types
+            if isinstance(item, dict) and item.get("UTTypeIdentifier") == "com.clayline.project"
+        ),
+        None,
+    )
+    exported_project_tags = (
+        exported_project.get("UTTypeTagSpecification", {})
+        if isinstance(exported_project, dict)
+        else {}
+    )
+    audit.require(
+        isinstance(exported_project_tags, dict)
+        and "clayline" in exported_project_tags.get("public.filename-extension", []),
+        "UTExportedTypeDeclarations must map com.clayline.project to .clayline",
+    )
+
     imported_types = info.get("UTImportedTypeDeclarations", [])
     imported_3mf = next(
         (
@@ -314,6 +342,110 @@ def _audit_static_asset_parity(
         bundled_digest = hashlib.sha256(bundled_payload).hexdigest()
         audit.fail(
             f"bundled static asset is stale: {relative}; "
+            f"repository sha256={source_digest}, bundle sha256={bundled_digest}"
+        )
+
+
+def _expected_gallery(manifest_path: Path, source_root: Path, audit: Audit) -> dict[Path, Path]:
+    """Map each bundled gallery path (<folder>/<file>.svg) to its repository source."""
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        audit.fail(f"gallery manifest cannot be read: {manifest_path}: {exc}")
+        return {}
+    if not audit.require(
+        isinstance(manifest, dict) and manifest.get("schema") == GALLERY_SCHEMA,
+        f"gallery manifest must be a {GALLERY_SCHEMA} object: {manifest_path}",
+    ):
+        return {}
+    expected: dict[Path, Path] = {}
+    categories = manifest.get("categories")
+    for category in categories if isinstance(categories, list) else []:
+        folder = category.get("folder") if isinstance(category, dict) else None
+        files = category.get("files") if isinstance(category, dict) else None
+        if not isinstance(folder, str) or not isinstance(files, list):
+            audit.fail(f"gallery manifest has a malformed category: {category!r}")
+            continue
+        for listed in files:
+            if not isinstance(listed, str):
+                audit.fail(f"gallery manifest lists a non-text file in {folder}: {listed!r}")
+                continue
+            destination = Path(folder) / Path(listed).name
+            audit.require(
+                destination not in expected,
+                f"gallery manifest places two drawings at {destination}",
+            )
+            expected[destination] = source_root / listed
+    audit.require(bool(expected), f"gallery manifest lists no drawings: {manifest_path}")
+    return expected
+
+
+def _audit_gallery_parity(
+    app: Path,
+    audit: Audit,
+    *,
+    manifest_path: Path = GALLERY_MANIFEST,
+    source_root: Path = ROOT,
+) -> None:
+    """Require the bundled gallery to be exactly what the manifest describes.
+
+    Every folder and drawing the manifest names must be present, byte-identical to
+    its source in this checkout, and nothing else may sit beside them: the Open
+    panel shows this folder to the user as it is.
+    """
+
+    bundled_gallery = app / BUNDLED_GALLERY_RELATIVE
+    expected = _expected_gallery(manifest_path, source_root, audit)
+    if not expected:
+        return
+    if not audit.require(
+        bundled_gallery.is_dir() and not bundled_gallery.is_symlink(),
+        f"bundle gallery directory is missing: {bundled_gallery}",
+    ):
+        return
+
+    expected_files = set(expected)
+    expected_folders = {path.parent for path in expected_files}
+    bundled_files: set[Path] = set()
+    bundled_folders: set[Path] = set()
+    for path in bundled_gallery.rglob("*"):
+        relative = path.relative_to(bundled_gallery)
+        if path.is_symlink() or not (path.is_dir() or path.is_file()):
+            audit.fail(f"bundled gallery holds something that is not a plain file: {relative}")
+        elif path.is_dir():
+            bundled_folders.add(relative)
+        else:
+            bundled_files.add(relative)
+
+    missing = sorted(str(path) for path in expected_files - bundled_files)
+    extra = sorted(str(path) for path in bundled_files - expected_files)
+    audit.require(
+        expected_files == bundled_files,
+        f"bundled gallery inventory differs from the manifest; missing={missing}, extra={extra}",
+    )
+    missing_folders = sorted(str(path) for path in expected_folders - bundled_folders)
+    extra_folders = sorted(str(path) for path in bundled_folders - expected_folders)
+    audit.require(
+        expected_folders == bundled_folders,
+        "bundled gallery folders differ from the manifest; "
+        f"missing={missing_folders}, extra={extra_folders}",
+    )
+
+    for relative in sorted(expected_files & bundled_files):
+        try:
+            source_payload = expected[relative].read_bytes()
+            bundled_payload = (bundled_gallery / relative).read_bytes()
+        except OSError as exc:
+            audit.fail(f"cannot compare bundled gallery drawing {relative}: {exc}")
+            continue
+        if source_payload == bundled_payload:
+            audit.require(True, f"bundled gallery drawing matches repository: {relative}")
+            continue
+        source_digest = hashlib.sha256(source_payload).hexdigest()
+        bundled_digest = hashlib.sha256(bundled_payload).hexdigest()
+        audit.fail(
+            f"bundled gallery drawing differs from its source: {relative}; "
             f"repository sha256={source_digest}, bundle sha256={bundled_digest}"
         )
 
@@ -573,6 +705,7 @@ def audit_app(
     engine = _resolve_engine(app, info, engine_override, audit)
     _audit_resources(app, resources, audit)
     _audit_static_asset_parity(app, audit)
+    _audit_gallery_parity(app, audit)
     macho_paths = _audit_tree_for_leaks(app, audit) if app.is_dir() else []
 
     lipo = _tool("lipo", audit)

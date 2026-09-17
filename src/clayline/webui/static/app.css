@@ -3380,14 +3380,45 @@ input[type="range"] {
 }
 
 /* Entry point 4: a new drawing at any time, under the drop zone — a sibling of
-   the label, never inside it. */
+   the label, never inside it.  The gallery button shares the row only in the
+   app that carries the example drawings; hidden, it leaves New drawing the
+   whole width.  110 px is the narrowest its label reads on one line: the pair
+   sits side by side on the full rail and stacks on the 280 px one, so nothing
+   overflows and no label breaks in two. */
 .draw-new-row {
   display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
   margin-top: 7px;
 }
 
 .draw-new-row button {
-  width: 100%;
+  flex: 1 1 110px;
+  min-width: 0;
+}
+
+/* Open or save a whole job.  Two buttons on their own row under the drop zone:
+   the rail is a fixed 320 px track, and a third control beside New drawing
+   would overflow it. */
+.draw-project-row {
+  display: flex;
+  gap: 7px;
+  margin-top: 7px;
+}
+
+/* Weave's pair sits under its own drop zone and shares the Draw row's shape,
+   so the same two buttons read the same in both rails. */
+.weave-project-row {
+  margin-bottom: 7px;
+}
+
+.draw-project-row button {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.project-status {
+  margin-top: 7px;
 }
 
 /* Entry point 2: the thumbnail IS the edit control, so the row head grows no

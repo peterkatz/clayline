@@ -19,6 +19,17 @@ final class SafeFilenameTests: XCTestCase {
         XCTAssertEqual(filename, String(repeating: "a", count: 80) + ".gcode")
     }
 
+    func testSavedProjectsKeepTheirOwnName() {
+        XCTAssertEqual(SafeFilename.download("lantern.clayline"), "lantern.clayline")
+        XCTAssertEqual(SafeFilename.download("Lobed Tumbler.CLAYLINE"), "Lobed-Tumbler.clayline")
+        XCTAssertEqual(SafeFilename.download("...clayline"), "clayline-project.clayline")
+        // A pattern is still a pattern, not a project.
+        XCTAssertEqual(
+            SafeFilename.download("sine.clayline-weave.json"),
+            "sine.clayline-weave.json"
+        )
+    }
+
     func testDownloadFilenameNeverAcceptsAnUnknownExtension() {
         XCTAssertEqual(SafeFilename.download("job.svg"), "job.svg.gcode")
         XCTAssertEqual(SafeFilename.download("job.gcode.exe"), "job.gcode.exe.gcode")

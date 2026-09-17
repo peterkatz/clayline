@@ -19,6 +19,9 @@ Clay flow. See [Calibration](calibration.md).
 
 ## In Draw in Clay
 
+**I can't find the example drawings.**
+Press **Browse the gallery** under 01 Design, or choose **File → Open from Gallery…**. Once you've opened a drawing from a folder of your own, choosing files starts there instead, but those two always go to the gallery.
+
 **My drawing loads but parts of it are missing.**
 Those parts were filled shapes, not lines. Clayline reads lines only and lists what it dropped in Warnings. Redraw them as lines.
 

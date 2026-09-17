@@ -10,7 +10,7 @@ For Apple silicon Macs running macOS 14 or later. Unzip it, then drag Clayline i
 
 ## Two ways to work
 
-**Draw in Clay.** Draw a pattern as lines, either in Clayline itself or in any vector drawing app saved as an SVG. Clayline turns every line into a coil of clay, joins lines where they meet, and repeats the design pass after pass to build height. Print it flat as a tile, or let the coil drape from a raised nozzle for open lacework.
+**Draw in Clay.** Draw a pattern as lines, either in Clayline itself or in any vector drawing app saved as an SVG, or start from the gallery of 98 example drawings that comes with the app. Clayline turns every line into a coil of clay, joins lines where they meet, and repeats the design pass after pass to build height. Print it flat as a tile, or let the coil drape from a raised nozzle for open lacework.
 
 **Weave.** Open a 3D model of a tumbler or vessel. Clayline slices it into rings and prints the wall as one continuous thread of clay, with a wave pattern you shape yourself: ribs, spirals, crisp edges, or a texture traced from a real print.
 

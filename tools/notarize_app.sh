@@ -57,7 +57,7 @@ RELEASE="$ROOT/build/$NAME-$VERSION.zip"
 /bin/mkdir -p "$WORK"
 
 echo "[1/4] Zipping $APP for submission"
-/usr/bin/ditto -c -k --keepParent "$APP" "$SUBMISSION"
+/usr/bin/ditto -c -k --keepParent --norsrc --noextattr --noqtn --noacl "$APP" "$SUBMISSION"
 
 echo "[2/4] Submitting to Apple's notary service (this waits for the verdict)"
 xcrun notarytool submit "$SUBMISSION" --keychain-profile "$PROFILE" --wait --output-format plist \
@@ -76,6 +76,30 @@ xcrun stapler validate "$APP"
 echo "[4/4] Gatekeeper assessment and release archive"
 /usr/sbin/spctl --assess --type execute --verbose=4 "$APP"
 /bin/rm -f "$RELEASE"
-/usr/bin/ditto -c -k --keepParent "$APP" "$RELEASE"
+# No extended attributes in the archive. ditto otherwise stores each file's
+# attributes (macOS stamps com.apple.provenance on everything) as AppleDouble
+# "._" entries; Archive Utility cannot apply those to the engine's symlinked
+# libraries, leaves them behind as real files, and the added files break the
+# bundle's seal, so a double-clicked download opens as "damaged".
+/usr/bin/ditto -c -k --keepParent --norsrc --noextattr --noqtn --noacl "$APP" "$RELEASE"
+# Read the listing once: piping unzip into grep -q under pipefail lets grep
+# close the pipe on the first match, unzip dies with SIGPIPE, and the guard
+# would pass a bad zip.
+ZIP_LISTING="$(/usr/bin/unzip -l "$RELEASE")"
+if /usr/bin/grep -q '/\._' <<<"$ZIP_LISTING"; then
+  fail "$RELEASE still carries AppleDouble entries; a double-click unzip would break the seal"
+fi
+# Unpack it the way a person does and check what they would get.
+CHECK="$WORK/unzip-check"
+/bin/rm -rf "$CHECK" && /bin/mkdir -p "$CHECK"
+/bin/cp "$RELEASE" "$CHECK/"
+/usr/bin/open -W -g -a "Archive Utility" "$CHECK/$(/usr/bin/basename "$RELEASE")"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -d "$CHECK/$NAME.app" ]] && break; /bin/sleep 2; done
+/bin/sleep 3
+/usr/bin/codesign --verify --deep --strict "$CHECK/$NAME.app" || \
+  fail "the app unpacked by Archive Utility fails signature verification"
+/usr/sbin/spctl --assess --type execute "$CHECK/$NAME.app" || \
+  fail "Gatekeeper rejects the app unpacked by Archive Utility"
+/bin/rm -rf "$CHECK"
 /usr/bin/shasum -a 256 "$RELEASE"
 echo "Notarized and stapled: $RELEASE"

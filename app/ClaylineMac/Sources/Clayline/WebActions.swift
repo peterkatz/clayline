@@ -7,9 +7,13 @@ import WebKit
 final class WebActions: ObservableObject {
     static let maximumSVGBytes = 8 * 1_024 * 1_024
     static let maximumMeshBytes = 64 * 1_024 * 1_024
+    static let maximumProjectBytes = 96 * 1_024 * 1_024
 
     @Published private(set) var isReady = false
     var onMeshSelected: ((URL) -> Void)?
+    /// The project the page has just taken, so the shell can remember the
+    /// folder and put the name in the window title.
+    var onProjectOpened: ((URL) -> Void)?
     var hasPendingImports: Bool { !pendingImports.isEmpty }
     private weak var webView: WKWebView?
     private var pendingImports: [ClaylineImportSelection] = []
@@ -34,6 +38,7 @@ final class WebActions: ObservableObject {
         self.webView = nil
         isReady = false
         onMeshSelected = nil
+        onProjectOpened = nil
     }
 
     func openDocuments() {
@@ -41,9 +46,28 @@ final class WebActions: ObservableObject {
         webView?.evaluateJavaScript("window.claylineDesktop && window.claylineDesktop.open()")
     }
 
+    /// Whether this copy of the app carries the example drawings. Looked up
+    /// each time it is asked, never kept.
+    var hasGallery: Bool { ClaylineGallery.bundledURL() != nil }
+
+    func openGallery() {
+        guard isReady else { return }
+        webView?.evaluateJavaScript("window.claylineDesktop && window.claylineDesktop.openGallery()")
+    }
+
     func saveGCode() {
         guard isReady else { return }
         webView?.evaluateJavaScript("window.claylineDesktop && window.claylineDesktop.exportGcode()")
+    }
+
+    func openProject() {
+        guard isReady else { return }
+        webView?.evaluateJavaScript("window.claylineDesktop && window.claylineDesktop.openProject()")
+    }
+
+    func saveProject() {
+        guard isReady else { return }
+        webView?.evaluateJavaScript("window.claylineDesktop && window.claylineDesktop.saveProject()")
     }
 
     func importDocuments(_ urls: [URL]) {
@@ -56,13 +80,17 @@ final class WebActions: ObservableObject {
     }
 
     private func deliver(_ selection: ClaylineImportSelection) {
-        switch selection.mode {
-        case .tiles:
+        switch selection.kind {
+        case .svg:
             importSVGs(selection.urls)
-        case .weave:
+        case .mesh:
             if let url = selection.urls.first {
                 onMeshSelected?(url)
                 importMesh(url)
+            }
+        case .project:
+            if let url = selection.urls.first {
+                importProject(url)
             }
         }
         if selection.ignoredCount > 0 {
@@ -83,6 +111,27 @@ final class WebActions: ObservableObject {
         webView?.evaluateJavaScript(
             "window.claylineDesktop && window.claylineDesktop.svgSaveResult(\(json))"
         )
+    }
+
+    /// Hand the save panel's outcome back to the page, which is still showing
+    /// "Saving project…". A cancelled panel carries no reason and simply
+    /// clears that line.
+    func reportProjectSaveResult(ok: Bool, name: String?) {
+        guard isReady else { return }
+        let payload: [String: Any] = ["ok": ok, "name": name ?? NSNull()]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8)
+        else { return }
+        webView?.evaluateJavaScript(
+            "window.claylineDesktop && window.claylineDesktop.projectSaveResult(\(json))"
+        )
+    }
+
+    /// A project has been read through and is on the bed: the one way the
+    /// shell hears it, whether the file came from the Open panel, Finder, or
+    /// a menu. The folder and the window title follow from here.
+    func projectWasOpened(at url: URL) {
+        onProjectOpened?(url)
     }
 
     private func importSVGs(_ urls: [URL]) {
@@ -168,6 +217,59 @@ final class WebActions: ObservableObject {
         }
     }
 
+    /// Finder, the menu, and the open panel all hand a project over as bytes
+    /// the page reads for itself. Bounded and passed as a WebKit argument,
+    /// exactly like a mesh, so no filename or payload is ever interpolated
+    /// into executable source.
+    private func importProject(_ url: URL) {
+        guard isReady,
+              let webView,
+              ClaylineFileTypes.kind(for: url) == .project
+        else {
+            return
+        }
+
+        let filename = url.lastPathComponent
+        let maximumBytes = Self.maximumProjectBytes
+        Task { @MainActor [weak self, weak webView] in
+            let base64 = await Task.detached(priority: .userInitiated) {
+                Self.readBoundedBinaryFile(url, maximumBytes: maximumBytes)?
+                    .base64EncodedString()
+            }.value
+            guard let self,
+                  let webView,
+                  self.isReady,
+                  self.webView === webView
+            else {
+                return
+            }
+            guard let base64 else {
+                self.presentProjectImportFailure()
+                return
+            }
+
+            let payload: [String: Any] = [
+                "name": filename,
+                "base64": base64,
+            ]
+            do {
+                let accepted = try await webView.callAsyncJavaScript(
+                    "return window.claylineDesktop && window.claylineDesktop.importProject(payload)",
+                    arguments: ["payload": payload],
+                    in: nil,
+                    contentWorld: .page
+                ) as? Bool
+                if accepted == true {
+                    self.projectWasOpened(at: url)
+                } else {
+                    self.presentProjectImportFailure()
+                }
+            } catch {
+                self.presentProjectImportFailure()
+            }
+        }
+    }
+
     nonisolated static func readBoundedBinaryFile(_ url: URL, maximumBytes: Int) -> Data? {
         guard maximumBytes >= 0,
               let handle = try? FileHandle(forReadingFrom: url)
@@ -194,12 +296,33 @@ final class WebActions: ObservableObject {
     private func presentIgnoredFilesNotice(_ selection: ClaylineImportSelection) {
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = selection.mode == .weave
-            ? "Weave opens one mesh at a time"
-            : "Some files were not opened"
-        alert.informativeText = selection.mode == .weave
-            ? "Clayline opened the first supported mesh and ignored \(selection.ignoredCount) other file(s)."
-            : "Clayline opened the supported SVG batch and ignored \(selection.ignoredCount) other file(s)."
+        alert.messageText = switch selection.kind {
+        case .mesh: "Weave opens one mesh at a time"
+        case .project: "Clayline opens one project at a time"
+        case .svg: "Some files were not opened"
+        }
+        alert.informativeText = switch selection.kind {
+        case .mesh:
+            "Clayline opened the first supported mesh and ignored \(selection.ignoredCount) other file(s)."
+        case .project:
+            "Clayline opened the first project and ignored \(selection.ignoredCount) other file(s)."
+        case .svg:
+            "Clayline opened the supported SVG batch and ignored \(selection.ignoredCount) other file(s)."
+        }
+        alert.addButton(withTitle: "OK")
+        if let window = webView?.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    private func presentProjectImportFailure() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Project could not be opened"
+        alert.informativeText =
+            "Choose one Clayline project file no larger than 96 MiB."
         alert.addButton(withTitle: "OK")
         if let window = webView?.window {
             alert.beginSheetModal(for: window)

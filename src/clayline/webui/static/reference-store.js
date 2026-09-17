@@ -20,6 +20,14 @@
 //        Synchronous cache read.  A miss kicks off the IndexedDB load and
 //        calls onReady once the bitmap is drawable — the canvas draws nothing
 //        in the meantime, no placeholder.
+//   imageBlob(imageId) -> Promise<Blob|null>
+//        The stored bytes for one photo, so a project file can carry it.
+//        Null when the photo was never stored or the database is unavailable.
+//   storeImage(imageId, blob) -> Promise<boolean>
+//        Puts a photo back under the id its placement already names — opening
+//        a project restores the pixels the placement points at.  The bitmap
+//        cache is seeded from the same blob, so the photo draws even where
+//        the database refused the write.
 //   sweep(keepIds) -> Promise
 //        Deletes every stored photo whose id is not in keepIds.  BOOT ONLY:
 //        mid-session an undo may still restore a removed photo, so orphans
@@ -187,6 +195,26 @@
     return { imageId, width, height, bitmap: canvas };
   }
 
+  function imageBlob(imageId) {
+    if (typeof imageId !== "string" || !imageId) return Promise.resolve(null);
+    return getBlob(imageId).then((blob) => blob || null).catch(() => null);
+  }
+
+  function storeImage(imageId, blob) {
+    if (typeof imageId !== "string" || !imageId || !blob) return Promise.resolve(false);
+    // A photo arriving under an id the session already drew must replace it,
+    // never lose the race with a load already in flight.
+    bitmaps.delete(imageId);
+    loading.delete(imageId);
+    return putBlob(imageId, blob)
+      .catch(() => undefined)
+      .then(() => decodeBlob(blob).catch(() => null))
+      .then((decoded) => {
+        if (decoded) bitmaps.set(imageId, decoded);
+        return Boolean(decoded);
+      });
+  }
+
   function bitmap(imageId, onReady) {
     if (typeof imageId !== "string" || !imageId) return null;
     const cached = bitmaps.get(imageId);
@@ -209,5 +237,5 @@
     return null;
   }
 
-  return Object.freeze({ importImage, bitmap, sweep });
+  return Object.freeze({ importImage, bitmap, imageBlob, storeImage, sweep });
 });

@@ -607,6 +607,11 @@ def test_filename_is_local_only_and_profile_uses_backend_work_bounds() -> None:
     filename_binding = filename_binding[: filename_binding.index("});") + 3]
     assert "scheduleModulation" not in filename_binding
     assert '$("#weaveFilename").value.trim() || result.filename' in WEAVE
+    # A print file is a print file whatever was typed: a form exported as
+    # "lantern.clayline" must never reach the app as though it were a project.
+    assert "link.download = normalizedWeaveGcodeName(" in WEAVE
+    assert "function normalizedWeaveGcodeName(value)" in WEAVE
+    assert "return `${safe}.gcode`;" in WEAVE
     assert "profile.work_bounds" in WEAVE
     for key in ("min_x", "max_x", "min_y", "max_y"):
         assert f"bounds.{key}" in WEAVE
@@ -1322,3 +1327,204 @@ def test_the_interior_gray_out_works_in_both_orders_from_one_mechanism() -> None
     assert weave_range.interior_disabled_hint(_Lifted()) == (  # type: ignore[arg-type]
         "A filled interior is available only when the print range starts at source layer 1."
     )
+
+
+# --- Project files: a whole Weave job saved and opened as one file ----------
+
+
+def test_weave_carries_the_same_two_project_buttons_as_draw_with_its_own_words() -> None:
+    open_tip = "Open a project file saved by Clayline. It brings back the design and every setting."
+    assert (
+        '<button class="secondary-button compact-button" id="weaveOpenProjectButton" '
+        f'type="button" title="{open_tip}">Open project…</button>'
+    ) in HTML
+    # Shipped disabled, and the reason stands in for the tooltip a disabled
+    # button never shows.
+    assert (
+        '<button class="secondary-button compact-button" id="weaveSaveProjectButton" '
+        'type="button" title="Load a mesh first" disabled>Save project…</button>'
+    ) in HTML
+    assert (
+        '<button class="secondary-button" id="weaveEmptyOpenProjectButton" '
+        f'type="button" title="{open_tip}">Open project…</button>'
+    ) in HTML
+
+    # The save sentence says what happens to the work, in Weave's own noun.
+    assert (
+        "const WEAVE_PROJECT_SAVE_TIP =\n"
+        '    "Save the mesh and every setting as one project file you can open later.";'
+    ) in WEAVE
+    assert 'const WEAVE_PROJECT_SAVE_DISABLED_TIP = "Load a mesh first";' in WEAVE
+
+    # Its own status line, next to the buttons that were pressed.
+    assert (
+        '<p class="field-hint project-status" id="weaveProjectStatus" role="status" '
+        'aria-live="polite" hidden></p>'
+    ) in HTML
+
+    parser = _Ids()
+    parser.feed(HTML)
+    assert len(parser.ids) == len(set(parser.ids))
+
+
+def test_weave_takes_a_project_from_the_drop_zone_and_the_browse_dialog() -> None:
+    assert (
+        'accept=".stl,.obj,.ply,.3mf,.clayline,.gcode,.json,'
+        'model/stl,model/obj,model/3mf,text/x-gcode,application/json"'
+    ) in HTML
+    assert "<small>mesh · project · saved G-code · saved pattern</small>" in HTML
+
+    dropped = _function("setDroppedFile", "function bindMeshControls")
+    # A project is recognised before the mesh/G-code/pattern branches and goes
+    # to the one funnel, never to setMeshFile.
+    assert "if (file.name.toLowerCase().endsWith(PROJECT_SUFFIX)) {" in dropped
+    assert "window.claylineProjectFiles?.open(file, file.name);" in dropped
+    assert dropped.index("PROJECT_SUFFIX") < dropped.index('endsWith(".gcode")')
+    assert 'const PROJECT_SUFFIX = ".clayline";' in WEAVE
+
+    # Both Open buttons reach the one shared chooser; Save is Weave's own.
+    assert (
+        '$("#weaveOpenProjectButton").addEventListener("click", '
+        "() => window.claylineProjectFiles?.chooser());"
+    ) in WEAVE
+    assert (
+        '$("#weaveEmptyOpenProjectButton").addEventListener("click", '
+        "() => window.claylineProjectFiles?.chooser());"
+    ) in WEAVE
+    assert (
+        '$("#weaveSaveProjectButton").addEventListener("click", () => saveWeaveProject());'
+    ) in WEAVE
+
+
+def test_a_saved_weave_project_is_the_mode_snapshot_the_mesh_and_whether_it_was_sliced() -> None:
+    save = _function("saveWeaveProject", "// The shell's answer to a save")
+    assert 'mode: "weave",' in save
+    # Verbatim snapshot, no translation, so applyWeaveSettings opens it.
+    assert "settings: weaveSettingsSnapshot()," in save
+    assert "state: { sliced: Boolean(S.slice) }," in save
+    assert "sources: [{ name: S.file.name, bytes: S.file }]," in save
+    assert "savedWith: window.claylineProjectFiles?.appVersion()," in save
+    # Nothing is saved with no mesh loaded, and the button says so first.
+    assert "if (!codec || !S.file) return false;" in save
+
+    sync = _function("syncWeaveProjectControls", "function weaveProjectStem")
+    assert "const ready = Boolean(S.file) && Boolean(projectCodec());" in sync
+    assert "save.title = ready ? WEAVE_PROJECT_SAVE_TIP : WEAVE_PROJECT_SAVE_DISABLED_TIP;" in sync
+
+    # A browser download is the only answer a browser can give; in the app the
+    # shell reports what the artist chose, and nothing is claimed before that.
+    assert 'setWeaveProjectStatus("Saving project…");' in save
+    assert 'setWeaveProjectStatus("Project file downloaded");' in save
+    assert "if (nativeShell()) {" in save
+    result = _function("weaveProjectSaveResult", "// app.js has already read the file")
+    assert "if (payload.ok) {" in result
+    assert "setWeaveProjectStatus(`Project saved · ${name" in result
+    # The artist's own name, kept as they wrote it: the line names the file
+    # that is really there and the next save suggests it again.
+    assert "const name = weaveProjectDisplayName(payload.name);" in result
+    assert "S.projectName = weaveProjectDisplayName(name) || null;" in WEAVE
+    assert "link.download = downloadName;" in save
+
+    # The suggested name is the project's own, else the mesh's.
+    suggested = _function("suggestedWeaveProjectName", "async function saveWeaveProject")
+    assert 'return S.projectName || weaveProjectStem(S.file?.name) || "form";' in suggested
+
+
+def test_opening_a_weave_project_is_one_undo_step_then_mesh_then_slice() -> None:
+    open_project = _function("openWeaveProject", "function bindHistoryFieldCommits")
+
+    # Refused before anything is touched, so app.js still owes the refusal.
+    assert "!MESH_SUFFIXES.test(source.name)" in open_project
+    assert "|| !validWeaveSettings(project.settings)" in open_project
+    assert open_project.index("return false;") < open_project.index('activateMode("weave")')
+
+    # The mode the file was saved in, then the mesh, then the settings, held.
+    assert (
+        'S.file = new File([source.bytes], source.name, { type: "application/octet-stream" });'
+    ) in open_project
+    assert "weaveStateWriter?.suspend(() => {" in open_project
+    assert "applyWeaveSettings(project.settings, { settle: false });" in open_project
+    # Flushed once at the very end, after the re-slice has put the print range
+    # back, so the single history entry is the whole open and not half of it.
+    assert "weaveStateWriter?.flush();" in open_project
+    assert open_project.index("suspend(() =>") < open_project.index("flush();")
+    assert open_project.index("await uploadMesh();") < open_project.index("flush();")
+
+    # The saved range waits on S.pendingRange: applyWeaveSettings only takes
+    # that path when there is no slice with a known layer count, and a freshly
+    # opened project has neither.
+    assert "S.slice = null;" in open_project
+    assert "S.rangeTotal = null;" in open_project
+    settings = _function("applyWeaveSettings", "function restoreWeaveSettings")
+    assert "if (S.slice && Number.isInteger(S.rangeTotal)) {" in settings
+    # Both numbers are parked whether or not the range was switched on, so a
+    # project that comes back and goes out again is the same project.
+    assert "enabled: Boolean(slice.range_enabled)," in settings
+    assert "S.pendingRange = slice.range_enabled" not in settings
+    restore = _function("applyPrintRange", "function syncBottomAvailability")
+    assert "const restoredSelection = Boolean(requested) && requested.enabled !== false;" in restore
+    assert '$("#weaveRangeEnabled").checked = requested' in restore
+
+    # Then the mesh, and only a project that was sliced slices again.
+    assert "await uploadMesh();" in open_project
+    assert "if (project.state.sliced && S.mesh) await runSlice();" in open_project
+    assert open_project.index("await uploadMesh();") < open_project.index("await runSlice();")
+
+    # A stale recipe from an earlier G-code restore never rides along.
+    for field in (
+        "S.restoreEmission",
+        "S.restoreSource",
+        "S.restoreRecipeId",
+        "S.restoreProfileName",
+    ):
+        assert f"{field} = null;" in open_project
+
+
+def test_the_page_routes_a_project_file_by_the_mode_it_was_saved_in() -> None:
+    assert "saveProject: saveWeaveProject," in WEAVE
+    assert "openProject: openWeaveProject," in WEAVE
+    assert "projectSaveResult: weaveProjectSaveResult," in WEAVE
+    assert "projectStatus: setWeaveProjectStatus," in WEAVE
+
+    # Weave's opener now exists, so app.js hands a Weave project straight over
+    # and keeps the refusal for the case where Weave turns it down untouched.
+    assert "const openWeave = window.claylineWeaveMode?.openProject;" in APP
+    assert "} else if (await openWeave(project, name)) {" in APP
+    # The shell is told how a Weave project ended the same way a Draw one is.
+    assert "reportProjectOpened(name, opened);" in APP
+    assert 'setProjectStatus(codec.MESSAGES["not-a-project"]);' in APP
+    # A Draw project opened from Weave leaves Weave and lands on the bed.
+    assert (
+        "window.claylineWeaveMode?.activateTiles();\n      opened = Boolean(await applyDrawProject("
+    ) in APP
+
+    # One funnel, one chooser, one version — reached by name, not by reaching
+    # into app.js's own variables.
+    assert "window.claylineProjectFiles = Object.freeze({" in APP
+    assert "chooser: () => openProjectChooser()," in APP
+    assert "open: (source, name) => openProjectFile(source, name)," in APP
+    assert "appVersion: () => state.appVersion," in APP
+
+    # The artist reads the answer on the line in front of them.
+    assert (
+        'if (document.body.dataset.claylineMode === "weave" && typeof weaveLine === "function") {'
+    ) in APP
+
+
+def test_no_new_project_string_speaks_to_a_developer() -> None:
+    forbidden = ("ZIP", "JSON", "schema", "base64", "UTI", "CRC", "engine")
+    visible = [
+        "Open project…",
+        "Save project…",
+        "Load a mesh first",
+        "Open a project file saved by Clayline. It brings back the design and every setting.",
+        "Save the mesh and every setting as one project file you can open later.",
+        "Saving project…",
+        "Project file downloaded",
+        "Clayline couldn't make a project file from this form.",
+        "mesh · project · saved G-code · saved pattern",
+    ]
+    for sentence in visible:
+        assert sentence in HTML or sentence in WEAVE
+        for word in forbidden:
+            assert word.lower() not in sentence.lower()

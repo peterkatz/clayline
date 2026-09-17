@@ -68,7 +68,13 @@
             </label>
             <div class="draw-new-row">
               <button class="secondary-button compact-button" id="newDrawingButton" type="button" title="Start an empty pass and draw it straight onto the bed, in millimetres, at coil width.">New drawing</button>
+              <button class="secondary-button compact-button" id="galleryButton" type="button" title="Open one of the example drawings that come with Clayline — patterns from many traditions, ready to slice and print." hidden>Browse the gallery</button>
             </div>
+            <div class="draw-project-row">
+              <button class="secondary-button compact-button" id="openProjectButton" type="button" title="Open a project file saved by Clayline. It brings back the design and every setting.">Open project…</button>
+              <button class="secondary-button compact-button" id="saveProjectButton" type="button" title="Load or draw something first" disabled>Save project…</button>
+            </div>
+            <p class="field-hint project-status" id="projectStatus" role="status" aria-live="polite" hidden></p>
             <div class="file-summary" id="fileSummary" aria-live="polite">No designs loaded</div>
             <p class="field-hint" id="designSizeHint">Set the size and placement of each design in Passes.</p>
           </div>
@@ -264,6 +270,8 @@
             <div class="empty-actions" id="emptyActions">
               <button class="primary-button" id="startDrawingButton" type="button" title="Open the bed as a drawing surface: tap points, drag to draw freely, pull a line to bend it. Nothing plans until you Slice.">Start a drawing</button>
               <button class="secondary-button" id="addSvgsButton" type="button" title="Load centerline SVG artwork you already have. Each SVG becomes one printable page.">Add SVGs…</button>
+              <button class="secondary-button" id="emptyGalleryButton" type="button" title="Open one of the example drawings that come with Clayline — patterns from many traditions, ready to slice and print." hidden>Browse the gallery…</button>
+              <button class="secondary-button" id="emptyOpenProjectButton" type="button" title="Open a project file saved by Clayline. It brings back the design and every setting.">Open project…</button>
             </div>
           </div>
           <div class="loading-state" id="loadingState" role="status" aria-live="polite" hidden>
@@ -441,11 +449,16 @@
                 </div>
               </div>
               <p class="section-copy">Load the base mesh — the form your pattern wraps. Every honest ring and mesh warning is kept.</p>
-              <label class="drop-zone" id="weaveDropZone" for="weaveFileInput" title="Load one STL, OBJ, PLY, or 3MF mesh in millimetres, restore a saved Weave G-code recipe, or load a saved pattern.">
+              <label class="drop-zone" id="weaveDropZone" for="weaveFileInput" title="Load one STL, OBJ, PLY, or 3MF mesh in millimetres, open a saved project, restore a saved Weave G-code recipe, or load a saved pattern.">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg>
-                <span><strong>Drop a file here</strong><small>mesh · saved G-code · saved pattern</small></span>
-                <input id="weaveFileInput" type="file" accept=".stl,.obj,.ply,.3mf,.gcode,.json,model/stl,model/obj,model/3mf,text/x-gcode,application/json">
+                <span><strong>Drop a file here</strong><small>mesh · project · saved G-code · saved pattern</small></span>
+                <input id="weaveFileInput" type="file" accept=".stl,.obj,.ply,.3mf,.clayline,.gcode,.json,model/stl,model/obj,model/3mf,text/x-gcode,application/json">
               </label>
+              <div class="draw-project-row weave-project-row">
+                <button class="secondary-button compact-button" id="weaveOpenProjectButton" type="button" title="Open a project file saved by Clayline. It brings back the design and every setting.">Open project…</button>
+                <button class="secondary-button compact-button" id="weaveSaveProjectButton" type="button" title="Load a mesh first" disabled>Save project…</button>
+              </div>
+              <p class="field-hint project-status" id="weaveProjectStatus" role="status" aria-live="polite" hidden></p>
               <div class="file-summary" id="weaveFileSummary" aria-live="polite">No model loaded</div>
               <div class="control-grid">
                 <label class="field" title="Which source axis points upward before placement. Rhino OBJ exports are usually Y up — if the sliced rings look like a tangled contour map instead of stacked walls, flip this."><span>Up axis</span><select id="weaveUpAxis"><option value="z" selected>Z up</option><option value="y">Y up</option></select></label>
@@ -753,6 +766,9 @@
             <svg class="weave-empty-illustration" viewBox="0 0 200 180" aria-hidden="true"><path d="M51 134c4-19 12-32 14-51 2-16-4-31 0-42 8-20 62-20 70 0 4 11-2 26 0 42 2 19 10 32 14 51"/><path d="M56 118c25 8 63 8 88 0M61 91c22 7 56 7 78 0M64 62c21 6 51 6 72 0"/></svg>
             <h2>Load a base mesh</h2>
             <p>Clayline slices it into real rings before any pattern is applied.</p>
+            <div class="empty-actions">
+              <button class="secondary-button" id="weaveEmptyOpenProjectButton" type="button" title="Open a project file saved by Clayline. It brings back the design and every setting.">Open project…</button>
+            </div>
           </div>
           <div class="weave-loading-state" id="weaveLoadingState" role="status" aria-live="polite" hidden>
             <div class="weave-skeleton skeleton-form" aria-hidden="true"></div>
@@ -856,6 +872,8 @@
       </section>
     </div>
 
+    <input id="projectFileInput" type="file" accept=".clayline" hidden>
+
     <!-- three.js r147 (three@0.147.0 UMD build), MIT License; see three.min.js header for attribution -->
     <script src="/static/three.min.js"></script>
     <!-- three@0.147.0 examples/js/lines fat-line addons, MIT License (three.js authors) -->
@@ -868,6 +886,7 @@
     <script src="/static/scrubber.js" defer></script>
     <script src="/static/studio-state.js" defer></script>
     <script src="/static/reference-store.js" defer></script>
+    <script src="/static/project-file.js" defer></script>
     <script src="/static/app.js" defer></script>
     <script src="/static/draw-core.js" defer></script>
     <script src="/static/draw-canvas.js" defer></script>

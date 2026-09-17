@@ -29,6 +29,10 @@ Each mode is laid out the same way:
 
 The **Slice** button at the bottom of the workflow builds the toolpath. Nothing prints from there. It only prepares the file.
 
+## Try an example first
+
+Clayline comes with a gallery of 98 example drawings. In **Draw in Clay**, press **Browse the gallery** under 01 Design, open a folder, and choose a drawing. Press **Slice job** and look around: the plan, the 3D toolpath, and Before you print. Nothing reaches a printer until you save a file and take it there yourself.
+
 ## Choose your printer
 
 Open **06 Printer** in either mode and pick your machine from the list.
@@ -41,6 +45,6 @@ The printer choice sets the bed size you see in the preview, the print speeds, t
 
 ## Getting a file to the printer
 
-After you slice, **Download G-code** in the right-hand panel saves the print file through the normal Mac save window. **File → Export G-code…** (Command-S) does the same, and **File → Open…** (Command-O) loads drawings or models. Give the file a name under **07 Export**, or leave the box blank to name it after your design.
+After you slice, **Download G-code** in the right-hand panel saves the print file through the normal Mac save window. **File → Export G-code…** (Shift-Command-E) does the same, and **File → Open…** (Command-O) loads drawings or models. Command-S is the whole job, not the print file: see Saving your project in [Draw in Clay](tiles.md) and [Weave](weave.md). Give the file a name under **07 Export**, or leave the box blank to name it after your design.
 
 Copy the file to your printer the way you already do for any print. Clayline never sends anything to the machine itself.

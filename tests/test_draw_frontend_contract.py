@@ -24,6 +24,7 @@ HTML = (STATIC / "index.html").read_text(encoding="utf-8")
 APP = (STATIC / "app.js").read_text(encoding="utf-8")
 SHELL = (STATIC / "draw.js").read_text(encoding="utf-8")
 CSS = (STATIC / "app.css").read_text(encoding="utf-8")
+STORE = (STATIC / "reference-store.js").read_text(encoding="utf-8")
 
 # The drawing surface's own controls, and the tooltip each one carries.  Quoted
 # in full because the exact sentence is the deliverable: the charter's standing
@@ -520,3 +521,203 @@ def test_saving_a_design_offers_the_original_when_there_is_one() -> None:
     # track at 1280 px and overflow is a charter defect.
     assert "window.claylineDraw?.saveSVG(index)" in APP
     assert "svgSaveResult" in APP
+
+
+# --- project files ----------------------------------------------------------
+#
+# Saving a whole job and opening it again.  The copy is pinned here because it
+# IS the deliverable: one sentence that says what happens to the work, and a
+# disabled button that says what it is waiting for instead of going quietly
+# dead.
+
+PROJECT_OPEN_TIP = (
+    "Open a project file saved by Clayline. It brings back the design and every setting."
+)
+PROJECT_SAVE_TIP = (
+    "Save everything on the bed and every setting as one project file you can open later."
+)
+PROJECT_SAVE_DISABLED_TIP = "Load or draw something first"
+
+
+def test_a_whole_job_can_be_opened_and_saved_from_the_design_section() -> None:
+    row = _block('class="draw-project-row"', "</div>")
+    assert 'id="openProjectButton"' in row
+    assert 'id="saveProjectButton"' in row
+    assert ">Open project…</button>" in row
+    assert ">Save project…</button>" in row
+    # Siblings of the drop zone's <label>, never inside it: a button in there
+    # would swallow the click that opens the SVG picker.
+    label_end = HTML.index("</label>", HTML.index('id="dropZone"'))
+    assert HTML.index('id="openProjectButton"') > label_end
+    assert HTML.index('id="saveProjectButton"') > label_end
+    # The first-run empty state offers the same way in from the bed itself.
+    empty = _block('id="emptyActions"', "</div>")
+    assert 'id="emptyOpenProjectButton"' in empty
+    assert ">Open project…</button>" in empty
+    # One chooser, shared by both modes, outside either workspace so it is
+    # reachable whichever one is showing.
+    assert '<input id="projectFileInput" type="file" accept=".clayline" hidden>' in HTML
+    assert HTML.index('id="projectFileInput"') > HTML.index("</main>")
+    # The SVG picker keeps its own job — a project has its own button.
+    assert 'id="fileInput" type="file" accept="image/svg+xml,.svg" multiple' in HTML
+    # And the line that answers back after a save or a refused open.
+    assert 'id="projectStatus" role="status" aria-live="polite" hidden' in HTML
+    assert ".draw-project-row" in CSS
+
+
+def test_the_project_controls_say_what_happens_to_the_work() -> None:
+    shipped = {
+        "openProjectButton": PROJECT_OPEN_TIP,
+        "emptyOpenProjectButton": PROJECT_OPEN_TIP,
+        # It ships disabled, so it ships carrying the reason.
+        "saveProjectButton": PROJECT_SAVE_DISABLED_TIP,
+    }
+    for element_id, expected in shipped.items():
+        tag = _element(f'id="{element_id}"')
+        match = re.search(r'title="([^"]*)"', tag)
+        assert match is not None, f"{element_id} carries no tooltip"
+        assert match.group(1) == expected, element_id
+    for tooltip in (PROJECT_OPEN_TIP, PROJECT_SAVE_TIP, PROJECT_SAVE_DISABLED_TIP):
+        lowered = tooltip.lower()
+        for term in ENGINE_JARGON:
+            assert not re.search(rf"\b{term}\b", lowered), f"{tooltip!r} says {term!r}"
+    # Nothing in this feature's own copy names a container, a checksum or a
+    # schema: the charter's rule, checked over every string the page can show.
+    project_copy = re.findall(r'"([^"\\\n]{12,})"', APP[APP.index("/* ---------- project files") :])
+    assert len(project_copy) > 6, "the copy sweep stopped matching; it is checking nothing"
+    for text in project_copy:
+        lowered = text.lower()
+        for term in (*ENGINE_JARGON, "zip", "json", "schema", "base64", "crc", "uti", "engine"):
+            assert not re.search(rf"\b{term}\b", lowered), f"{text!r} says {term!r}"
+
+
+def test_saving_a_project_is_disabled_until_there_is_something_to_save() -> None:
+    assert "disabled" in _element('id="saveProjectButton"')
+    # Both halves, exactly as the drawing surface does it: the property that
+    # makes it inert, and the sentence that says what it is waiting for.
+    assert f'"{PROJECT_SAVE_TIP}"' in APP
+    assert f'"{PROJECT_SAVE_DISABLED_TIP}"' in APP
+    assert "save.disabled = !ready;" in APP
+    assert "save.title = ready ? PROJECT_SAVE_TIP : PROJECT_SAVE_DISABLED_TIP;" in APP
+    assert "const ready = state.files.length > 0 && Boolean(projectCodec());" in APP
+    # And it is kept right by the same sweep every other dependent control uses.
+    assert "syncProjectControls();" in APP
+
+
+def test_the_codec_loads_before_the_page_that_saves_with_it() -> None:
+    assert '<script src="/static/project-file.js" defer></script>' in HTML
+    for later in ("app.js", "weave.js"):
+        assert HTML.index('src="/static/project-file.js"') < HTML.index(f'src="/static/{later}"')
+
+
+def test_opening_a_project_is_one_undo_step_and_routes_by_the_file_itself() -> None:
+    # The file says which mode it belongs to; the page does not guess from the
+    # mode that happens to be showing.
+    assert "codec.read(source)" in APP
+    assert 'if (project.mode === "weave") {' in APP
+    assert "const openWeave = window.claylineWeaveMode?.openProject;" in APP
+    assert 'typeof openWeave !== "function"' in APP
+    assert "window.claylineWeaveMode?.activateTiles();" in APP
+    # The photos go back under the ids the placements already name, BEFORE the
+    # settings land, so the first frame the bed draws already has them.
+    assert "store.storeImage(reference.image_id, reference.blob)" in APP
+    assert APP.index("storeImage(reference.image_id") < APP.index("const applied = drawStateWriter")
+    # One undo step: held while the whole project lands, flushed exactly once.
+    assert "const applied = drawStateWriter ? drawStateWriter.suspend(land) : land();" in APP
+    assert "drawStateWriter?.flush();" in APP
+    # A project that was sliced when it was saved slices again, and only once
+    # every pass has been measured — the readiness Slice itself waits for.
+    assert "state.pendingProjectSlice = Boolean(project.state.sliced);" in APP
+    assert "if (!state.pendingProjectSlice || !allPassMeasurementsReady()) return;" in APP
+    # A slice already running holds the gate shut, so the flag is spent only
+    # once the slice can really start — and the end of a slice calls back, so
+    # a project opened mid-slice is slowed down rather than left unsliced.
+    assert 'if (state.isSlicing || $("#sliceButton").disabled) return;' in APP
+    guard = APP.index("function sliceOpenedProjectWhenReady")
+    body = APP[guard : APP.index("function projectBytesFromBase64")]
+    assert body.index("state.isSlicing") < body.index("state.pendingProjectSlice = false;")
+    assert APP.count("sliceOpenedProjectWhenReady();") >= 3
+    assert "sliceOpenedProjectWhenReady();" in APP[APP.index("function endLoading") : guard]
+    # A printer this Clayline does not have is said out loud, not swallowed —
+    # and the one in use is named the way the picker names it.
+    assert 'Printer profile "${wanted}" isn\'t installed here; using ${inUse}.' in APP
+    assert "const inUse = state.profiles.get(profile)?.label || profile;" in APP
+
+
+def test_a_refused_project_says_the_codecs_own_words_and_changes_nothing() -> None:
+    assert 'error.name === "ProjectFileError"' in APP
+    assert 'codec.MESSAGES["not-a-project"]' in APP
+    # No second spelling of the three refusals lives in the page: one set of
+    # words, written once, in the module that decides which one applies.
+    for message in (
+        "That isn't a Clayline project file",
+        "saved by a newer Clayline",
+        "too large to open here",
+    ):
+        assert message not in APP
+        assert message not in HTML
+    # The refusal is read before anything is applied, so the bed is untouched.
+    assert APP.index("setProjectStatus(\n      error && error.name") < APP.index(
+        "function applyDrawProject"
+    )
+
+
+def test_saving_never_claims_more_than_the_page_can_see() -> None:
+    assert 'mode: "draw",' in APP
+    assert "state: { sliced: Boolean(state.result) }," in APP
+    assert "savedWith: state.appVersion," in APP
+    # The artist's own name goes in the status line and the panel; only the
+    # download attribute is cut back to what a browser can name a file.
+    assert "link.download = downloadName;" in APP
+    assert "state.projectName = projectDisplayName(downloadName);" in APP
+    # In the app the shell answers; in a browser the download is the answer.
+    assert "window.webkit && window.webkit.messageHandlers" in APP
+    assert '"Saving project…"' in APP
+    assert '"Project file downloaded"' in APP
+    assert "`Project saved · ${name || suggestedProjectName()}${PROJECT_SUFFIX}`" in APP
+    # The name is the one the artist typed, kept as they wrote it, so the line
+    # names a file that is really there and the next save suggests it again.
+    assert "const name = projectDisplayName(payload.name);" in APP
+    assert "state.projectName = projectDisplayName(name) || null;" in APP
+    assert "function projectDisplayName(value)" in APP
+    # A cancelled panel is not a failure and says nothing.
+    assert "setProjectStatus(payload.reason ? `That project could not be saved" in APP
+    # The name the job was last opened from or saved as comes back next time.
+    assert "state.projectName" in APP
+    assert 'fetch("/api/health")' in APP
+    assert "state.appVersion = payload.version" in APP
+
+
+def test_the_native_shell_gets_the_four_project_actions() -> None:
+    start = APP.index("window.claylineDesktop = Object.freeze({")
+    desktop = APP[start : APP.index("\n});", start)]
+    for key in ("saveProject:", "openProject:", "importProject:", "projectSaveResult:"):
+        assert key in desktop, key
+    # A save routes by the mode that is showing, like every other action here.
+    assert 'document.body.dataset.claylineMode === "weave"' in desktop
+    # Finder hands the bytes over already read; a name that is not a project
+    # and bytes that will not decode are refused before anything is applied.
+    assert "async function desktopImportProject(payload)" in APP
+    assert "const bytes = projectBytesFromBase64(payload?.base64);" in APP
+    # The shell hears yes only after the file has been read through, so a
+    # damaged project never renames the window after itself -- and it hears no
+    # as well, so it lets go of a file the page turned down.
+    assert "return openProjectFile(bytes, leaf);" in APP
+    assert "function reportProjectOpened(name, opened)" in APP
+    assert "window.webkit?.messageHandlers?.claylineProjectOpened" in APP
+    assert 'handler.postMessage({ name: String(name || ""), ok: Boolean(opened) });' in APP
+    assert "reportProjectOpened(name, false);" in APP
+
+
+def test_the_photo_store_can_hand_a_photo_out_and_take_it_back() -> None:
+    assert "function imageBlob(imageId)" in STORE
+    assert "function storeImage(imageId, blob)" in STORE
+    assert "return Object.freeze({ importImage, bitmap, imageBlob, storeImage, sweep });" in STORE
+    # A photo put back replaces whatever the session had drawn under that id...
+    assert "bitmaps.delete(imageId);" in STORE
+    assert "loading.delete(imageId);" in STORE
+    # ...and draws even where the database refused the write, exactly as an
+    # imported photo does.
+    assert STORE.count("bitmaps.set(imageId, decoded);") >= 2
+    # A pass whose photo is gone keeps its placement; nothing else moves.
+    assert 'if (!blob || !/^image\\/(png|jpeg|webp)$/.test(blob.type || "")) continue;' in APP

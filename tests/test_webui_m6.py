@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 import pytest
 
+import clayline
 from clayline.cli import main
 from clayline.lint import lint_gcode
 from clayline.profiles import load_profile
@@ -131,7 +132,11 @@ def test_ui_security_headers_and_profile_endpoint() -> None:
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             health = await client.get("/api/health")
             assert health.status_code == 200
-            assert health.json() == {"status": "ok", "scope": "localhost"}
+            assert health.json() == {
+                "status": "ok",
+                "scope": "localhost",
+                "version": clayline.__version__,
+            }
             assert health.headers["cache-control"] == "no-store"
             assert health.headers["x-frame-options"] == "DENY"
             assert "connect-src 'self'" in health.headers["content-security-policy"]
@@ -226,7 +231,11 @@ def test_large_response_build_and_serialization_do_not_block_health(
             assert await asyncio.to_thread(started.wait, 2)
             health = await asyncio.wait_for(client.get("/api/health"), timeout=1)
             assert health.status_code == 200
-            assert health.json() == {"status": "ok", "scope": "localhost"}
+            assert health.json() == {
+                "status": "ok",
+                "scope": "localhost",
+                "version": clayline.__version__,
+            }
             release.set()
             sliced = await asyncio.wait_for(slice_task, timeout=2)
             assert sliced.status_code == 200

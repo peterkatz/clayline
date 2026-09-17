@@ -91,6 +91,12 @@ Export unlocks only after the final path passes every check.
 
 Cuts the model into rings. After that, the pattern controls play against the real rings live, and the button reads **Sliced**: the final path rebuilds on its own as you edit.
 
+### Saving your project
+
+**Save project…** under 01 Model, or **File → Save Project…** (Command-S), writes the whole job to one file: the model itself and every setting, from the nozzle and the layer height to the wave you shaped and the name you export under. **Open project…**, or **File → Open Project…** (Shift-Command-O), brings it all back as you left it, on this Mac or another. If the form was sliced when you saved it, Clayline slices it again, so the pattern is live in front of you straight away. The box under 01 Model takes a saved project too.
+
+A print file is not a project. It holds the finished path for the machine, not the model you would go on shaping, so keep the project beside it. **File → Export G-code…** (Shift-Command-E) is the one that writes a print file.
+
 ## Reading the result
 
 The preview header says which model is loaded, how many layers it sliced into, and whether the path is ready to print. The layer chips under the preview colour every layer and let you isolate one. The scrubber walks the print move by move, as in Draw in Clay.

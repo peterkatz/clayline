@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from clayline import __version__
 from clayline import defaults as _defaults
 from clayline.emit import DEFAULT_WET_DENSITY_G_CM3, profile_start_charge_e
 from clayline.models import PageMode, PassModel, Point, Profile, ZMode
@@ -220,7 +221,8 @@ def create_app(
 
     @app.get("/api/health", include_in_schema=False)
     async def health() -> dict[str, str]:
-        return {"status": "ok", "scope": "localhost"}
+        # The page stamps the saved project with the version it was saved by.
+        return {"status": "ok", "scope": "localhost", "version": __version__}
 
     @app.get("/api/profiles", include_in_schema=False)
     async def profiles() -> dict[str, list[dict[str, Any]]]:

@@ -6,8 +6,13 @@ enum SafeFilename {
     /// Extensions the studio legitimately downloads. Anything else keeps the
     /// historical G-code default — but a saved pattern must never come back
     /// as `name.json.gcode` (Pete 2026-07-20: the picker greyed out the
-    /// app's own file).
-    static let knownExtensions = ["gcode", "json"]
+    /// app's own file), and neither must a saved project.
+    static let knownExtensions = ["gcode", "json", "clayline"]
+    private static let emptyStemNames = [
+        "gcode": fallback,
+        "json": "clayline-pattern.json",
+        "clayline": "clayline-project.clayline",
+    ]
 
     static func download(_ proposed: String?) -> String {
         let raw = (proposed ?? "")
@@ -46,7 +51,7 @@ enum SafeFilename {
         sanitized = String(sanitized.prefix(maximumStemCharacters))
             .trimmingCharacters(in: CharacterSet(charactersIn: "-._"))
         guard !sanitized.isEmpty else {
-            return fileExtension == "gcode" ? fallback : "clayline-pattern.\(fileExtension)"
+            return emptyStemNames[fileExtension] ?? fallback
         }
         return "\(sanitized).\(fileExtension)"
     }

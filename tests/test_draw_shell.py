@@ -32,7 +32,15 @@ SHELL = STATIC / "draw.js"
 
 
 def test_every_touched_script_parses() -> None:
-    for name in ("draw-core.js", "draw-canvas.js", "draw-input.js", "draw.js", "app.js"):
+    for name in (
+        "draw-core.js",
+        "draw-canvas.js",
+        "draw-input.js",
+        "draw.js",
+        "app.js",
+        "project-file.js",
+        "reference-store.js",
+    ):
         subprocess.run(["node", "--check", str(STATIC / name)], check=True, capture_output=True)
 
 
@@ -40,7 +48,15 @@ def test_the_shell_loads_after_the_modules_it_uses() -> None:
     markup = INDEX.read_text(encoding="utf-8")
     order = [
         markup.index(f'src="/static/{name}"')
-        for name in ("app.js", "draw-core.js", "draw-canvas.js", "draw-input.js", "draw.js")
+        for name in (
+            "reference-store.js",
+            "project-file.js",
+            "app.js",
+            "draw-core.js",
+            "draw-canvas.js",
+            "draw-input.js",
+            "draw.js",
+        )
     ]
     assert order == sorted(order)
 
@@ -344,3 +360,54 @@ def test_the_panel_is_shown_before_the_camera_is_fitted() -> None:
     show = source.index("syncVisibility();")
     fit = source.index("view.camera.fit();")
     assert show < fit, "openFile must show the panel before fitting the camera"
+
+
+def test_every_way_into_a_saved_project_is_wired() -> None:
+    """Saving and opening a whole job, from each of the places it is offered.
+
+    The buttons in the Design section and on the empty bed, the one hidden
+    chooser both modes share, a project dropped on the drop zone, and the
+    native menu's own surface.  Each one ends in the same single function, so
+    there is one open path to be right rather than five.
+    """
+
+    markup = INDEX.read_text(encoding="utf-8")
+    app = APP.read_text(encoding="utf-8")
+    for element_id in (
+        "openProjectButton",
+        "saveProjectButton",
+        "emptyOpenProjectButton",
+        "projectFileInput",
+        "projectStatus",
+    ):
+        assert f'id="{element_id}"' in markup, element_id
+    assert '$("#openProjectButton")?.addEventListener("click", openProjectChooser);' in app
+    assert '$("#emptyOpenProjectButton")?.addEventListener("click", openProjectChooser);' in app
+    assert '$("#saveProjectButton")?.addEventListener("click", () => saveProject());' in app
+    assert '$("#projectFileInput")?.addEventListener("change"' in app
+    # A whole job dropped on the drop zone opens as a job rather than being
+    # reported as "not an SVG".
+    assert r"/\.clayline$/i.test(file.name)" in app
+    assert "openProjectFile(project, project.name);" in app
+    # One funnel: the chooser, the drop, the menu and Finder all reach it.
+    assert app.count("openProjectFile(") >= 4
+    # The chooser lives outside both workspaces, so it is reachable from either
+    # mode, and it is not a second SVG picker.
+    assert markup.index('id="projectFileInput"') > markup.index("</main>")
+    assert 'id="projectFileInput" type="file" accept=".clayline" hidden' in markup
+
+
+def test_opening_a_project_leaves_exactly_one_undo_step() -> None:
+    # Same rule as a drawing gesture (PRD 7): the settled writer is held while
+    # the whole project lands, then flushed once, which captures, saves and
+    # pushes exactly one history entry.
+    app = APP.read_text(encoding="utf-8")
+    start = app.index("async function applyDrawProject")
+    body = app[start : app.index("function sliceOpenedProjectWhenReady")]
+    assert "drawStateWriter.suspend(land)" in body
+    assert body.count("drawStateWriter?.flush();") == 1
+    assert body.index("suspend(land)") < body.index("drawStateWriter?.flush();")
+    # applyDrawSettings validates before it mutates, so a snapshot this build
+    # cannot read leaves the bed exactly as it was.
+    assert "if (!applied) {" in body
+    assert 'setProjectStatus(codec.MESSAGES["not-a-project"]);' in body

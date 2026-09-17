@@ -57,6 +57,11 @@ struct ClaylineWebView: NSViewRepresentable {
         private let onFailure: @MainActor (String) -> Void
         private var healthSession: URLSession?
         private var didBegin = false
+        /// Every download in flight, by the WKDownload that is writing it.
+        private var stagedDownloads: [ObjectIdentifier: StagedDownload] = [:]
+        /// A project the Open panel has handed to the page but the page has
+        /// not read yet. It becomes the window's document only if it opens.
+        private var projectAwaitingThePage: URL?
         private var didFinishInitialNavigation = false
         private var invalidated = false
 
@@ -78,10 +83,20 @@ struct ClaylineWebView: NSViewRepresentable {
         /// from through this name.
         static let saveSVGHandlerName = "claylineSaveSVG"
 
+        /// The page tells the shell a project has been read through and is on
+        /// the bed, so a file it refuses never renames the window.
+        static let projectOpenedHandlerName = "claylineProjectOpened"
+
         func installSettingsBridge(in userContentController: WKUserContentController) {
             userContentController.addUserScript(settingsStore.userScript())
+            // The page shows its gallery buttons only when the shell says the
+            // example drawings are really here.
+            if let galleryScript = ClaylineGallery.userScript() {
+                userContentController.addUserScript(galleryScript)
+            }
             userContentController.add(self, name: StudioSettingsStore.messageHandlerName)
             userContentController.add(self, name: Self.saveSVGHandlerName)
+            userContentController.add(self, name: Self.projectOpenedHandlerName)
         }
 
         func begin(in webView: WKWebView) {
@@ -90,6 +105,9 @@ struct ClaylineWebView: NSViewRepresentable {
             actions.attach(webView)
             actions.onMeshSelected = { [weak self] url in
                 self?.settingsStore.rememberMeshURL(url)
+            }
+            actions.onProjectOpened = { [weak self] url in
+                self?.rememberProject(url)
             }
 
             guard let cookie = Self.sessionCookie(for: launch) else {
@@ -117,6 +135,9 @@ struct ClaylineWebView: NSViewRepresentable {
             webView.configuration.userContentController.removeScriptMessageHandler(
                 forName: Self.saveSVGHandlerName
             )
+            webView.configuration.userContentController.removeScriptMessageHandler(
+                forName: Self.projectOpenedHandlerName
+            )
         }
 
         func userContentController(
@@ -125,6 +146,10 @@ struct ClaylineWebView: NSViewRepresentable {
         ) {
             if message.name == Self.saveSVGHandlerName {
                 handleSaveSVG(message.body)
+                return
+            }
+            if message.name == Self.projectOpenedHandlerName {
+                handleProjectOpened(message.body)
                 return
             }
             guard message.name == StudioSettingsStore.messageHandlerName else { return }
@@ -143,6 +168,22 @@ struct ClaylineWebView: NSViewRepresentable {
                 return
             }
             report(saveOutcome: actions.saveSVGOverOriginal(name: name, svg: svg), for: name)
+        }
+
+        /// The page has finished with the project it was handed — opened, or
+        /// turned down. Only an open gives the window its name and starts the
+        /// next save panel in its folder; a damaged or foreign file leaves
+        /// both alone. Either way the shell lets go of the file here, so a
+        /// project chosen later cannot inherit the refused one's folder by
+        /// happening to share its name.
+        private func handleProjectOpened(_ body: Any) {
+            guard let url = projectAwaitingThePage else { return }
+            projectAwaitingThePage = nil
+            let payload = body as? [String: Any]
+            guard payload?["ok"] as? Bool ?? true else { return }
+            let name = payload?["name"] as? String ?? ""
+            guard name.isEmpty || name == url.lastPathComponent else { return }
+            actions.projectWasOpened(at: url)
         }
 
         private func report(saveOutcome: SVGSaveOutcome, for name: String) {
@@ -364,38 +405,86 @@ struct ClaylineWebView: NSViewRepresentable {
         ) {
             let mode = request.mode
             let panel = NSOpenPanel()
-            if request.isReferencePhoto {
+            if request.isProject {
+                panel.title = "Open a Clayline Project"
+                panel.allowedContentTypes = ClaylineFileTypes.projectTypes
+                panel.allowsMultipleSelection = false
+            } else if request.isReferencePhoto {
                 panel.title = "Open a Reference Photo"
                 panel.allowedContentTypes = ClaylineFileTypes.referencePhotoTypes
                 panel.allowsMultipleSelection = false
             } else {
-                panel.title = mode == .weave ? "Open One Mesh" : "Open Centerline SVGs"
+                panel.title = mode == .weave ? "Open One Mesh or Project" : "Open Drawings"
                 panel.allowedContentTypes = ClaylineFileTypes.allowedContentTypes(for: mode)
                 panel.allowsMultipleSelection =
                     mode == .tiles && parameters.allowsMultipleSelection
+            }
+            if request.isDrawingPicker {
+                // The gallery sits inside the app, and the app can be somewhere
+                // else at every launch, so it is found afresh here each time.
+                let gallery = ClaylineGallery.bundledURL()
+                if request.isGallery, gallery != nil {
+                    panel.title = "Open an Example Drawing"
+                }
+                if let start = ClaylineGallery.startingFolder(
+                    isGalleryRequest: request.isGallery,
+                    rememberedOwn: settingsStore.drawingFolderURL(gallery: gallery),
+                    rememberedGallery: settingsStore.galleryFolderURL(gallery: gallery),
+                    gallery: gallery
+                ) {
+                    panel.directoryURL = start
+                }
+            } else if let rescue = ClaylineGallery.rescuedStartingFolder(
+                panelDefault: panel.directoryURL,
+                candidates: ClaylineGallery.ownFolders(settingsStore: settingsStore)
+            ) {
+                // A gallery visit leaves macOS's shared "last folder" inside the
+                // app; no other panel may start there.
+                panel.directoryURL = rescue
             }
             panel.prompt = "Open"
             panel.canChooseDirectories = false
             panel.canChooseFiles = true
             panel.resolvesAliases = true
 
+            let remember: ([URL]?) -> Void = { [weak self] urls in
+                guard let url = urls?.first else { return }
+                if request.isProject {
+                    // The page has not read a byte of it yet; it reports back
+                    // when it has, and the window follows it only then.
+                    self?.projectAwaitingThePage = url
+                } else if mode == .weave, !request.isReferencePhoto {
+                    self?.settingsStore.rememberMeshURL(url)
+                } else if request.isDrawingPicker {
+                    self?.settingsStore.rememberDrawingFolder(
+                        for: url,
+                        gallery: ClaylineGallery.bundledURL()
+                    )
+                }
+            }
+
             if let window = webView.window {
-                panel.beginSheetModal(for: window) { [weak self] response in
+                panel.beginSheetModal(for: window) { response in
                     let urls = response == .OK ? panel.urls : nil
-                    if mode == .weave, !request.isReferencePhoto, let url = urls?.first {
-                        self?.settingsStore.rememberMeshURL(url)
-                    }
+                    remember(urls)
                     completionHandler(urls)
                 }
             } else {
-                panel.begin { [weak self] response in
+                panel.begin { response in
                     let urls = response == .OK ? panel.urls : nil
-                    if mode == .weave, !request.isReferencePhoto, let url = urls?.first {
-                        self?.settingsStore.rememberMeshURL(url)
-                    }
+                    remember(urls)
                     completionHandler(urls)
                 }
             }
+        }
+
+        /// A project just saved or opened becomes the window's document and
+        /// the folder the next save panel starts in.
+        private func rememberProject(_ url: URL) {
+            settingsStore.rememberProjectURL(url)
+            guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return }
+            window.representedURL = url
+            window.title = url.deletingPathExtension().lastPathComponent
         }
 
         func download(
@@ -405,49 +494,161 @@ struct ClaylineWebView: NSViewRepresentable {
             completionHandler: @escaping (URL?) -> Void
         ) {
             let safeName = SafeFilename.download(suggestedFilename)
-            let isPattern = safeName.lowercased().hasSuffix(".json")
+            let lowered = safeName.lowercased()
+            let isProject = lowered.hasSuffix(".\(ClaylineFileTypes.projectExtension)")
+            let isPattern = lowered.hasSuffix(".json")
             let panel = NSSavePanel()
-            panel.title = isPattern ? "Save Clayline pattern" : "Save Clayline G-code"
+            panel.title = isProject
+                ? "Save Clayline Project"
+                : (isPattern ? "Save Clayline pattern" : "Save Clayline G-code")
             panel.prompt = "Save"
-            panel.allowedContentTypes = isPattern ? [.json] : [ClaylineFileTypes.gcode]
+            panel.allowedContentTypes = isProject
+                ? ClaylineFileTypes.projectTypes
+                : (isPattern ? [.json] : [ClaylineFileTypes.gcode])
             panel.allowsOtherFileTypes = false
             panel.canCreateDirectories = true
             panel.isExtensionHidden = false
             panel.nameFieldStringValue = safeName
+            if isProject, let directory = settingsStore.projectDirectoryURL() {
+                panel.directoryURL = directory
+            } else if let rescue = ClaylineGallery.rescuedStartingFolder(
+                panelDefault: panel.directoryURL,
+                candidates: ClaylineGallery.ownFolders(settingsStore: settingsStore)
+            ) {
+                // Never offer to save inside the app: a gallery visit leaves
+                // macOS's shared "last folder" there.
+                panel.directoryURL = rescue
+            }
 
             if let window = NSApp.keyWindow ?? NSApp.mainWindow {
-                panel.beginSheetModal(for: window) { result in
-                    completionHandler(result == .OK ? Self.replaceableDestination(panel.url) : nil)
+                panel.beginSheetModal(for: window) { [weak self] result in
+                    completionHandler(
+                        self?.stage(
+                            download,
+                            at: result == .OK ? panel.url : nil,
+                            isProject: isProject
+                        )
+                    )
                 }
             } else {
-                panel.begin { result in
-                    completionHandler(result == .OK ? Self.replaceableDestination(panel.url) : nil)
+                panel.begin { [weak self] result in
+                    completionHandler(
+                        self?.stage(
+                            download,
+                            at: result == .OK ? panel.url : nil,
+                            isProject: isProject
+                        )
+                    )
                 }
             }
         }
 
-        // WKDownload refuses to write over an existing file, so honoring the
-        // save panel's "Replace?" consent requires removing the old file
-        // ourselves — otherwise every re-export to the same name dies and
-        // the artist keeps reading a stale file (Pete 2026-07-21: three
-        // calibrated re-exports silently lost to one drape-era file).
-        nonisolated static func replaceableDestination(_ url: URL?) -> URL? {
-            guard let url else { return nil }
-            // If removal fails, still hand the URL to WKDownload: its failure
-            // then surfaces through the didFailWithError alert instead of a
-            // silent cancel.
-            if FileManager.default.fileExists(atPath: url.path) {
-                try? FileManager.default.removeItem(at: url)
+        /// Hand WebKit a working file to write into, and remember where those
+        /// bytes are meant to land.
+        private func stage(
+            _ download: WKDownload,
+            at destination: URL?,
+            isProject: Bool
+        ) -> URL? {
+            guard let destination else {
+                // A cancelled panel is not a failure; the page's "Saving
+                // project…" line is simply cleared.
+                if isProject {
+                    actions.reportProjectSaveResult(ok: false, name: nil)
+                }
+                return nil
             }
-            return url
+            let staged = StagedDownload(destination: destination, isProject: isProject)
+            stagedDownloads[ObjectIdentifier(download)] = staged
+            return staged.staging
+        }
+
+        // WKDownload refuses to write over an existing file. Deleting the
+        // chosen file first honoured the panel's "Replace?" consent but threw
+        // the artist's only copy away before a single byte arrived, so a
+        // failed write left nothing at all. Every download now writes to a
+        // sibling working file and takes the chosen name only once the bytes
+        // are all there (Pete 2026-07-21: three calibrated re-exports lost to
+        // one drape-era file — that fix must not cost a whole project).
+        func downloadDidFinish(_ download: WKDownload) {
+            guard let staged = stagedDownloads.removeValue(forKey: ObjectIdentifier(download)) else {
+                return
+            }
+            let landed = StagedDownload.commit(staging: staged.staging, destination: staged.destination)
+            guard staged.isProject else {
+                if !landed { presentSaveFailure("The file was not written.") }
+                return
+            }
+            if landed {
+                rememberProject(staged.destination)
+                actions.reportProjectSaveResult(ok: true, name: staged.destination.lastPathComponent)
+            } else {
+                presentSaveFailure("Clayline kept the project that was already there.")
+                actions.reportProjectSaveResult(ok: false, name: nil)
+            }
         }
 
         func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+            let staged = stagedDownloads.removeValue(forKey: ObjectIdentifier(download))
+            if let staged {
+                StagedDownload.discard(staging: staged.staging)
+                if staged.isProject {
+                    actions.reportProjectSaveResult(ok: false, name: nil)
+                }
+            }
+            presentSaveFailure(error.localizedDescription)
+        }
+
+        private func presentSaveFailure(_ detail: String) {
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.messageText = "Saving the file failed"
-            alert.informativeText = error.localizedDescription
+            alert.informativeText = detail
             alert.runModal()
         }
+    }
+}
+
+/// One download in flight. WebKit writes the bytes into `staging`, a sibling
+/// working file, and the artist's chosen `destination` is only touched once
+/// the whole file has arrived — so a failed or cancelled write leaves what
+/// was already on disk byte-identical.
+struct StagedDownload: Equatable {
+    let destination: URL
+    let staging: URL
+    let isProject: Bool
+
+    init(destination: URL, isProject: Bool) {
+        let target = destination.standardizedFileURL
+        self.destination = target
+        self.staging = target
+            .deletingLastPathComponent()
+            .appendingPathComponent(".clayline-writing-\(UUID().uuidString)")
+        self.isProject = isProject
+    }
+
+    /// Move the finished bytes onto the chosen name. The old file is only
+    /// replaced here, at the last possible moment.
+    @discardableResult
+    static func commit(staging: URL, destination: URL) -> Bool {
+        let manager = FileManager.default
+        guard manager.fileExists(atPath: staging.path) else { return false }
+        do {
+            if manager.fileExists(atPath: destination.path) {
+                _ = try manager.replaceItemAt(destination, withItemAt: staging)
+            } else {
+                try manager.moveItem(at: staging, to: destination)
+            }
+            return true
+        } catch {
+            discard(staging: staging)
+            return false
+        }
+    }
+
+    /// Nothing usable was written: drop the working file and leave the
+    /// artist's own file alone.
+    static func discard(staging: URL) {
+        try? FileManager.default.removeItem(at: staging)
     }
 }

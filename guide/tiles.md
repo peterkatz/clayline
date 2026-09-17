@@ -35,6 +35,10 @@ Nothing plans while you draw. Press **Done**, then **Slice job**.
 
 Drop one or more SVG files on the box, or click it to choose them. Each file becomes one pass, in the order you add them. The line under the box tells you the file's size and that its placement lives in Passes.
 
+**Browse the gallery** opens the example drawings that come with Clayline: 98 tiles sorted into folders by tradition, from Celtic knots and Japanese waves to Victorian ornament and a small zoo. They're the quickest way to see what the printer does with different kinds of line before you draw your own, and every one of them is yours to resize, repeat, and print. **File → Open from Gallery…** goes to the same place.
+
+Until you've opened a drawing from a folder of your own, choosing files starts in the gallery too. After that it starts in your own folder, wherever you last opened a drawing, and the gallery button always takes you back.
+
 ### 02 Passes
 
 Each row is one pass through a design, and each pass prints once. Pass 1 is the bottom tier; every row after it builds upward.
@@ -105,6 +109,12 @@ Choose your printer. **Clay flow** scales how much clay is pushed per millimetre
 ### Slice job
 
 Builds the toolpath, checks it, and draws both previews. Nothing prints from here. The button tells you which mode and how many passes it's about to build.
+
+### Saving your project
+
+**Save project…** under 01 Design, or **File → Save Project…** (Command-S), writes the whole job to one file: every pass, the drawing inside it, any photo you placed to trace, and every setting from the nozzle to the name you export under. **Open project…**, or **File → Open Project…** (Shift-Command-O), brings it all back as you left it, on this Mac or another. If the job was sliced when you saved it, Clayline slices it again so the preview is waiting for you. You can also drop a saved project on the box under 01 Design.
+
+A print file is not a project. It holds the finished path for the machine, not the drawings you would go on editing, so keep the project beside it. **File → Export G-code…** (Shift-Command-E) is the one that writes a print file.
 
 ## Reading the result
 

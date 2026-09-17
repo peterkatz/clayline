@@ -13,9 +13,9 @@ into your Applications folder. The **[user guide](https://peterkatz.github.io/cl
 covers installing, both modes, printing, calibration, and troubleshooting in
 plain language; this README is the developer's view.
 
-This is release `0.1.0`, the first public one. The software pipeline has
-substantial local verification, but Clayline has not yet passed its required
-full-tile physical print. It is not on PyPI.
+This is release `0.2.0`; [CHANGELOG.md](CHANGELOG.md) lists what each release
+changed. The software pipeline has substantial local verification, but Clayline
+has not yet passed its required full-tile physical print. It is not on PyPI.
 
 > **G-code moves real machinery; use it at your own risk.** A lint PASS means the
 > file is internally consistent with the selected profile. It does not prove that
@@ -79,11 +79,21 @@ Clayline now has a native Apple-silicon app for macOS 14 or newer. The app bundl
 the Python slicing engine and the complete interface, so normal use does not need
 Python, Terminal, a browser, or an internet connection.
 
+The app carries a gallery of 98 example drawings, sorted into folders by
+tradition. **Browse the gallery** in the Design step, or **File → Open from
+Gallery…**, opens it; until you have opened a drawing from a folder of your own,
+adding a drawing starts there too. The folders are built at packaging time from
+[examples/gallery-manifest.json](examples/gallery-manifest.json) by
+`tools/build_gallery.py`; the source files stay flat under `examples/`.
+
 Open **Clayline**, choose one or more centerline SVGs, arrange the ordered Pages
 list, set the shared size and drape parameters, then select **Slice job**. Use the
-export buttons or **Command-S** to save G-code through the native macOS save
-panel. **Command-O** imports more SVGs, and SVGs opened from Finder are handed to
-the running app.
+export buttons or **Shift-Command-E** to save G-code through the native macOS
+save panel. **Command-S** saves the whole job instead — the drawings or the
+model, and every setting — as one Clayline project file, and **Shift-Command-O**
+opens one again with everything as you left it. **Command-O** imports more SVGs,
+and SVGs or `.clayline` projects opened from Finder are handed to the running
+app.
 
 With two or more pages, the Pages section enables **Bed / Stack**. Bed is the
 default and lays pages out across the build surface. Stack holds them on one XY
@@ -440,8 +450,7 @@ the declared dependencies are already cached.
   They are test and inspiration assets, not cleared production files.
 - SVG input is stroked centerline geometry. Filled-only artwork is reported and
   dropped rather than silently treated as a printable outline.
-- There is no send-to-printer, non-planar draping, Windows app, public notarized
-  Mac download, PyPI release, or public v0.1 tag.
+- There is no send-to-printer, non-planar draping, Windows app, or PyPI release.
 
 See the [examples gallery](examples/README.md), the
 product contract, and [CONTRIBUTING.md](CONTRIBUTING.md).

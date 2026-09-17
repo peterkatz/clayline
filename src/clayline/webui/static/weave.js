@@ -174,6 +174,9 @@
     layerRatio: 0.3,
     rangeTotal: null,
     pendingRange: null,
+    // The name this form's project file was last opened from or saved as, so
+    // the next save suggests it again.  Null until one has been through here.
+    projectName: null,
     // Item 2: this is a studio-only default proposal, never a replacement
     // for the full cached slice.  Keeping it separate lets an upward range
     // edit say plainly that the live thread will drag between islands.
@@ -832,9 +835,16 @@
       $("#weaveRangeEnabled").disabled = false;
       $("#weaveRangeEnabled").checked = Boolean(slice.range_enabled);
     } else {
-      S.pendingRange = slice.range_enabled
-        ? { from: slice.range_from, to: slice.range_to, total: slice.range_total }
-        : null;
+      // The two numbers are parked whether or not the range was switched on,
+      // because they are part of the saved job either way: dropping them made
+      // the re-slice write 1 and the layer count over what the artist typed,
+      // so opening a saved project and saving it again changed it.
+      S.pendingRange = {
+        from: slice.range_from,
+        to: slice.range_to,
+        total: slice.range_total,
+        enabled: Boolean(slice.range_enabled),
+      };
       $("#weaveRangeEnabled").checked = false;
       $("#weaveRangeEnabled").disabled = true;
     }
@@ -876,6 +886,10 @@
   function applyWeaveHistorySnapshot(snapshot) {
     if (!snapshot) return false;
     weaveStateWriter?.suspend(() => applyWeaveSettings(snapshot, { settle: true }));
+    // The project line describes the form that is loaded.  An undo or a redo
+    // puts a different one there, so the sentence about the project goes with
+    // it rather than outliving the work it named.
+    setWeaveProjectStatus("");
     window.ClaylineStudioState?.saveMode(
       window.ClaylineStudioState.settingsStorage(window),
       "weave",
@@ -1401,9 +1415,13 @@
     ["#weaveRangeFrom", "#weaveRangeTo"].forEach((selector) => {
       $(selector).max = String(total);
     });
-    const restoredSelection = Boolean(requested);
+    // A parked range says for itself whether it was switched on; a restored
+    // recipe carries no such flag and is a selection by the fact of existing.
+    const restoredSelection = Boolean(requested) && requested.enabled !== false;
     $("#weaveRangeEnabled").disabled = false;
-    $("#weaveRangeEnabled").checked = restoredSelection || from !== 1 || to !== total;
+    $("#weaveRangeEnabled").checked = requested
+      ? restoredSelection
+      : from !== 1 || to !== total;
     S.pendingRange = null;
     syncRangeControls(printRange);
   }
@@ -2766,6 +2784,7 @@
     syncPresetChips();
     syncFollowChips();
     syncSettleButton();
+    syncWeaveProjectControls();
   }
 
   function syncProfileFacts() {
@@ -3728,6 +3747,19 @@
     return lo;
   }
 
+  // A print file is a print file whatever was typed in the name field. A form
+  // exported as "lantern.clayline" is still G-code, and the app must never be
+  // handed it as though it were a project (Draw's export does the same).
+  function normalizedWeaveGcodeName(value) {
+    const raw = String(value || "").replaceAll("\\", "/").split("/").pop().trim();
+    const stem = raw.toLowerCase().endsWith(".gcode") ? raw.slice(0, -6) : raw;
+    const safe = stem
+      .replace(/[^A-Za-z0-9._-]+/g, "-")
+      .replace(/^[-._]+|[-._]+$/g, "")
+      .slice(0, 80) || "clayline-weave";
+    return `${safe}.gcode`;
+  }
+
   async function downloadGcode() {
     const result = S.exactResult;
     if (!result?.exportable || !result.result_id) return;
@@ -3741,7 +3773,9 @@
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = $("#weaveFilename").value.trim() || result.filename || "clayline-weave.gcode";
+    link.download = normalizedWeaveGcodeName(
+      $("#weaveFilename").value.trim() || result.filename || "clayline-weave.gcode",
+    );
     link.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
@@ -3795,12 +3829,19 @@
     S.file = file;
     S.inchesBannerEvaluated = false;
     $("#weaveInchesBanner").hidden = true;
+    syncWeaveProjectControls();
     beginMetric();
     uploadMesh();
   }
 
   function setDroppedFile(file) {
     if (!file) return;
+    if (file.name.toLowerCase().endsWith(PROJECT_SUFFIX)) {
+      // A whole job dropped here opens as a job, in whichever rail saved it.
+      $("#weaveFileInput").value = "";
+      window.claylineProjectFiles?.open(file, file.name);
+      return;
+    }
     if (file.name.toLowerCase().endsWith(".gcode")) {
       restoreGcode(file);
       return;
@@ -3814,6 +3855,9 @@
 
   function bindMeshControls() {
     $("#weaveFileInput").addEventListener("change", (event) => setDroppedFile(event.target.files?.[0]));
+    $("#weaveOpenProjectButton").addEventListener("click", () => window.claylineProjectFiles?.chooser());
+    $("#weaveEmptyOpenProjectButton").addEventListener("click", () => window.claylineProjectFiles?.chooser());
+    $("#weaveSaveProjectButton").addEventListener("click", () => saveWeaveProject());
     const drop = $("#weaveDropZone");
     ["dragenter", "dragover"].forEach((name) => drop.addEventListener(name, (event) => {
       event.preventDefault();
@@ -4188,6 +4232,177 @@
     });
   }
 
+  /* ---------- project files ----------------------------------------------
+   *
+   * One file holds a whole form: the mesh exactly as it was loaded and every
+   * Weave setting, so an artist can pick the work up again later.  Saving
+   * writes it; opening brings all of it back as ONE undo step, and a form that
+   * was sliced when it was saved slices itself again, so the preview needs no
+   * second click.
+   *
+   * The codec (project-file.js) owns the container and the three refusals, and
+   * app.js owns the one funnel every project file comes through, whichever
+   * rail saved it.  This file owns only the Weave side: which snapshot goes
+   * in, where the mesh comes from and goes back to, and what the artist reads.
+   */
+
+  const PROJECT_SUFFIX = ".clayline";
+  const MESH_SUFFIXES = /\.(stl|obj|ply|3mf)$/i;
+  const WEAVE_PROJECT_SAVE_TIP =
+    "Save the mesh and every setting as one project file you can open later.";
+  const WEAVE_PROJECT_SAVE_DISABLED_TIP = "Load a mesh first";
+
+  function projectCodec() {
+    return window.ClaylineProjectFile || null;
+  }
+
+  // True inside the packaged Mac app, where a save goes through the native
+  // panel and the shell says what the artist chose.  A plain browser just
+  // downloads, and the page must never claim a save it cannot see.
+  function nativeShell() {
+    return Boolean(window.webkit && window.webkit.messageHandlers);
+  }
+
+  function setWeaveProjectStatus(message) {
+    const line = $("#weaveProjectStatus");
+    if (!line) return;
+    line.textContent = message || "";
+    line.hidden = !message;
+  }
+
+  function syncWeaveProjectControls() {
+    const save = $("#weaveSaveProjectButton");
+    if (!save) return;
+    // A disabled button gets no tooltip in a browser, so the reason replaces
+    // the sentence it shipped with rather than hiding behind it.
+    const ready = Boolean(S.file) && Boolean(projectCodec());
+    save.disabled = !ready;
+    save.title = ready ? WEAVE_PROJECT_SAVE_TIP : WEAVE_PROJECT_SAVE_DISABLED_TIP;
+  }
+
+  function weaveProjectStem(value) {
+    const leaf = String(value || "").replaceAll("\\", "/").split("/").pop().trim();
+    return leaf
+      .replace(/\.(clayline|stl|obj|ply|3mf|gcode)$/i, "")
+      .replace(/[^A-Za-z0-9._-]+/g, "-")
+      .replace(/^[-._]+|[-._]+$/g, "")
+      .slice(0, 80);
+  }
+
+  // The name the artist actually chose, as they wrote it: the status line and
+  // the next save's suggestion have to name the file that is on disk. The
+  // stem above stays for the one place a browser needs plain ASCII.
+  function weaveProjectDisplayName(value) {
+    const leaf = String(value || "").replaceAll("\\", "/").split("/").pop().trim();
+    return leaf
+      .replace(/\.clayline$/i, "")
+      .replace(/[\u0000-\u001f\u007f]+/g, " ")
+      .trim()
+      .slice(0, 80);
+  }
+
+  function suggestedWeaveProjectName() {
+    return S.projectName || weaveProjectStem(S.file?.name) || "form";
+  }
+
+  async function saveWeaveProject() {
+    const codec = projectCodec();
+    if (!codec || !S.file) return false;
+    let blob = null;
+    try {
+      blob = await codec.write({
+        mode: "weave",
+        settings: weaveSettingsSnapshot(),
+        state: { sliced: Boolean(S.slice) },
+        sources: [{ name: S.file.name, bytes: S.file }],
+        savedWith: window.claylineProjectFiles?.appVersion(),
+      });
+    } catch (_error) {
+      setWeaveProjectStatus("Clayline couldn't make a project file from this form.");
+      return false;
+    }
+    const filename = `${suggestedWeaveProjectName()}${PROJECT_SUFFIX}`;
+    // The panel and the status line say the artist's own name; only the
+    // download attribute needs the plain-ASCII one.
+    const downloadName = `${weaveProjectStem(filename) || "form"}${PROJECT_SUFFIX}`;
+    // In the app the shell answers through projectSaveResult; in a browser the
+    // download IS the answer, and there is nothing further to wait for.
+    if (nativeShell()) {
+      setWeaveProjectStatus("Saving project…");
+    } else {
+      S.projectName = weaveProjectDisplayName(downloadName);
+      setWeaveProjectStatus("Project file downloaded");
+    }
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = downloadName;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    return true;
+  }
+
+  // The shell's answer to a save.  A cancelled panel is not a failure and says
+  // nothing; only a real refusal is reported.
+  function weaveProjectSaveResult(payload) {
+    if (!payload || typeof payload !== "object") return;
+    if (payload.ok) {
+      // The shell reports the file it wrote, so this is the name on disk.
+      const name = weaveProjectDisplayName(payload.name);
+      if (name) S.projectName = name;
+      setWeaveProjectStatus(`Project saved · ${name || suggestedWeaveProjectName()}${PROJECT_SUFFIX}`);
+      return;
+    }
+    setWeaveProjectStatus(payload.reason ? `That project could not be saved: ${payload.reason}.` : "");
+  }
+
+  // app.js has already read the file and knows it was saved in Weave; this is
+  // the Weave half of one open.  Returning false means nothing here was
+  // touched and the caller still owes the artist the refusal.
+  async function openWeaveProject(project, name) {
+    const source = project?.sources?.[0];
+    if (
+      !source
+      || !MESH_SUFFIXES.test(source.name)
+      || !validWeaveSettings(project.settings)
+    ) return false;
+
+    activateMode("weave");
+    setWeaveProjectStatus("");
+    S.file = new File([source.bytes], source.name, { type: "application/octet-stream" });
+    S.inchesBannerEvaluated = false;
+    $("#weaveInchesBanner").hidden = true;
+    // One undo step: the writer is held while the whole project lands, and
+    // flushed once at the very end (below), after the re-slice has put the
+    // print range back — so the single history entry is the whole open.
+    weaveStateWriter?.suspend(() => {
+      // A saved project carries no G-code recipe and no sliced layer count, so
+      // the settings land against a clean form and the saved print range goes
+      // to S.pendingRange — the same path a restored recipe already uses to
+      // wait for the slice that knows how many layers there are.
+      S.restoreEmission = null;
+      S.restoreSource = null;
+      S.restoreRecipeId = null;
+      S.restoreProfileName = null;
+      S.slice = null;
+      S.rangeTotal = null;
+      applyWeaveSettings(project.settings, { settle: false });
+    });
+    S.projectName = weaveProjectDisplayName(name) || null;
+    setWeaveProjectStatus(`Project opened · ${name}`);
+    syncWeaveProjectControls();
+    beginMetric();
+    await uploadMesh();
+    // A form saved mid-job comes back sliced; the range restores itself when
+    // the slice reports its layer count.
+    if (project.state.sliced && S.mesh) await runSlice();
+    // The one entry.  A slice already flushes on its own, and an identical
+    // snapshot is never pushed twice, so this both covers a project that was
+    // saved unsliced and stays a single step for one that was not.
+    weaveStateWriter?.flush();
+    return true;
+  }
+
   function bindHistoryFieldCommits() {
     $$("#weaveWorkspace input[type='number'], #weaveWorkspace input[type='text']")
       .forEach((control) => {
@@ -4270,6 +4485,10 @@
     open: () => $("#weaveFileInput").click(),
     exportGcode: downloadGcode,
     importMesh: desktopImportMesh,
+    saveProject: saveWeaveProject,
+    openProject: openWeaveProject,
+    projectSaveResult: weaveProjectSaveResult,
+    projectStatus: setWeaveProjectStatus,
     state: () => ({ mesh: Boolean(S.mesh), slice: Boolean(S.slice), exact: Boolean(S.exactResult) }),
     historyState: () => weaveHistory?.state(),
     undo: undoWeaveSettings,

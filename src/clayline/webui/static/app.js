@@ -66,6 +66,15 @@ const state = {
   // The last kind showState was asked for, so the stage can be restored when
   // the drawing surface gives it back.
   stageKind: "empty",
+  // The name this job was last opened from or saved as, so the next save
+  // suggests it again.  Null until a project file has been through here.
+  projectName: null,
+  // A project that was sliced when it was saved slices again on open — but
+  // only once every pass has been measured, the same readiness Slice waits
+  // for.  True between the open and that slice.
+  pendingProjectSlice: false,
+  // This Clayline's own version, for the provenance line in a saved project.
+  appVersion: null,
 };
 
 // The last page the artist clicked in the 2D plan, and when — a double-click
@@ -1368,6 +1377,9 @@ async function runLayoutCheck() {
   }
   renderPages();
   updateDependencies();
+  // An opened project that was sliced when it was saved has been waiting for
+  // exactly this: every pass measured, so Slice can run without a click.
+  sliceOpenedProjectWhenReady();
 }
 
 function bedMapFrame(data) {
@@ -2062,6 +2074,7 @@ function updateDependencies() {
   // Keep the page rows' print-order / Z-range summaries in step with pass and
   // coil-height edits without rebuilding the row inputs (F10.6).
   updatePageMeta();
+  syncProjectControls();
 }
 
 const DRAW_SETTINGS_SCHEMA = "clayline.draw-settings.v2";
@@ -2311,6 +2324,10 @@ function applyDrawHistorySnapshot(snapshot) {
   if (!snapshot) return false;
   drawStateWriter?.suspend(() => applyDrawSettings(snapshot));
   saveDrawSettingsSnapshot(snapshot);
+  // The project line describes what is on the bed.  An undo or a redo puts
+  // something else there — an open can be undone back to an empty bed — so the
+  // sentence about the project goes with it rather than outliving the work.
+  setProjectStatus("");
   syncHistoryButtons();
   return true;
 }
@@ -2395,6 +2412,8 @@ function endLoading() {
   $("#sliceButton span").textContent = "Slice job";
   $("#slicePassSub").hidden = false;
   updateDependencies();
+  // An opened project waiting behind this slice can have its turn now.
+  sliceOpenedProjectWhenReady();
 }
 
 async function slice() {
@@ -3311,6 +3330,371 @@ function desktopImport(files) {
   return true;
 }
 
+/* ---------- project files ---------------------------------------------------
+ *
+ * One file holds a whole job: everything on the bed and every setting of this
+ * mode, so an artist can pick the work up again later.  Saving writes it;
+ * opening brings all of it back as ONE undo step, and a job that was sliced
+ * when it was saved slices itself again so the preview needs no second click.
+ *
+ * The codec (project-file.js) owns the container and the three refusals; this
+ * file owns only the studio side: which snapshot goes in, where the photos
+ * come from and go back to, and what the artist is told.
+ */
+
+const PROJECT_SAVE_TIP =
+  "Save everything on the bed and every setting as one project file you can open later.";
+const PROJECT_SAVE_DISABLED_TIP = "Load or draw something first";
+const PROJECT_SUFFIX = ".clayline";
+
+function projectCodec() {
+  return window.ClaylineProjectFile || null;
+}
+
+// True inside the packaged Mac app, where a save goes through the native panel
+// and the shell says what the artist chose.  A plain browser just downloads,
+// and the page must never claim a save it cannot see.
+function nativeShell() {
+  return Boolean(window.webkit && window.webkit.messageHandlers);
+}
+
+// Both rails save and open the same kind of file, so both need to be told what
+// happened — on the line the artist is actually looking at.
+function setProjectStatus(message) {
+  const weaveLine = window.claylineWeaveMode?.projectStatus;
+  if (document.body.dataset.claylineMode === "weave" && typeof weaveLine === "function") {
+    weaveLine(message);
+    return;
+  }
+  const line = $("#projectStatus");
+  if (!line) return;
+  line.textContent = message || "";
+  line.hidden = !message;
+}
+
+function syncProjectControls() {
+  const save = $("#saveProjectButton");
+  if (!save) return;
+  // A disabled button gets no tooltip in a browser, so the reason replaces the
+  // sentence it shipped with rather than being hidden behind it.
+  const ready = state.files.length > 0 && Boolean(projectCodec());
+  save.disabled = !ready;
+  save.title = ready ? PROJECT_SAVE_TIP : PROJECT_SAVE_DISABLED_TIP;
+}
+
+function projectFileStem(value) {
+  const leaf = String(value || "").replaceAll("\\", "/").split("/").pop().trim();
+  return leaf
+    .replace(/\.(clayline|svg|gcode)$/i, "")
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^[-._]+|[-._]+$/g, "")
+    .slice(0, 80);
+}
+
+// The name the artist actually chose, as they wrote it.  The status line and
+// the next save's suggestion have to name the file that is on disk, so the
+// plain-ASCII stem above is kept for the one place a browser needs it: the
+// download attribute.
+function projectDisplayName(value) {
+  const leaf = String(value || "").replaceAll("\\", "/").split("/").pop().trim();
+  return leaf
+    .replace(/\.clayline$/i, "")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .trim()
+    .slice(0, 80);
+}
+
+function suggestedProjectName() {
+  return (
+    state.projectName
+    || projectFileStem($("#filename").value)
+    || projectFileStem(state.files[0]?.name)
+    || "drawing"
+  );
+}
+
+// The photos behind the passes, by the ids their placements already carry.  A
+// photo whose pixels are gone is skipped and its placement kept, so the pass
+// comes back exactly where it is, just without the thing it was traced over.
+async function drawProjectReferences(snapshot) {
+  const store = window.ClaylineReferenceStore;
+  if (!store || typeof store.imageBlob !== "function") return [];
+  const rows = [];
+  const seen = new Set();
+  for (const pass of snapshot.passes) {
+    const imageId = pass.reference && pass.reference.image_id;
+    if (!imageId || seen.has(imageId)) continue;
+    seen.add(imageId);
+    const blob = await store.imageBlob(imageId);
+    if (!blob || !/^image\/(png|jpeg|webp)$/.test(blob.type || "")) continue;
+    rows.push({ image_id: imageId, media_type: blob.type, bytes: blob });
+  }
+  return rows;
+}
+
+async function saveProject() {
+  const codec = projectCodec();
+  if (!codec || !state.files.length) return false;
+  const settings = drawSettingsSnapshot();
+  let blob = null;
+  try {
+    blob = await codec.write({
+      mode: "draw",
+      settings,
+      state: { sliced: Boolean(state.result) },
+      references: await drawProjectReferences(settings),
+      savedWith: state.appVersion,
+    });
+  } catch (_error) {
+    setProjectStatus("Clayline couldn't make a project file from what's on the bed.");
+    return false;
+  }
+  const filename = `${suggestedProjectName()}${PROJECT_SUFFIX}`;
+  // The panel and the status line say the artist's own name; only the download
+  // attribute needs the plain-ASCII one.
+  const downloadName = `${projectFileStem(filename) || "drawing"}${PROJECT_SUFFIX}`;
+  // In the app the shell answers through projectSaveResult; in a browser the
+  // download IS the answer, and there is nothing further to wait for.
+  if (nativeShell()) {
+    setProjectStatus("Saving project…");
+  } else {
+    state.projectName = projectDisplayName(downloadName);
+    setProjectStatus("Project file downloaded");
+  }
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = downloadName;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  return true;
+}
+
+// The shell's answer to a save.  A cancelled panel is not a failure and says
+// nothing; only a real refusal is reported.
+function projectSaveResult(payload) {
+  if (!payload || typeof payload !== "object") return;
+  if (payload.ok) {
+    // The shell reports the file it wrote, so this is the name on disk.
+    const name = projectDisplayName(payload.name);
+    if (name) state.projectName = name;
+    setProjectStatus(`Project saved · ${name || suggestedProjectName()}${PROJECT_SUFFIX}`);
+    return;
+  }
+  setProjectStatus(payload.reason ? `That project could not be saved: ${payload.reason}.` : "");
+}
+
+// The packaged app's native picker filters by this one-shot marker — the
+// Swift delegate reads and clears it before presenting the panel, so project
+// files are selectable there; the input's accept list does the same job in an
+// ordinary browser.
+function openProjectChooser() {
+  document.body.dataset.claylineFileRequest = "project";
+  $("#projectFileInput")?.click();
+}
+
+/* ---------- the gallery --------------------------------------------------- */
+
+// The example drawings that come with the packaged app.  The app marks the
+// page only when it really carries them, so an ordinary browser — or a build
+// without them — never grows a button that leads nowhere.
+const GALLERY_BUTTONS = ["#galleryButton", "#emptyGalleryButton"];
+
+function galleryAvailable() {
+  return document.documentElement.dataset.claylineGallery === "available";
+}
+
+function syncGalleryButtons() {
+  const available = galleryAvailable();
+  GALLERY_BUTTONS.forEach((selector) => {
+    const button = $(selector);
+    if (button) button.hidden = !available;
+  });
+}
+
+// The mark is set before this file runs; the observer only covers a shell
+// that sets it late, so the buttons appear whenever it does.
+function watchGalleryAvailability() {
+  syncGalleryButtons();
+  document.addEventListener("DOMContentLoaded", syncGalleryButtons, { once: true });
+  if (typeof MutationObserver !== "function") return;
+  new MutationObserver(syncGalleryButtons).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-clayline-gallery"],
+  });
+}
+
+// The same one-shot marker as the project chooser, on the drawing picker
+// itself: the app's own panel opens in the gallery instead of the last folder,
+// and whatever is chosen arrives through the picker's ordinary change event.
+function openGalleryChooser() {
+  document.body.dataset.claylineFileRequest = "gallery";
+  $("#fileInput")?.click();
+}
+
+// The File menu's way in.  The picker belongs to Draw in Clay, and the app
+// reads which mode is showing when the panel opens, so Weave steps aside first.
+function openGalleryFromMenu() {
+  if (document.body.dataset.claylineMode === "weave") {
+    if (window.claylineWeaveMode?.activateTiles) window.claylineWeaveMode.activateTiles();
+    else $("#tilesModeButton")?.click();
+  }
+  openGalleryChooser();
+}
+
+// Every way in — the buttons, a drop, the native menu, Finder — funnels here.
+async function openProjectFile(source, name) {
+  const codec = projectCodec();
+  if (!codec) return false;
+  setProjectStatus("");
+  let project = null;
+  try {
+    project = await codec.read(source);
+  } catch (error) {
+    // The codec's three sentences are the only refusals an artist sees; a
+    // fault anywhere else still gets one rather than a button that does
+    // nothing.  Nothing on the bed has been touched at this point.
+    setProjectStatus(
+      error && error.name === "ProjectFileError"
+        ? error.message
+        : codec.MESSAGES["not-a-project"],
+    );
+    reportProjectOpened(name, false);
+    return false;
+  }
+  let opened = false;
+  try {
+    if (project.mode === "weave") {
+      const openWeave = window.claylineWeaveMode?.openProject;
+      if (typeof openWeave !== "function") {
+        setProjectStatus("That project was saved in Weave, and this Clayline can't open it here.");
+      } else if (await openWeave(project, name)) {
+        opened = true;
+      } else {
+        // Weave turned the file down before it changed anything; the only
+        // refusal left to give is the codec's own.
+        setProjectStatus(codec.MESSAGES["not-a-project"]);
+      }
+    } else {
+      window.claylineWeaveMode?.activateTiles();
+      opened = Boolean(await applyDrawProject(project, name));
+    }
+  } catch (error) {
+    // The promise above is kept here too: a project that breaks while it is
+    // going onto the bed gets the same sentence, not a button that did
+    // nothing and said nothing.
+    setProjectStatus(codec.MESSAGES["not-a-project"]);
+    opened = false;
+  }
+  reportProjectOpened(name, opened);
+  return opened;
+}
+
+// The shell hands a project over before the page has read a byte of it, so
+// this is the page saying how the project ended. The window's name and the
+// folder the next save starts in follow only a project that actually opened;
+// the shell still needs to hear about one that did not, or it keeps holding
+// the refused file and the next project of the same name inherits its folder.
+function reportProjectOpened(name, opened) {
+  const handler = window.webkit?.messageHandlers?.claylineProjectOpened;
+  if (handler) handler.postMessage({ name: String(name || ""), ok: Boolean(opened) });
+}
+
+async function applyDrawProject(project, name) {
+  const codec = projectCodec();
+  const store = window.ClaylineReferenceStore;
+  // The pixels go back under the ids the placements already name, before the
+  // settings land, so the first frame the bed draws already has the photo.
+  if (store && typeof store.storeImage === "function") {
+    for (const reference of project.references) {
+      await store.storeImage(reference.image_id, reference.blob);
+    }
+  }
+  const wanted = project.settings.job && project.settings.job.profile;
+  const previousProfile = $("#profile").value;
+  const land = () => {
+    const applied = applyDrawSettings(project.settings);
+    // A printer this Clayline does not have leaves the picker empty; keep the
+    // one that was already selected rather than a blank line.
+    if (applied && !$("#profile").value) {
+      $("#profile").value = previousProfile;
+      updateProfileFacts();
+    }
+    return applied;
+  };
+  // One undo step: the writer is held while the whole project lands, then
+  // flushed once, which captures, saves and pushes exactly one history entry.
+  const applied = drawStateWriter ? drawStateWriter.suspend(land) : land();
+  if (!applied) {
+    setProjectStatus(codec.MESSAGES["not-a-project"]);
+    return false;
+  }
+  drawStateWriter?.flush();
+  state.projectName = projectDisplayName(name) || null;
+  const profile = $("#profile").value;
+  // The printer in use is named the way the picker names it; the one that is
+  // missing has only the name the project carries.
+  const inUse = state.profiles.get(profile)?.label || profile;
+  setProjectStatus(
+    wanted && profile !== wanted
+      ? `Printer profile "${wanted}" isn't installed here; using ${inUse}.`
+      : `Project opened · ${name}`,
+  );
+  state.pendingProjectSlice = Boolean(project.state.sliced);
+  sliceOpenedProjectWhenReady();
+  return true;
+}
+
+// A project saved mid-job comes back sliced.  Every pass has to be measured
+// first — the same readiness the Slice button waits for — so this is called
+// again whenever a measurement lands.
+function sliceOpenedProjectWhenReady() {
+  if (!state.pendingProjectSlice || !allPassMeasurementsReady()) return;
+  // A slice already running holds this gate shut. The flag stays up and
+  // endLoading calls back the moment the gate opens, so the opened project's
+  // slice is late rather than quietly dropped.
+  if (state.isSlicing || $("#sliceButton").disabled) return;
+  state.pendingProjectSlice = false;
+  slice();
+}
+
+function projectBytesFromBase64(value) {
+  if (typeof value !== "string" || !value.length || value.length % 4 !== 0) return null;
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return null;
+  try {
+    const binary = window.atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  } catch (_error) {
+    return null;
+  }
+}
+
+// Finder and the native Open panel hand the bytes over already read.
+async function desktopImportProject(payload) {
+  const leaf = String(payload?.name || "").split(/[\\/]/).pop().trim();
+  const bytes = projectBytesFromBase64(payload?.base64);
+  if (!/\.clayline$/i.test(leaf) || !bytes) {
+    setProjectStatus(projectCodec()?.MESSAGES["not-a-project"] || "");
+    return false;
+  }
+  // The shell hears yes only after the file has been read through: a damaged
+  // project must not rename the window after itself.
+  return openProjectFile(bytes, leaf);
+}
+
+async function loadAppVersion() {
+  try {
+    const response = await fetch("/api/health");
+    if (!response.ok) return;
+    const payload = await response.json();
+    if (typeof payload.version === "string" && payload.version) state.appVersion = payload.version;
+  } catch (_error) {
+    // Provenance only: a project saves perfectly well without it.
+  }
+}
+
 async function resetParameters() {
   if (!state.defaults) await loadDefaults({ restore: false });
   if (state.defaults) {
@@ -3354,7 +3738,28 @@ function bindEvents() {
     event.preventDefault();
     $("#dropZone").classList.remove("is-dragging");
   }));
-  $("#dropZone").addEventListener("drop", (event) => readFiles(event.dataTransfer.files));
+  $("#dropZone").addEventListener("drop", (event) => {
+    const dropped = Array.from(event.dataTransfer?.files || []);
+    // A whole job dropped on the drop zone opens as a job; the SVG picker's own
+    // accept list is untouched, because a project has its own button.
+    const project = dropped.find((file) => /\.clayline$/i.test(file.name));
+    if (project) {
+      openProjectFile(project, project.name);
+      return;
+    }
+    readFiles(dropped);
+  });
+  $("#openProjectButton")?.addEventListener("click", openProjectChooser);
+  $("#emptyOpenProjectButton")?.addEventListener("click", openProjectChooser);
+  $("#saveProjectButton")?.addEventListener("click", () => saveProject());
+  $("#galleryButton")?.addEventListener("click", openGalleryChooser);
+  $("#emptyGalleryButton")?.addEventListener("click", openGalleryChooser);
+  watchGalleryAvailability();
+  $("#projectFileInput")?.addEventListener("change", async (event) => {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = "";
+    if (file) await openProjectFile(file, file.name);
+  });
   $("#sliceButton").addEventListener("click", slice);
   $("#downloadButton").addEventListener("click", downloadGcode);
   $("#resetButton").addEventListener("click", resetParameters);
@@ -3504,6 +3909,7 @@ drawStateWriter = window.ClaylineStudioState?.createSettledWriter({
 bindEvents();
 bindToolpathPointerHandlers();
 updateDependencies();
+loadAppVersion();
 Promise.all([loadProfiles(), loadDefaults({ restore: false })]).then(() => {
   if (!state.drawSettingsRestored) restoreDrawSettings();
   updateDependencies();
@@ -3548,6 +3954,31 @@ window.claylineDesktop = Object.freeze({
     window.claylineWeaveMode?.activate();
     return window.claylineWeaveMode?.importMesh(payload) || false;
   },
+  saveProject: () => {
+    if (document.body.dataset.claylineMode === "weave") {
+      return Boolean(window.claylineWeaveMode?.saveProject?.());
+    }
+    return saveProject();
+  },
+  openProject: () => openProjectChooser(),
+  openGallery: () => openGalleryFromMenu(),
+  importProject: (payload) => desktopImportProject(payload),
+  projectSaveResult: (payload) => {
+    if (document.body.dataset.claylineMode === "weave"
+      && typeof window.claylineWeaveMode?.projectSaveResult === "function") {
+      return window.claylineWeaveMode.projectSaveResult(payload);
+    }
+    return projectSaveResult(payload);
+  },
+});
+
+// Weave's way into the one open funnel and the one shared chooser: a project
+// file belongs to whichever mode saved it, so both rails hand their files here
+// and this file routes by what is inside.
+window.claylineProjectFiles = Object.freeze({
+  chooser: () => openProjectChooser(),
+  open: (source, name) => openProjectFile(source, name),
+  appVersion: () => state.appVersion,
 });
 
 // The drawing surface's only way into this file. Narrow on purpose: it reads

@@ -1,0 +1,179 @@
+{
+  "schema": "clayline.gallery.v1",
+  "note": "Maps the flat example folders to the category folders bundled in the Mac app at Contents/Resources/Gallery. File names are kept; only the folder changes. Every SVG under the three source folders must appear exactly once.",
+  "sources": [
+    "examples/gallery",
+    "examples/clayline-tiles",
+    "examples/clayline-zoo-tiles"
+  ],
+  "categories": [
+    {
+      "folder": "Animals",
+      "files": [
+        "examples/clayline-zoo-tiles/butterfly.svg",
+        "examples/clayline-zoo-tiles/elephant.svg",
+        "examples/clayline-zoo-tiles/flamingo.svg",
+        "examples/clayline-zoo-tiles/giraffe.svg",
+        "examples/clayline-zoo-tiles/lion.svg",
+        "examples/clayline-zoo-tiles/owl.svg",
+        "examples/clayline-zoo-tiles/peacock.svg",
+        "examples/clayline-zoo-tiles/penguin.svg",
+        "examples/clayline-zoo-tiles/snake.svg",
+        "examples/clayline-zoo-tiles/turtle.svg"
+      ]
+    },
+    {
+      "folder": "Ancient World",
+      "files": [
+        "examples/gallery/aztec-stepped.svg",
+        "examples/gallery/aztec-sun.svg",
+        "examples/gallery/byzantine-cross.svg",
+        "examples/gallery/byzantine-medallion.svg",
+        "examples/gallery/greek-key.svg",
+        "examples/gallery/roman-guilloche.svg",
+        "examples/gallery/roman-wave.svg"
+      ]
+    },
+    {
+      "folder": "Architectural Ornament",
+      "files": [
+        "examples/clayline-tiles/acanthus-corner.svg",
+        "examples/clayline-tiles/asanoha-star.svg",
+        "examples/clayline-tiles/eave-roundel.svg",
+        "examples/clayline-tiles/leaf-burst.svg",
+        "examples/clayline-tiles/rose-relief.svg"
+      ]
+    },
+    {
+      "folder": "Art Deco & Atomic",
+      "files": [
+        "examples/gallery/atomic-orbits.svg",
+        "examples/gallery/atomic-starburst.svg",
+        "examples/gallery/deco-chevron-medallion.svg",
+        "examples/gallery/deco-fan-scallop.svg",
+        "examples/gallery/deco-sunburst.svg"
+      ]
+    },
+    {
+      "folder": "Backing Patterns",
+      "files": [
+        "examples/clayline-tiles/dijon-diamond-back.svg",
+        "examples/clayline-tiles/fish-scale-back.svg",
+        "examples/clayline-tiles/pantile-wave-back.svg",
+        "examples/clayline-tiles/rope-lattice-back.svg",
+        "examples/clayline-tiles/shield-shingle-back.svg",
+        "examples/gallery/serpentine-back.svg"
+      ]
+    },
+    {
+      "folder": "Celtic",
+      "files": [
+        "examples/gallery/celtic-cross.svg",
+        "examples/gallery/celtic-shield-knot.svg",
+        "examples/gallery/celtic-triquetra.svg",
+        "examples/gallery/celtic-triskele.svg"
+      ]
+    },
+    {
+      "folder": "Hand-Tile Tracings",
+      "files": [
+        "examples/gallery/petal-flower-155mm.svg",
+        "examples/gallery/petal-flower.svg",
+        "examples/gallery/rings-grid-155mm.svg",
+        "examples/gallery/rings-grid.svg",
+        "examples/gallery/rosette-155mm.svg",
+        "examples/gallery/rosette.svg"
+      ]
+    },
+    {
+      "folder": "Indian & Tibetan",
+      "files": [
+        "examples/gallery/conch-mandala.svg",
+        "examples/gallery/dharma-wheel.svg",
+        "examples/gallery/endless-knot.svg",
+        "examples/gallery/gankyil.svg",
+        "examples/gallery/kolam-weave.svg",
+        "examples/gallery/lotus-mandala.svg",
+        "examples/gallery/lotus-wheel.svg",
+        "examples/gallery/marigold-mandala.svg",
+        "examples/gallery/padma-gate.svg",
+        "examples/gallery/paisley-quartet.svg",
+        "examples/gallery/yantra-star.svg"
+      ]
+    },
+    {
+      "folder": "Japanese & Chinese",
+      "files": [
+        "examples/gallery/asanoha-field.svg",
+        "examples/gallery/chinese-lattice.svg",
+        "examples/gallery/chinese-shou.svg",
+        "examples/gallery/kamon-kikyo.svg",
+        "examples/gallery/kamon-tomoe.svg",
+        "examples/gallery/seigaiha-waves.svg"
+      ]
+    },
+    {
+      "folder": "Moroccan, Arabic & Andalusian",
+      "files": [
+        "examples/gallery/alhambra-lattice.svg",
+        "examples/gallery/andalus-vine.svg",
+        "examples/gallery/fez-medallion.svg",
+        "examples/gallery/girih-hex.svg",
+        "examples/gallery/granada-sunburst.svg",
+        "examples/gallery/islamic-twelve-star.svg",
+        "examples/gallery/khatam-star.svg",
+        "examples/gallery/moorish-lattice.svg",
+        "examples/gallery/mudejar-weave.svg",
+        "examples/gallery/multifoil-medallion.svg",
+        "examples/gallery/octagon-cross.svg",
+        "examples/gallery/quatrefoil-grid.svg",
+        "examples/gallery/zellige-rosette.svg"
+      ]
+    },
+    {
+      "folder": "Norse & Scandinavian",
+      "files": [
+        "examples/gallery/kurbits-rosette.svg",
+        "examples/gallery/nordic-star.svg",
+        "examples/gallery/norse-valknut.svg",
+        "examples/gallery/norse-vegvisir.svg",
+        "examples/gallery/rosemaling-heart.svg"
+      ]
+    },
+    {
+      "folder": "Persian & Ottoman",
+      "files": [
+        "examples/gallery/iznik-saz.svg",
+        "examples/gallery/iznik-tulip.svg",
+        "examples/gallery/persian-boteh.svg",
+        "examples/gallery/persian-eight-star.svg"
+      ]
+    },
+    {
+      "folder": "Sacred Geometry & Mandalas",
+      "files": [
+        "examples/gallery/flower-of-life.svg",
+        "examples/gallery/heart-mandala.svg",
+        "examples/gallery/honeycomb.svg",
+        "examples/gallery/metatron.svg",
+        "examples/gallery/sun-wheel.svg"
+      ]
+    },
+    {
+      "folder": "Victorian & Gothic",
+      "files": [
+        "examples/clayline-tiles/anthemion.svg",
+        "examples/clayline-tiles/ceiling-rose.svg",
+        "examples/clayline-tiles/damask-ogee.svg",
+        "examples/clayline-tiles/fleur-de-lis.svg",
+        "examples/clayline-tiles/fleur-diaper.svg",
+        "examples/clayline-tiles/gilt-scroll-crest.svg",
+        "examples/clayline-tiles/gothic-quatrefoil.svg",
+        "examples/clayline-tiles/guilloche-band.svg",
+        "examples/clayline-tiles/trefoil-tracery.svg",
+        "examples/clayline-tiles/victorian-cartouche.svg",
+        "examples/gallery/gothic-rose.svg"
+      ]
+    }
+  ]
+}

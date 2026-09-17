@@ -8,6 +8,8 @@ INFO_PLIST="$SWIFT_PACKAGE/Info.plist"
 ENTITLEMENTS="$SWIFT_PACKAGE/Clayline.entitlements"
 ICON_SOURCE="$SWIFT_PACKAGE/Assets/ClaylineIcon.svg"
 ENGINE_SPEC="$ROOT/tools/ClaylineEngine.spec"
+GALLERY_BUILDER="$ROOT/tools/build_gallery.py"
+GALLERY_MANIFEST="$ROOT/examples/gallery-manifest.json"
 
 APP_VARIANT="${CLAYLINE_APP_VARIANT:-standard}"
 case "$APP_VARIANT" in
@@ -32,6 +34,7 @@ esac
 BUILD_ROOT="$ROOT/build"
 WORK_ROOT="$BUILD_ROOT/.mac-app-work"
 ENGINE_ENV="$WORK_ROOT/python-env"
+PACKAGING_PYTHON="$ENGINE_ENV/bin/python"
 ENGINE_DIST="$WORK_ROOT/engine-dist"
 ENGINE_WORK="$WORK_ROOT/engine-build"
 STAGE_ROOT="$WORK_ROOT/stage"
@@ -133,6 +136,25 @@ assert_static_asset_parity() {
   done < "$source_inventory"
 }
 
+# The example drawings live flat in the repository; the gallery manifest sorts
+# them into the category folders the Open panel shows. This must run before any
+# signing, so the drawings are sealed into the bundle with everything else.
+build_gallery() {
+  local gallery="$1"
+  local drawing_count
+
+  [[ -x "$PACKAGING_PYTHON" ]] || fail "packaging Python is missing: $PACKAGING_PYTHON"
+  "$PACKAGING_PYTHON" "$GALLERY_BUILDER" --out "$gallery" || \
+    fail "the example drawing gallery could not be built; see the lines above"
+  [[ -d "$gallery" ]] || fail "the gallery builder left no folder at: $gallery"
+  # wc reads its whole input, so this pipeline cannot trip pipefail on SIGPIPE.
+  drawing_count="$(/usr/bin/find "$gallery" -type f -name '*.svg' -print | /usr/bin/wc -l)"
+  drawing_count="${drawing_count//[[:space:]]/}"
+  [[ "$drawing_count" =~ ^[0-9]+$ && "$drawing_count" -gt 0 ]] || \
+    fail "the built gallery holds no drawings: $gallery"
+  echo "      gallery: $drawing_count example drawings"
+}
+
 make_icon() {
   local master_png="$WORK_ROOT/AppIcon-1024.png"
   local iconset="$WORK_ROOT/AppIcon.iconset"
@@ -158,7 +180,7 @@ make_icon() {
 [[ "$(/usr/bin/uname -s)" == "Darwin" ]] || fail "macOS is required"
 [[ "$(/usr/bin/uname -m)" == "arm64" ]] || fail "an arm64 Mac is required"
 
-for command in uv swift sips iconutil plutil file codesign strip xattr cmp find sort; do
+for command in uv swift sips iconutil plutil file codesign strip xattr cmp find sort wc; do
   require_command "$command"
 done
 
@@ -167,6 +189,8 @@ for source in \
   "$ENTITLEMENTS" \
   "$ICON_SOURCE" \
   "$ENGINE_SPEC" \
+  "$GALLERY_BUILDER" \
+  "$GALLERY_MANIFEST" \
   "$ROOT/tools/clayline_engine.py" \
   "$ROOT/LICENSE"; do
   require_file "$source"
@@ -182,6 +206,9 @@ UV_PROJECT_ENVIRONMENT="$ENGINE_ENV" uv sync \
   --group mac-app \
   --no-editable \
   --reinstall-package clayline
+# A gallery mistake should stop the build here, not after the long steps below.
+"$PACKAGING_PYTHON" "$GALLERY_BUILDER" --check >/dev/null || \
+  fail "the example drawing gallery is not in order; see the lines above"
 
 echo "[2/7] Freezing the managed Clayline engine"
 /bin/rm -rf "$ENGINE_DIST" "$ENGINE_WORK"
@@ -225,6 +252,7 @@ fi
 /usr/bin/ditto "$ENGINE_OUTPUT" "$HELPER_ROOT"
 /usr/bin/install -m 644 "$ROOT/LICENSE" \
   "$STAGED_APP/Contents/Resources/Legal/Clayline-GPL-3.0.txt"
+build_gallery "$STAGED_APP/Contents/Resources/Gallery"
 make_icon
 assert_static_asset_parity "$HELPER_ROOT/_internal/clayline/webui/static"
 
