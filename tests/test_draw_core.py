@@ -117,6 +117,8 @@ def test_module_parses_and_loads_without_a_dom() -> None:
             "circumradius",
             "createDocument",
             "createStroke",
+            "shapeKind",
+            "forgetShape",
             "touch",
             "spanCount",
             "spanEnds",
@@ -135,6 +137,10 @@ def test_module_parses_and_loads_without_a_dom() -> None:
             "fitFreehand",
             "rectStroke",
             "polygonStroke",
+            "strokeFrame",
+            "frameHit",
+            "reshapeStroke",
+            "grabResize",
             "radialCopies",
             "mirrorStroke",
             "hitAnchor",
@@ -984,3 +990,217 @@ def test_smoothing_a_real_freehand_fit_never_balloons_at_any_amount() -> None:
     for row in result["rows"]:
         assert row["drift"] <= row["amount"] * 1.6 + 0.3, row
         assert row["anchors"] >= 3, row
+
+
+def test_a_shape_remembers_what_it_is_through_the_file_and_forgets_it_when_edited() -> None:
+    result = _run_node(
+        """
+        const doc = core.createDocument({width: 381, height: 381});
+        const box = core.addStroke(doc, core.rectStroke({x: 20, y: 20}, {x: 80, y: 60}));
+        const hex = core.addStroke(doc, core.polygonStroke({x: 200, y: 200}, 40, 6, 0.3));
+        const plain = core.addStroke(doc, core.createStroke(
+          [{x: 300, y: 40}, {x: 360, y: 40}], [0.35], false));
+        const laid = doc.strokes.map((s) => core.shapeKind(s));
+
+        // A plain line carries no field at all: an undo snapshot is
+        // JSON.stringify(stroke), and it must weigh what it always did.
+        const plainKeys = Object.keys(plain).sort();
+
+        const svg = core.toSVG(doc, {bead: 5});
+        const back = core.fromSVG(svg);
+        const read = back.strokes.map((s) => core.shapeKind(s));
+        const sides = back.strokes[1].shape.sides;
+        // The file is stable: writing what was read gives the same bytes.
+        const stable = core.toSVG(back, {bead: back.bead}) === svg;
+
+        // A foreign drawing is untouched by any of this.
+        const foreign = core.fromSVG(
+          '<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" '
+          + 'viewBox="0 0 100 100" stroke="#000"><path d="M 10 10 L 90 10 L 90 90 Z"/></svg>');
+        const foreignKind = core.shapeKind(foreign.strokes[0]);
+
+        // A squashed ring is an ellipse, and an ellipse is not a ring.
+        const squashed = core.fromSVG(
+          '<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" '
+          + 'viewBox="0 0 100 100" stroke="#000"><g transform="scale(2 1)">'
+          + '<path d="M 10 10 L 40 10 L 40 40 Z" data-clayline-shape="box"/></g></svg>');
+        const squashedKind = core.shapeKind(squashed.strokes[0]);
+
+        // A count that disagrees with the points is not the polygon it claims.
+        const lying = core.fromSVG(
+          '<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" '
+          + 'viewBox="0 0 100 100" stroke="#000">'
+          + '<path d="M 10 10 L 40 10 L 40 40 Z" data-clayline-shape="polygon;6"/></svg>');
+        const lyingKind = core.shapeKind(lying.strokes[0]);
+
+        // The first point-level edit drops the memory, one edit per copy.
+        const edits = {};
+        const copy = () => core.fromSVG(svg).strokes;
+        let c = copy();
+        core.moveAnchor(c[0], 0, {x: 0, y: 0}); edits.moveAnchor = core.shapeKind(c[0]);
+        c = copy(); core.insertAnchor(c[0], 0); edits.insertAnchor = core.shapeKind(c[0]);
+        c = copy(); core.deleteAnchor(c[1], 0); edits.deleteAnchor = core.shapeKind(c[1]);
+        c = copy();
+        core.setBulgeThrough(c[0], 0, {x: 50, y: 10});
+        edits.setBulgeThrough = core.shapeKind(c[0]);
+        c = copy(); core.roundCorner(c[0], 0, 4); edits.roundCorner = core.shapeKind(c[0]);
+        const open = core.createStroke(
+          [{x: 0, y: 0}, {x: 10, y: 0}, {x: 10, y: 10}], [0, 0], false, {kind: "box"});
+        core.closeStroke(open);
+        edits.closeStroke = core.shapeKind(open);
+
+        // Moving and resizing it KEEP the memory: that is the whole point.
+        c = copy();
+        core.reshapeStroke(c[0], c[0].pts.map((q) => ({...q})), {dx: 5, dy: 5});
+        const afterMove = core.shapeKind(c[0]);
+        core.reshapeStroke(c[0], c[0].pts.map((q) => ({...q})), {
+          anchor: {x: 0, y: 0}, sx: 2, sy: 2,
+        });
+        const afterResize = core.shapeKind(c[0]);
+
+        // A copy of a shape is a shape of the same kind.
+        const spun = core.radialCopies([hex], {x: 200, y: 200}, 3)[0];
+        const flipped = core.mirrorStroke(hex, {x: 0, y: 0}, {x: 0, y: 100});
+        console.log(JSON.stringify({
+          laid, plainKeys, read, sides, stable, foreignKind, squashedKind, lyingKind,
+          edits, afterMove, afterResize,
+          spun: core.shapeKind(spun), flipped: core.shapeKind(flipped),
+          spunSides: spun.shape.sides,
+        }));
+        """
+    )
+    assert result["laid"] == ["box", "polygon", None]
+    assert result["plainKeys"] == ["bulges", "closed", "pts", "rev"]
+    assert result["read"] == ["box", "polygon", None]
+    assert result["sides"] == 6
+    assert result["stable"] is True
+    assert result["foreignKind"] is None
+    assert result["squashedKind"] is None
+    assert result["lyingKind"] is None
+    assert result["edits"] == {
+        "moveAnchor": None,
+        "insertAnchor": None,
+        "deleteAnchor": None,
+        "setBulgeThrough": None,
+        "roundCorner": None,
+        "closeStroke": None,
+    }
+    assert result["afterMove"] == "box"
+    assert result["afterResize"] == "box"
+    assert result["spun"] == "polygon"
+    assert result["spunSides"] == 6
+    assert result["flipped"] == "polygon"
+
+
+def test_a_grabbed_stroke_moves_and_scales_without_touching_its_bends() -> None:
+    result = _run_node(
+        """
+        // The frame is measured on the real curve: an arc leaves the box its two
+        // anchors describe, and a frame that missed it would be a frame round
+        // something else.
+        const bent = core.createStroke([{x: 100, y: 100}, {x: 200, y: 100}], [0.4], false);
+        const frame = core.strokeFrame(bent);
+        const sag = Math.abs(frame.minY - 100);
+
+        // A grip within tolerance beats the interior it is also inside.
+        const grip = core.frameHit(frame, frame.corners[2], 9, 8);
+        const inside = core.frameHit(frame, {x: 150, y: 95}, 9, 8);
+        const outside = core.frameHit(frame, {x: 150, y: 140}, 9, 8);
+
+        // Move: every point shifts, the bulge does not.
+        const moved = core.createStroke(bent.pts, bent.bulges, false);
+        const rev = moved.rev;
+        core.reshapeStroke(moved, moved.pts.map((q) => ({...q})), {dx: 12, dy: -7});
+
+        // Resize from the top-right grip: the opposite corner stays put and the
+        // bulge is untouched, so the bend is still exactly the same bend.
+        const scaled = core.createStroke(bent.pts, bent.bulges, false);
+        const plan = core.grabResize(frame, 2, {x: 300, y: 120}, {min: 2});
+        core.reshapeStroke(scaled, scaled.pts.map((q) => ({...q})), plan);
+        const after = core.strokeFrame(scaled);
+
+        // Uniform: one factor, read along the frame's own diagonal.  A ring
+        // resized this way is still a circle.
+        const disc = ring(200, 200, 50);
+        const discFrame = core.strokeFrame(disc);
+        const even = core.grabResize(discFrame, 2, {x: 300, y: 270}, {uniform: true, min: 2});
+        core.reshapeStroke(disc, disc.pts.map((q) => ({...q})), even);
+        const c = {x: (disc.pts[0].x + disc.pts[2].x) / 2, y: (disc.pts[1].y + disc.pts[3].y) / 2};
+        const radii = disc.pts.map((q) => Math.hypot(q.x - c.x, q.y - c.y));
+        const roundness = Math.max(...radii) - Math.min(...radii);
+
+        // Nothing folds through the anchor: dragging the grip past its opposite
+        // corner stops at the floor instead of turning the stroke inside out.
+        const folded = core.grabResize(discFrame, 2, {x: 100, y: 100}, {uniform: true, min: 4});
+        const foldedWidth = folded.sx * (discFrame.maxX - discFrame.minX);
+
+        // A dead-straight line has no height to scale, and says so.
+        const flat = core.strokeFrame(core.createStroke(
+          [{x: 0, y: 50}, {x: 100, y: 50}], [0], false));
+        const flatPlan = core.grabResize(flat, 2, {x: 200, y: 50}, {min: 2});
+
+        // A frame that is ALREADY thinner than the floor is left alone, never
+        // inflated to reach it: `min` is a floor under the result, and a drag
+        // that asked for smaller must never hand back bigger.
+        const thin = core.strokeFrame(core.createStroke(
+          [{x: 100, y: 100}, {x: 200, y: 100.5}], [0], false));
+        const shrink = core.grabResize(
+          thin, 2, {x: thin.corners[2].x - 10, y: thin.corners[2].y - 0.2}, {min: 2});
+        const shrinkEven = core.grabResize(
+          thin, 2, {x: thin.corners[2].x - 20, y: thin.corners[2].y},
+          {uniform: true, min: 2});
+
+        // Refusals: a scale that is not a scale changes nothing.
+        const guard = core.createStroke([{x: 0, y: 0}, {x: 10, y: 0}], [0], false);
+        const refused = [
+          core.reshapeStroke(guard, guard.pts.map((q) => ({...q})), {sx: 0}),
+          core.reshapeStroke(guard, guard.pts.map((q) => ({...q})), {sx: -1}),
+          core.reshapeStroke(guard, [{x: 0, y: 0}], {dx: 1}),
+          core.reshapeStroke(guard, guard.pts.map((q) => ({...q})), {dx: NaN}),
+        ];
+        console.log(JSON.stringify({
+          sag, grip, inside, outside,
+          movedPts: moved.pts, movedBulge: moved.bulges[0], revGrew: moved.rev > rev,
+          scaledPts: scaled.pts, scaledBulge: scaled.bulges[0],
+          anchor: plan.anchor, sx: plan.sx, sy: plan.sy,
+          frameMinY: frame.minY, afterMinX: after.minX, afterMinY: after.minY,
+          even, roundness, foldedWidth, flatPlan, shrink, shrinkEven,
+          refused, guardEnd: guard.pts[1],
+        }));
+        """
+    )
+    assert result["sag"] > 1
+    assert result["grip"] == {"grip": 2, "inside": False}
+    assert result["inside"] == {"grip": None, "inside": True}
+    assert result["outside"] is None
+    # A move is a move: the points travel, the bend does not change.
+    assert result["movedPts"] == [{"x": 112, "y": 93}, {"x": 212, "y": 93}]
+    assert result["movedBulge"] == 0.4
+    assert result["revGrew"] is True
+    # A resize about the opposite corner leaves that corner exactly where it was:
+    # the top-right grip was dragged, so the bottom-left of the frame held still.
+    assert result["anchor"] == {"x": 100, "y": result["frameMinY"]}
+    assert abs(result["afterMinX"] - 100) < 1e-9
+    # Held still to within the flatten tolerance, not to the last decimal: the
+    # frame is measured on a FLATTENED curve, so the lowest sample on an arc is
+    # up to the sagitta budget (0.1 mm) off the arc's true low point, and scaling
+    # about it moves it by that much.  Measured 0.002 mm here.
+    assert abs(result["afterMinY"] - result["frameMinY"]) < 0.01
+    assert result["scaledBulge"] == 0.4
+    assert result["sx"] > 1
+    # Uniform really is one factor, and the ring is still round.
+    assert abs(result["even"]["sx"] - result["even"]["sy"]) < 1e-12
+    assert result["roundness"] < 1e-9
+    # The floor holds: 4 mm asked for, 4 mm wide, and never negative.
+    assert abs(result["foldedWidth"] - 4) < 1e-9
+    # No height, no vertical scale.
+    assert result["flatPlan"]["sy"] == 1
+    assert result["flatPlan"]["sx"] > 1
+    # A frame already thinner than the floor shrinks or holds — it never grows.
+    # (0.5 mm tall against a 2 mm floor: the old ratio made this a factor of 4.)
+    assert result["shrink"]["sx"] < 1
+    assert result["shrink"]["sy"] <= 1
+    assert result["shrinkEven"]["sx"] <= 1
+    assert result["shrinkEven"]["sy"] <= 1
+    assert result["refused"] == [False, False, False, False]
+    assert result["guardEnd"] == {"x": 10, "y": 0}

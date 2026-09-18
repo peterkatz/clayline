@@ -2,6 +2,23 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.3.0 — 2026-09-18
+
+### New
+- **Space grabs a shape.** While dragging out a ring, box or polygon, hold
+  Space and the shape moves with the pointer instead of growing; let go and it
+  goes back to sizing from where you put it. Hold Space over a placed line or
+  shape later and a frame with corner grips appears: drag inside to move it,
+  drag a corner to resize it, Shift to keep the proportions. A ring stays a
+  circle and a polygon stays regular. Without Space the bed is exactly as it
+  was: drag a line to bend it, drag a point to move it, tap to add points.
+- **Shapes remember what they are**, through saving as SVG and into a
+  project file, until you bend or move one of their points.
+
+### Changed
+- Space plus drag over a line now moves the line. Panning stays on the empty
+  bed, the middle button, and the trackpad.
+
 ## 0.2.2 — 2026-09-18
 
 ### Changed

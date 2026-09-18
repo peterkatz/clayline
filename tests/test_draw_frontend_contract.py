@@ -105,6 +105,11 @@ TOOL_HINTS = (
 )
 
 # The header's two switches carry their tooltips on the buttons themselves.
+# Space is the one grab modifier, so the three shape tools say the same sentence
+# about it in the same words: a tool that phrased it its own way would read as
+# three different features.
+SPACE_GRAB = " Hold Space while dragging to move it; hold Space over it later to move or resize it."
+
 SWITCH_TOOLTIPS = {
     'data-draw-surface="draw"': (
         "Draw on the bed — your designs at coil width, in millimetres, editable. "
@@ -115,19 +120,21 @@ SWITCH_TOOLTIPS = {
     ),
     'data-draw-tool="draw"': (
         "Tap to place points, drag on empty bed to draw freely, "
-        "pull any line to bend it into an arc the nozzle can turn."
+        "pull any line to bend it into an arc the nozzle can turn. "
+        "Hold Space over a line to move or resize the whole line; "
+        "drag it without Space to bend it."
     ),
     'data-draw-tool="ring"': (
         "Drag from the centre to lay a ring. Rings snap so their coils touch, "
-        "and touching rings print as one stroke with no travel between them."
+        "and touching rings print as one stroke with no travel between them." + SPACE_GRAB
     ),
     'data-draw-tool="box"': (
         "Drag across the bed to lay a rectangle of coil, or hold shift to keep it square. "
-        "Its four corners are sharp until you round them."
+        "Its four corners are sharp until you round them." + SPACE_GRAB
     ),
     'data-draw-tool="polygon"': (
         "Drag from the centre out to a corner to lay an even-sided shape of coil, aimed "
-        "where you drag. Its corners are sharp until you round them."
+        "where you drag. Its corners are sharp until you round them." + SPACE_GRAB
     ),
 }
 

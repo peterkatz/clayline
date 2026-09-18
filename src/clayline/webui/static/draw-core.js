@@ -241,13 +241,49 @@
     return { width: finite(Number(width), 0), height: finite(Number(height), 0), strokes: [] };
   }
 
-  function createStroke(pts = [], bulges = [], closed = false) {
-    return {
+  // A stroke can REMEMBER what laid it.  The memory is one small record —
+  // {kind: "ring"} or {kind: "box"} or {kind: "polygon", sides: n} — and it is
+  // there so a later grab can resize the thing as what it is: a ring stays a
+  // circle, a polygon stays regular, a box may stretch.
+  //
+  // It holds no centre, no radius and no rotation.  A move is a translate of
+  // the POINTS and a resize is a scale of them, so every number a resize needs
+  // is already in the geometry; a second copy of it could only ever come to
+  // disagree with the clay.  The kind is the whole of what has to be
+  // remembered, because the points cannot say it themselves.
+  const SHAPE_KINDS = new Set(["ring", "box", "polygon"]);
+
+  function shapeRecord(shape) {
+    if (!shape) return null;
+    const kind = typeof shape === "string" ? shape : shape.kind;
+    if (!SHAPE_KINDS.has(kind)) return null;
+    if (kind !== "polygon") return { kind };
+    const sides = Math.floor(Number(shape.sides));
+    return sides >= 3 ? { kind, sides } : null;
+  }
+
+  const shapeKind = (stroke) => (stroke && stroke.shape ? stroke.shape.kind : null);
+
+  // The first point-level edit of a shape drops the memory: a ring with a point
+  // dragged off it is not a ring any more, and a frame that went on resizing it
+  // as one would be describing something the artist can see is gone.
+  function forgetShape(stroke) {
+    if (stroke && stroke.shape) delete stroke.shape;
+    return stroke;
+  }
+
+  function createStroke(pts = [], bulges = [], closed = false, shape = null) {
+    const stroke = {
       pts: pts.map((p) => ({ x: p.x, y: p.y })),
       bulges: bulges.slice(),
       closed: Boolean(closed),
       rev: 0,
     };
+    // Absent, not null, on a plain line: an undo snapshot is
+    // JSON.stringify(stroke), and a plain line must weigh what it always did.
+    const memory = shapeRecord(shape);
+    if (memory) stroke.shape = memory;
+    return stroke;
   }
 
   // Every mutation goes through touch(); the flatten cache is keyed on rev.
@@ -386,6 +422,7 @@
   function moveAnchor(stroke, i, p) {
     if (i < 0 || i >= stroke.pts.length) return false;
     stroke.pts[i] = { x: p.x, y: p.y };
+    forgetShape(stroke);
     touch(stroke);
     return true;
   }
@@ -409,6 +446,7 @@
     const half = Math.tan(theta / 8);
     stroke.pts.splice(span + 1, 0, mid);
     stroke.bulges.splice(span, 1, half, half);
+    forgetShape(stroke);
     touch(stroke);
     return span + 1;
   }
@@ -419,6 +457,7 @@
     if (i < 0 || i >= stroke.pts.length || stroke.pts.length <= 2) return false;
     stroke.pts.splice(i, 1);
     stroke.bulges.splice(Math.max(0, i - 1), 1);
+    forgetShape(stroke);
     touch(stroke);
     return true;
   }
@@ -429,6 +468,7 @@
     const [a, b] = spanEnds(stroke, span);
     const bulge = bulgeThrough(a, b, p);
     stroke.bulges[span] = bulge;
+    forgetShape(stroke);
     touch(stroke);
     return bulge;
   }
@@ -439,6 +479,7 @@
     if (stroke.closed || stroke.pts.length < 3) return false;
     stroke.closed = true;
     stroke.bulges.push(0);
+    forgetShape(stroke);
     touch(stroke);
     return true;
   }
@@ -464,6 +505,7 @@
       [{ x: minX, y: minY }, { x: maxX, y: minY }, { x: maxX, y: maxY }, { x: minX, y: maxY }],
       [0, 0, 0, 0],
       true,
+      { kind: "box" },
     );
   }
 
@@ -483,7 +525,106 @@
       pts.push({ x: centre.x + radius * Math.cos(t), y: centre.y + radius * Math.sin(t) });
       bulges.push(0);
     }
-    return createStroke(pts, bulges, true);
+    return createStroke(pts, bulges, true, { kind: "polygon", sides: n });
+  }
+
+  /* ---------- moving and resizing a whole stroke -------------------------- */
+
+  // The grab frame is the stroke's bounding box, measured on FLATTENED geometry
+  // so an arc sits inside the box that is drawn round it, plus the four corners
+  // the artist takes hold of.  Corner 0 is (minX, minY) and they run round, so
+  // corner i and corner i + 2 are always opposite — which is the whole of the
+  // resize rule: the grip goes where the pointer is and its opposite stays put.
+  function strokeFrame(stroke, tol = DEFAULT_TOL) {
+    const b = strokeBounds(stroke, tol);
+    if (!b) return null;
+    return {
+      minX: b.minX,
+      minY: b.minY,
+      maxX: b.maxX,
+      maxY: b.maxY,
+      center: { ...b.center },
+      corners: [
+        { x: b.minX, y: b.minY }, { x: b.maxX, y: b.minY },
+        { x: b.maxX, y: b.maxY }, { x: b.minX, y: b.maxY },
+      ],
+    };
+  }
+
+  // What part of the frame is under p: a corner grip within gripMM, or the
+  // interior — padded, so a dead-straight line has an inside to take hold of at
+  // all.  A GRIP BEATS THE INTERIOR, here and therefore everywhere.
+  function frameHit(frame, p, gripMM, padMM = 0) {
+    if (!frame) return null;
+    let best = null;
+    for (let i = 0; i < 4; i++) {
+      const d = dist(p, frame.corners[i]);
+      if (d <= gripMM && (!best || d < best.d)) best = { grip: i, d };
+    }
+    if (best) return { grip: best.grip, inside: false };
+    const pad = padMM > 0 ? padMM : 0;
+    const inside = p.x >= frame.minX - pad && p.x <= frame.maxX + pad
+      && p.y >= frame.minY - pad && p.y <= frame.maxY + pad;
+    return inside ? { grip: null, inside: true } : null;
+  }
+
+  // Writes the stroke's points from `base` — where they were when the grab
+  // started — scaled about `anchor` and then shifted.
+  //
+  // BULGES ARE NOT TOUCHED.  bulge is tan(θ/4), a pure shape number with no
+  // length in it, so a scaled arc is the same arc bigger: a bend the artist
+  // pulled into a line survives being resized, which is the whole reason this
+  // works on a plain line at all.  Cancelling a grab is this call with nothing
+  // in it, which puts every point back where it was.
+  function reshapeStroke(stroke, base, { anchor = null, sx = 1, sy = 1, dx = 0, dy = 0 } = {}) {
+    if (!stroke || !Array.isArray(base) || base.length !== stroke.pts.length) return false;
+    if (!(sx > 0) || !(sy > 0) || !Number.isFinite(dx) || !Number.isFinite(dy)) return false;
+    const at = anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y)
+      ? anchor
+      : { x: 0, y: 0 };
+    for (let i = 0; i < base.length; i++) {
+      stroke.pts[i] = {
+        x: at.x + (base[i].x - at.x) * sx + dx,
+        y: at.y + (base[i].y - at.y) * sy + dy,
+      };
+    }
+    touch(stroke);
+    return true;
+  }
+
+  // The scale a corner drag is asking for.  `uniform` is the ring and polygon
+  // rule and ⇧'s aspect lock alike: ONE factor, read along the frame's own
+  // diagonal, so the corner tracks the pointer instead of one axis winning.
+  //
+  // Nothing turns inside out — each side stops at `min` rather than folding
+  // through the anchor.  A side with no length (a dead-straight line has no
+  // height) does not scale at all: there is nothing there to multiply.
+  function grabResize(frame, grip, p, { uniform = false, min = 0 } = {}) {
+    if (!frame || !Number.isInteger(grip) || grip < 0 || grip > 3) return null;
+    const corner = frame.corners[grip];
+    const anchor = frame.corners[(grip + 2) % 4];
+    const w = Math.abs(corner.x - anchor.x);
+    const h = Math.abs(corner.y - anchor.y);
+    const reachX = (p.x - anchor.x) * (corner.x >= anchor.x ? 1 : -1);
+    const reachY = (p.y - anchor.y) * (corner.y >= anchor.y ? 1 : -1);
+    // The floor is a lower bound on the RESULT, never a push upward: a side
+    // that already sits under `min` is left where it is rather than inflated,
+    // so a drag that asked for smaller never hands back bigger.
+    const floorX = w > EPSILON ? Math.min(1, min / w) : 0;
+    const floorY = h > EPSILON ? Math.min(1, min / h) : 0;
+    let sx = 1;
+    let sy = 1;
+    if (uniform) {
+      const diag = w * w + h * h;
+      let s = diag > EPSILON ? (reachX * w + reachY * h) / diag : 1;
+      s = Math.max(s, floorX, floorY, EPSILON);
+      if (w > EPSILON) sx = s;
+      if (h > EPSILON) sy = s;
+    } else {
+      if (w > EPSILON) sx = Math.max(reachX / w, floorX, EPSILON);
+      if (h > EPSILON) sy = Math.max(reachY / h, floorY, EPSILON);
+    }
+    return { anchor: { ...anchor }, sx, sy };
   }
 
   /* ---------- repeats: radial copies and mirror --------------------------- */
@@ -514,10 +655,13 @@
       const sin = Math.sin(angle);
       for (const stroke of list) {
         if (!stroke || stroke.pts.length < 1) continue;
+        // A turn and a reflection both keep a ring a ring and a polygon
+        // regular, so a copy of a shape is a shape of the same kind.
         out.push(createStroke(
           stroke.pts.map((p) => spinPoint(p, centre, cos, sin)),
           stroke.bulges,
           stroke.closed,
+          stroke.shape,
         ));
       }
     }
@@ -544,7 +688,7 @@
       const along = 2 * (vx * ux + vy * uy);
       return { x: axisA.x + along * ux - vx, y: axisA.y + along * uy - vy };
     });
-    return createStroke(pts, stroke.bulges.map((b) => (b ? -b : 0)), stroke.closed);
+    return createStroke(pts, stroke.bulges.map((b) => (b ? -b : 0)), stroke.closed, stroke.shape);
   }
 
   /* ---------- freehand fit: a raw drag becomes lines and arcs ------------- */
@@ -1436,6 +1580,9 @@
     bulges.splice(index, 0, fillet.bulge);
     stroke.pts.splice(index, 1, fillet.from, fillet.to);
     stroke.bulges = bulges;
+    // A rounded corner is a point-level edit like the rest: the box whose
+    // corner just became an arc is no longer a box.
+    forgetShape(stroke);
     touch(stroke);
     return true;
   }
@@ -1456,6 +1603,23 @@
   }
 
   /* ---------- the document is an SVG -------------------------------------- */
+
+  // How the memory rides in the file: ONE attribute on the path itself, written
+  // `ring`, `box` or `polygon;6`.  A path without it is a plain line — which is
+  // every SVG in the world that Clayline did not write, so a foreign file is
+  // read exactly as it always was.
+  const SHAPE_ATTR = "data-clayline-shape";
+
+  function encodeShape(shape) {
+    if (!shape) return "";
+    return shape.kind === "polygon" ? `polygon;${Math.floor(shape.sides)}` : shape.kind;
+  }
+
+  function decodeShape(text) {
+    if (!text) return null;
+    const parts = String(text).trim().split(";");
+    return shapeRecord(parts[0] === "polygon" ? { kind: parts[0], sides: Number(parts[1]) } : { kind: parts[0] });
+  }
 
   const num = (v) => {
     const rounded = Math.round(v * 10 ** PRECISION) / 10 ** PRECISION;
@@ -1493,7 +1657,8 @@
         }
       }
       if (stroke.closed) d += " Z";
-      body.push(`  <path d="${d}"/>`);
+      const memory = encodeShape(stroke.shape);
+      body.push(`  <path d="${d}"${memory ? ` ${SHAPE_ATTR}="${memory}"` : ""}/>`);
     }
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${num(width)}mm" height="${num(height)}mm" viewBox="0 0 ${num(width)} ${num(height)}"
      fill="none" stroke="#000" stroke-width="${num(bead)}" stroke-linecap="round">
@@ -2015,7 +2180,7 @@ ${body.join("\n")}
     const skipDepth = [];
     let rootSeen = false;
 
-    const emit = (subpath, matrix) => {
+    const emit = (subpath, matrix, shape) => {
       if (!subpath || subpath.pts.length < 2) return;
       const similar = isSimilarity(matrix);
       const flip = matDet(matrix) < 0 ? -1 : 1;
@@ -2036,7 +2201,12 @@ ${body.join("\n")}
         }
         while (bulges.length < pts.length - (subpath.closed ? 0 : 1)) bulges.push(0);
       }
-      addStroke(doc, createStroke(pts, bulges, subpath.closed));
+      // The memory only survives what cannot have changed the shape: a
+      // similarity (a squash turns a ring into an ellipse, which is no longer a
+      // ring), and a corner count that still matches the points it claims.
+      let memory = similar ? shapeRecord(shape) : null;
+      if (memory && memory.kind === "polygon" && memory.sides !== pts.length) memory = null;
+      addStroke(doc, createStroke(pts, bulges, subpath.closed, memory));
     };
 
     ELEMENT_RE.lastIndex = 0;
@@ -2069,6 +2239,10 @@ ${body.join("\n")}
             return parsed ? parsed.value : fallback;
           };
           let subpaths = [];
+          // Only a path carries the memory, and only when it is the one subpath
+          // in that path: `M … M …` is several strokes, and the attribute could
+          // not say which of them was the ring.
+          const memory = tag === "path" ? decodeShape(attrs[SHAPE_ATTR]) : null;
           if (tag === "path") {
             subpaths = pathSubpaths(decode(attrs.d || ""), curveTol);
           } else if (tag === "line") {
@@ -2097,7 +2271,9 @@ ${body.join("\n")}
             const ry = number("ry");
             if (rx > 0 && ry > 0) subpaths = [ellipseSubpath(number("cx"), number("cy"), rx, ry, curveTol)];
           }
-          for (const subpath of subpaths) emit(subpath, node.matrix);
+          for (const subpath of subpaths) {
+            emit(subpath, node.matrix, subpaths.length === 1 ? memory : null);
+          }
         }
       }
 
@@ -2151,6 +2327,8 @@ ${body.join("\n")}
     // document and strokes
     createDocument,
     createStroke,
+    shapeKind,
+    forgetShape,
     touch,
     spanCount,
     spanEnds,
@@ -2170,6 +2348,10 @@ ${body.join("\n")}
     // shapes and repeats
     rectStroke,
     polygonStroke,
+    strokeFrame,
+    frameHit,
+    reshapeStroke,
+    grabResize,
     radialCopies,
     mirrorStroke,
     // hit testing

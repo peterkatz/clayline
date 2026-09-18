@@ -274,6 +274,25 @@ def test_the_shell_drives_the_gesture_machine_through_its_published_surface() ->
     assert 'bindNumber("#drawCopies", 2, 24,' in source
 
 
+def test_smoothing_a_shape_stops_it_calling_itself_a_shape() -> None:
+    # Smooth rewrites every point in place, so a ring that has been relaxed is
+    # not a ring any more.  It has to drop the memory the same way a dragged
+    # point does, or the frame would go on resizing it as a circle and the SVG
+    # would write the claim down.  Back at rest the points are the ones it
+    # started with, so the memory comes back with them.
+    source = SHELL.read_text(encoding="utf-8")
+    core = (STATIC / "draw-core.js").read_text(encoding="utf-8")
+    assert "forgetShape," in core, "draw-core.js no longer publishes forgetShape"
+    preview = source[source.index("const previewSmooth = () =>") :]
+    preview = preview[: preview.index("syncScene();")]
+    assert "if (next) core.forgetShape(target);" in preview
+    assert "else if (saved.shape) target.shape = { ...saved.shape };" in preview
+    assert preview.index("core.forgetShape(target)") < preview.index("core.touch(target)")
+    # The snapshot the slider previews from carries the memory, so returning the
+    # slider to rest can hand it back.
+    assert "shape: stroke.shape ? { ...stroke.shape } : null," in source
+
+
 def test_the_preview_tabs_step_aside_while_the_bed_is_being_drawn_on() -> None:
     # While the surface is over the stage, 2D plan and 3D toolpath change
     # nothing at all — it hides both panels whatever showState was asked for.

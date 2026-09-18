@@ -44,7 +44,9 @@
 //   view.setOverlay(overlay)      REPLACES: gesture state is transient, and a
 //        stale rubber band is a lie about what the next click will do.  Its
 //        coordinates are the ACTIVE DOCUMENT's frame, the one the gesture
-//        machine hit-tests in.
+//        machine hit-tests in.  `grab` is the frame Space is holding round a
+//        stroke — a rectangle and its four corner grips, already measured by
+//        the gesture machine off the stroke as it moves.
 //   view.requestDraw()            rAF-coalesced; safe to call per event
 //   view.destroy()
 //
@@ -89,6 +91,7 @@
   const ANCHOR_R_PX = 3.6;
   const ANCHOR_EDGE_PX = 1.6;
   const HANDLE_R_PX = 4.5;            // the photo's corner and rotate grips
+  const GRAB_R_PX = HANDLE_R_PX;      // and the grab frame's, so one grip is one size
   const ROTATE_LIFT_PX = 26;          // the rotate grip rides this far above the photo
   const SNAP_R_PX = 7;
   const SNAP_EDGE_PX = 1.6;
@@ -206,6 +209,7 @@
       previewCache: null,
       previewLabel: null,
       corner: null,
+      grab: null,
       anchorSet: new Set(),
     };
 
@@ -725,6 +729,36 @@
       }
     }
 
+    // The frame Space is holding: the stroke's own box in a quiet dashed clay
+    // outline with a grip at each corner, drawn the way the photo's arrange
+    // grips are, and sized in SCREEN pixels over the live scale so a grip is
+    // the same target at any zoom — exactly as an anchor is (PRD §7).
+    //
+    // Rectangle and grips are drawn WHERE THE GESTURE MACHINE SAYS THEY ARE.
+    // Standing the outline off the clay would read a little cleaner and would
+    // put every grip somewhere the pointer does not find it, which is the one
+    // thing a handle may never do.
+    function drawGrab() {
+      const grab = S.grab;
+      if (!grab) return;
+      const scale = S.scale;
+      dash[0] = BAND_DASH_PX[0] / scale;
+      dash[1] = BAND_DASH_PX[1] / scale;
+      ctx.setLineDash(dash);
+      ctx.strokeStyle = P.clayDark;
+      ctx.lineWidth = BAND_PX / scale;
+      ctx.strokeRect(grab.minX, grab.minY, grab.maxX - grab.minX, grab.maxY - grab.minY);
+      ctx.setLineDash(NO_DASH);
+      ctx.lineWidth = ANCHOR_EDGE_PX / scale;
+      const radius = GRAB_R_PX / scale;
+      for (let i = 0; i < 4; i++) {
+        // The grip under the pointer is filled, the way the anchor under the
+        // pointer is: "you are ON this corner" then needs no explaining.
+        ctx.fillStyle = i === grab.grip ? P.clay : P.bed;
+        handleRing(grab.grips[i].x, grab.grips[i].y, radius);
+      }
+    }
+
     function drawBand(placement) {
       const band = S.band;
       if (!band) return;
@@ -904,6 +938,7 @@
       drawTrace();
       drawPreview();
       drawAnchors();
+      drawGrab();
       drawBand(placement);
       drawRing(placement);
       drawPreviewLabel(placement);
@@ -1003,6 +1038,29 @@
       return centre && r > 0 ? { c: centre, r, tangent: Boolean(value.tangent) } : null;
     }
 
+    // The frame arrives ready to draw: the rectangle and its four corners in
+    // the active document's millimetres, measured by the gesture machine off
+    // the stroke it is holding, so the frame on screen is the frame round what
+    // is actually there.  Four corners or none — three is not a frame, and a
+    // half-drawn one would be a lie about where the grips are.
+    function grabOf(value) {
+      if (!value) return null;
+      const rect = value.rect || value;
+      const minX = Number(rect.minX);
+      const minY = Number(rect.minY);
+      const maxX = Number(rect.maxX);
+      const maxY = Number(rect.maxY);
+      if (!Number.isFinite(minX) || !Number.isFinite(minY)) return null;
+      if (!Number.isFinite(maxX) || !Number.isFinite(maxY)) return null;
+      const grips = Array.isArray(value.grips) ? value.grips.map(pointLike) : [];
+      if (grips.length !== 4 || grips.some((p) => !p)) return null;
+      const grip = value.grip;
+      return {
+        minX, minY, maxX, maxY, grips,
+        grip: Number.isInteger(grip) && grip >= 0 && grip < 4 ? grip : -1,
+      };
+    }
+
     // The band is resolved here, once per event, rather than per frame — and an
     // explicit `rubber` wins over the chain: the gesture machine knows when a
     // chain is open but no band belongs on screen (a freehand drag continuing
@@ -1054,6 +1112,7 @@
         ? label
         : null;
       S.corner = source.corner && pointLike(source.corner.p) ? source.corner : null;
+      S.grab = grabOf(source.grab);
       requestDraw();
     }
 
@@ -1077,6 +1136,7 @@
       S.previewCache = null;
       S.previewLabel = null;
       S.corner = null;
+      S.grab = null;
       S.anchorSet.clear();
       gridCache = null;
     }

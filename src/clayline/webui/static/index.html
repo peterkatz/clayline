@@ -230,10 +230,10 @@
               <button type="button" data-draw-surface="sliced" class="is-active" aria-pressed="true" title="The audited path from the last slice. Read-only — slice again after an edit.">Sliced</button>
             </nav>
             <nav class="unit-switch draw-tool-switch" id="drawToolSwitch" aria-label="Drawing tool" hidden>
-              <button type="button" data-draw-tool="draw" class="is-active" aria-pressed="true" title="Tap to place points, drag on empty bed to draw freely, pull any line to bend it into an arc the nozzle can turn.">Lines</button>
-              <button type="button" data-draw-tool="ring" aria-pressed="false" title="Drag from the centre to lay a ring. Rings snap so their coils touch, and touching rings print as one stroke with no travel between them.">Rings</button>
-              <button type="button" data-draw-tool="box" aria-pressed="false" title="Drag across the bed to lay a rectangle of coil, or hold shift to keep it square. Its four corners are sharp until you round them.">Box</button>
-              <button type="button" data-draw-tool="polygon" aria-pressed="false" title="Drag from the centre out to a corner to lay an even-sided shape of coil, aimed where you drag. Its corners are sharp until you round them.">Polygon</button>
+              <button type="button" data-draw-tool="draw" class="is-active" aria-pressed="true" title="Tap to place points, drag on empty bed to draw freely, pull any line to bend it into an arc the nozzle can turn. Hold Space over a line to move or resize the whole line; drag it without Space to bend it.">Lines</button>
+              <button type="button" data-draw-tool="ring" aria-pressed="false" title="Drag from the centre to lay a ring. Rings snap so their coils touch, and touching rings print as one stroke with no travel between them. Hold Space while dragging to move it; hold Space over it later to move or resize it.">Rings</button>
+              <button type="button" data-draw-tool="box" aria-pressed="false" title="Drag across the bed to lay a rectangle of coil, or hold shift to keep it square. Its four corners are sharp until you round them. Hold Space while dragging to move it; hold Space over it later to move or resize it.">Box</button>
+              <button type="button" data-draw-tool="polygon" aria-pressed="false" title="Drag from the centre out to a corner to lay an even-sided shape of coil, aimed where you drag. Its corners are sharp until you round them. Hold Space while dragging to move it; hold Space over it later to move or resize it.">Polygon</button>
             </nav>
             <label class="compact-field draw-coil-field" id="drawCoilField" hidden title="Coil width (mm). The line you draw is the centre of a coil this wide — width is flow, not the hole. The same control as the rail's.">
               <span>Coil width (mm)</span>

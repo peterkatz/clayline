@@ -1580,6 +1580,7 @@
           pts: stroke.pts.map((p) => ({ x: p.x, y: p.y })),
           bulges: [...stroke.bulges],
           closed: stroke.closed,
+          shape: stroke.shape ? { ...stroke.shape } : null,
         }));
         host.beginGesture();
       };
@@ -1603,6 +1604,11 @@
           for (const p of source.pts) target.pts.push({ x: p.x, y: p.y });
           target.bulges.length = 0;
           for (const bulge of source.bulges) target.bulges.push(bulge);
+          // Smoothing rewrites the points, so a ring that has been relaxed is
+          // not a ring any more and must stop saying it is.  Back at rest the
+          // points are the ones it started with, so the memory comes back.
+          if (next) core.forgetShape(target);
+          else if (saved.shape) target.shape = { ...saved.shape };
           core.touch(target);
         }
         syncScene();

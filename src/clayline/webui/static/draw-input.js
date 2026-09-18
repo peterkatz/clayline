@@ -23,9 +23,18 @@
 //                  and lays the copies, in one step
 //   sharp corner   in the Lines tool, a click on a sharp-corner mark replaces
 //                  the kink with the largest arc that fits
+//   space          the one grab modifier.  Held while a ring, box or polygon
+//                  is being dragged, it carries the shape at the size it has;
+//                  let it go and the drag sizes again from where the shape now
+//                  is.  Held over a placed line or shape, it puts a frame with
+//                  four corner grips round it: drag inside to move the whole
+//                  thing, drag a grip to resize it about the opposite corner.
+//                  A ring and a polygon always resize uniformly; a box may
+//                  stretch; a plain line scales with its bulges untouched, so
+//                  its bends survive.  Over empty bed it still pans.
 //   keys           Enter, Escape and a double-click finish an open chain;
 //                  ⌫ removes the point under the cursor, or the whole line when
-//                  the cursor is not on a point; space-drag and middle-drag pan;
+//                  the cursor is not on a point; middle-drag pans;
 //                  the wheel zooms at the cursor; cmd/ctrl+0 frames the bed
 //
 // An anchor within ANCHOR_PX always beats a line within HIT_PX.  That
@@ -181,6 +190,7 @@
       gesture: null,    // the drag in flight, or null
       cursor: null,     // last pointer position in bed mm — what ⌫ acts on
       hover: null,      // {stroke, anchor} under the pointer
+      grab: null,       // while Space is held: the frame under the pointer
       snap: null,       // the snap the artist can see, and whether it welds
       corner: null,     // the sharp-corner mark under the pointer, and its fix
       selection: null,  // what a repeat or a mirror acts on, or null for all
@@ -270,6 +280,15 @@
       const shown = preview(g);
       const mark = state.corner && state.corner.stroke.pts[state.corner.i];
 
+      // The grab frame, in the document's own millimetres and live: while the
+      // gesture runs it is measured off the stroke as it moves, so the frame the
+      // artist is holding is the frame round what is actually there.  The grips
+      // are its four corners; their SIZE on screen is the renderer's, exactly as
+      // an anchor's is.
+      const held = g && g.kind === "grab" ? g : null;
+      const framed = held ? held.stroke : (state.grab ? state.grab.stroke : null);
+      const frame = framed ? core.strokeFrame(framed, physics().tol) : null;
+
       return {
         tool: state.tool,
         gesture: g ? g.kind : null,
@@ -291,6 +310,18 @@
         preview: shown ? shown.strokes : null,
         previewLabel: shown && shown.label && shown.at
           ? { text: shown.label, at: shown.at }
+          : null,
+        grab: frame
+          ? {
+            stroke: framed,
+            rect: {
+              minX: frame.minX, minY: frame.minY, maxX: frame.maxX, maxY: frame.maxY,
+            },
+            grips: frame.corners,
+            grip: held ? held.grip : state.grab.grip,
+            kind: core.shapeKind(framed),
+            held: Boolean(held),
+          }
           : null,
         // The offered fix, on the mark the artist can already see.
         corner: mark
@@ -345,9 +376,15 @@
         g.stroke.bulges[g.span] = g.origin;
         core.touch(g.stroke);
       }
+      // A grab is undone by the call that made it, with nothing in it: every
+      // point goes back to the snapshot the gesture started from.
+      if (g.kind === "grab" && g.moved) core.reshapeStroke(g.stroke, g.base, {});
       state.gesture = null;
       state.snap = null;
       releaseCapture(g.pointerId);
+      // Nothing is held any more, so the closed hand goes: a cancelled grab
+      // must not leave the pointer saying it still has the stroke.
+      canvas.style.cursor = cursorFor();
       if (g.moved && actions.onDocChanged) actions.onDocChanged();
       publish();
     }
@@ -412,7 +449,7 @@
         pts.push({ x: centre.x + radius * Math.cos(t), y: centre.y + radius * Math.sin(t) });
         bulges.push(QUARTER_BULGE);
       }
-      return core.createStroke(pts, bulges, true);
+      return core.createStroke(pts, bulges, true, { kind: "ring" });
     }
 
     /* ---------- the shape tools, the repeat and the mirror --------------- */
@@ -563,11 +600,84 @@
       return 0;
     }
 
+    /* ---------- the grab frame: Space over a placed line or shape -------- */
+
+    // Space is the ONE grab modifier.  While it is held the bed's ordinary
+    // meanings stand down: an anchor or a span under the pointer is irrelevant,
+    // and what is under the pointer is a frame — the whole stroke, to move or
+    // to resize.  Let Space go and bend, move-point and tap are back, unchanged.
+    //
+    // A grip is as big a target as a point is, so the corner an artist can see
+    // is the corner they can hit.
+    const GRIP_PX = ANCHOR_PX;
+
+    // These two always resize uniformly: a ring must stay a circle and a
+    // polygon must stay regular, so neither one ever takes two scale factors.
+    const UNIFORM = new Set(["ring", "polygon"]);
+
+    // A shape in flight that Space can carry.
+    const CARRIED = new Set(["ring", "box", "polygon"]);
+
+    const grabWord = (stroke) => core.shapeKind(stroke) || "line";
+
+    // The frame under the pointer.  Grips first across the whole drawing, then
+    // interiors, topmost stroke first — so a grip always beats an interior, and
+    // between two frames the one nearer the front wins.
+    function grabTarget(active, p) {
+      const grip = mmOf(GRIP_PX);
+      const pad = mmOf(HIT_PX);
+      const feel = physics();
+      let interior = null;
+      for (let i = active.strokes.length - 1; i >= 0; i--) {
+        const stroke = active.strokes[i];
+        if (stroke.pts.length < 2) continue;
+        const frame = core.strokeFrame(stroke, feel.tol);
+        const hit = core.frameHit(frame, p, grip, pad);
+        if (!hit) continue;
+        if (hit.grip !== null) return { stroke, frame, grip: hit.grip };
+        if (!interior) interior = { stroke, frame, grip: null };
+      }
+      return interior;
+    }
+
+    // Space mid-drag: the shape stops sizing and starts being carried.  Its
+    // anchor moves by the pointer's OWN movement, so the pointer keeps the hold
+    // it had on the rim — which is why letting Space go resumes sizing with
+    // nothing to jump.
+    function carryBy(g, dx, dy) {
+      if (g.kind === "ring") {
+        g.centre = { x: g.centre.x + dx, y: g.centre.y + dy };
+        return;
+      }
+      g.a = { x: g.a.x + dx, y: g.a.y + dy };
+      g.b = { x: g.b.x + dx, y: g.b.y + dy };
+    }
+
+    // What a grab gesture writes, from the snapshot it took when it started:
+    // a shift for a move, a scale about the opposite corner for a resize.  Both
+    // go through the same call, so Escape is that call with nothing in it.
+    function applyGrab(g, p, shiftKey) {
+      if (g.grip === null) {
+        return core.reshapeStroke(g.stroke, g.base, { dx: p.x - g.from.x, dy: p.y - g.from.y });
+      }
+      const uniform = UNIFORM.has(core.shapeKind(g.stroke)) || Boolean(shiftKey);
+      const scale = core.grabResize(g.frame, g.grip, p, { uniform, min: mmOf(2) });
+      return scale ? core.reshapeStroke(g.stroke, g.base, scale) : false;
+    }
+
     /* ---------- hover ---------------------------------------------------- */
 
     function cursorFor() {
-      if (state.gesture && state.gesture.kind === "pan") return "grabbing";
-      if (state.space) return "grab";
+      const held = state.gesture;
+      if (held && (held.kind === "pan" || held.kind === "grab")) return "grabbing";
+      if (state.space) {
+        // A grip says which way it sizes; the frame's inside says "carry me";
+        // empty bed still says "drag the view".
+        if (state.grab && state.grab.grip !== null) {
+          return state.grab.grip % 2 === 0 ? "nesw-resize" : "nwse-resize";
+        }
+        return "grab";
+      }
       // Every tool but Lines lays its own shape wherever the drag starts, so
       // nothing under the pointer changes what the cursor is about to do.
       if (state.tool !== "draw") return "crosshair";
@@ -580,6 +690,22 @@
     function updateHover(p) {
       const active = docOf();
       const feel = physics();
+
+      // With Space down the frame is the only thing under the pointer: the
+      // anchors and spans that are live the rest of the time would be offering
+      // edits this gesture does not do.
+      if (state.space) {
+        state.grab = state.gesture && state.gesture.kind === "grab"
+          ? state.grab
+          : grabTarget(active, p);
+        state.hover = null;
+        state.corner = null;
+        state.snap = null;
+        canvas.style.cursor = cursorFor();
+        return;
+      }
+      state.grab = null;
+
       const anchor = core.hitAnchor(active, p, mmOf(ANCHOR_PX));
       const span = anchor ? null : core.hitSpan(active, p, mmOf(HIT_PX), feel.tol);
       state.hover = anchor
@@ -642,7 +768,31 @@
         publish();
       };
 
-      // Space or the middle button pans, whatever is under the pointer.
+      // Space has hold of a stroke: that is the one thing that now comes before
+      // the pan.  Over empty bed there is no frame, and the drag pans as it
+      // always did.
+      if (state.space && event.button === 0) {
+        const target = grabTarget(docOf(), p);
+        if (target) {
+          capture();
+          startGesture({
+            kind: "grab", pointerId: event.pointerId, changed: false,
+            label: `${target.grip === null ? "Move" : "Resize"} ${grabWord(target.stroke)}`,
+            stroke: target.stroke, grip: target.grip, frame: target.frame,
+            // Where the points were when the grab started: every move writes
+            // from this, so nothing accumulates and Escape has somewhere to go.
+            base: target.stroke.pts.map((q) => ({ x: q.x, y: q.y })),
+            from: p, moved: false, downX: event.clientX, downY: event.clientY,
+          });
+          state.grab = target;
+          state.hover = null;
+          canvas.style.cursor = "grabbing";
+          publish();
+          return;
+        }
+      }
+
+      // Space over empty bed, or the middle button, pans.
       if (state.space || event.button === 1) {
         capture();
         startGesture({
@@ -785,6 +935,17 @@
       const p = bedOf(event);
       state.cursor = p;
       const feel = physics();
+
+      // Space is carrying the shape: it keeps the size it has and follows the
+      // pointer.  This comes before the drag threshold because carrying IS the
+      // movement while it lasts.
+      if (g.carry && CARRIED.has(g.kind)) {
+        carryBy(g, p.x - g.carry.x, p.y - g.carry.y);
+        g.carry = p;
+        publish();
+        return;
+      }
+
       // PORT NOTE: the prototype counts the first pointermove as movement
       // (draw-in-clay.html:631, 638), so a click with one stray pixel of jitter
       // commits an undo step for a sub-pixel edit.  The 3 px threshold that
@@ -829,6 +990,14 @@
         g.b = g.kind === "box"
           ? squareOff(g.a, p, event.shiftKey)
           : steadyAngle(g.a, p, event.shiftKey);
+        publish();
+        return;
+      }
+
+      if (g.kind === "grab") {
+        if (!past) return;
+        g.moved = true;
+        if (applyGrab(g, p, event.shiftKey)) noteChange();
         publish();
         return;
       }
@@ -908,6 +1077,10 @@
             noteChange(g.label);
           }
         }
+      } else if (g.kind === "grab") {
+        // ⇧ is read on the release as well as the move: the artist reaches for
+        // it once they can see what they are about to leave behind.
+        if (g.moved && applyGrab(g, p, event.shiftKey)) noteChange();
       } else if (g.kind === "mirror") {
         if (g.moved) {
           g.b = steadyAngle(g.a, p, event.shiftKey);
@@ -987,6 +1160,7 @@
       state.hover = null;
       state.snap = null;
       state.corner = null;
+      state.grab = null;
       canvas.style.cursor = cursorFor();
       publish();
     }
@@ -1025,7 +1199,14 @@
 
       if (event.code === "Space" && !state.space) {
         state.space = true;
+        const g = state.gesture;
+        // Mid-drag it takes hold of the shape being sized; with no drag in
+        // flight the frame under the pointer appears at once, without the
+        // artist having to move to find it.
+        if (g && CARRIED.has(g.kind)) g.carry = state.cursor ? { ...state.cursor } : null;
+        else if (!g && state.cursor) updateHover(state.cursor);
         canvas.style.cursor = cursorFor();
+        publish();
         event.preventDefault();   // space would otherwise scroll the page
         return;
       }
@@ -1094,15 +1275,26 @@
     function onKeyUp(event) {
       if (event.code !== "Space") return;
       state.space = false;
+      const g = state.gesture;
+      // Sizing resumes from where the shape now is, and because the carry moved
+      // it by the pointer's own movement there is nothing to jump.
+      if (g && CARRIED.has(g.kind)) g.carry = null;
+      // A grab in flight belongs to the POINTER, not to the key: letting Space
+      // go mid-drag does not abandon a move half-made.
+      if (!g && state.cursor) updateHover(state.cursor);
+      else if (!g) state.grab = null;
       canvas.style.cursor = cursorFor();
+      publish();
     }
 
     function onBlur() {
       // A window that loses focus keeps no keys down, and a drag it can no
       // longer see must not stay half-made.
       state.space = false;
+      state.grab = null;
       if (state.gesture && state.gesture.kind !== "pan") cancelGesture();
       else if (state.gesture) { finishGesture(); publish(); }
+      else publish();
     }
 
     /* ---------- lifecycle ------------------------------------------------ */
@@ -1220,6 +1412,7 @@
         state.snap = null;
         state.cursor = null;
         state.corner = null;
+        state.grab = null;
         state.selection = null;
         publish();
       },

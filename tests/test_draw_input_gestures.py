@@ -213,6 +213,8 @@ function line(doc, a, b, bulge = 0) {{
   return core.addStroke(doc, core.createStroke([a, b], [bulge], false));
 }}
 
+// What the Ring tool lays, memory and all: four quarter-arcs that REMEMBER they
+// are a ring, so a grab resizes this the way it resizes one the artist dragged.
 function ring(doc, cx, cy, r) {{
   const pts = [];
   const bulges = [];
@@ -221,7 +223,7 @@ function ring(doc, cx, cy, r) {{
     pts.push({{ x: cx + r * Math.cos(t), y: cy + r * Math.sin(t) }});
     bulges.push(Math.tan(Math.PI / 8));
   }}
-  return core.addStroke(doc, core.createStroke(pts, bulges, true));
+  return core.addStroke(doc, core.createStroke(pts, bulges, true, {{ kind: "ring" }}));
 }}
 """
 
@@ -1218,7 +1220,396 @@ def test_the_new_tools_are_cancel_safe_and_a_short_drag_lays_nothing() -> None:
     assert result["swapped"]["commits"] == 0
 
 
+def test_space_carries_a_shape_while_it_is_being_dragged() -> None:
+    result = _run_node(
+        """
+        // The ring: dragged out to 40 mm, carried 60 mm right on Space, then
+        // sized again from where it now is.  The pointer keeps its hold on the
+        // rim through the carry, so letting Space go has nothing to jump.
+        const r = surface();
+        r.input.setTool("ring");
+        r.down({x: 100, y: 100}).move({x: 140, y: 100});
+        r.key(" ", {code: "Space"});
+        const held = {r: r.view.overlay.ring.r, c: {...r.view.overlay.ring.centre}};
+        r.move({x: 200, y: 100});
+        const carried = {r: r.view.overlay.ring.r, c: {...r.view.overlay.ring.centre}};
+        r.keyUp(" ", {code: "Space"});
+        r.move({x: 220, y: 100});
+        r.up({x: 220, y: 100});
+        const made = r.only();
+        const c = {x: (made.pts[0].x + made.pts[2].x) / 2, y: (made.pts[1].y + made.pts[3].y) / 2};
+        const ringOut = {
+          held, carried, centre: c,
+          radius: Math.hypot(made.pts[0].x - c.x, made.pts[0].y - c.y),
+          shape: core.shapeKind(made), commits: [...r.commits], strokes: r.strokes().length,
+        };
+
+        // The box carries from its first corner.
+        const b = surface();
+        b.input.setTool("box");
+        b.down({x: 50, y: 50}).move({x: 150, y: 100});
+        b.key(" ", {code: "Space"});
+        b.move({x: 200, y: 120});                      // carry +50, +20
+        b.keyUp(" ", {code: "Space"});
+        b.move({x: 210, y: 130});                      // size again, from (100, 70)
+        b.up({x: 210, y: 130});
+        const boxOut = {
+          pts: b.only().pts, shape: core.shapeKind(b.only()),
+          commits: [...b.commits], strokes: b.strokes().length,
+        };
+
+        // The polygon carries from its centre, and keeps the size it had.
+        const g = surface();
+        g.input.setTool("polygon");
+        g.input.setShapeSides(6);
+        g.down({x: 200, y: 200}).move({x: 240, y: 200});
+        g.key(" ", {code: "Space"});
+        g.move({x: 260, y: 200});                      // carry +20
+        g.keyUp(" ", {code: "Space"});
+        g.up({x: 260, y: 200});
+        const poly = g.only();
+        const pc = poly.pts.reduce(
+          (acc, q) => ({x: acc.x + q.x / 6, y: acc.y + q.y / 6}), {x: 0, y: 0},
+        );
+        const radii = poly.pts.map((q) => Math.hypot(q.x - pc.x, q.y - pc.y));
+        const polyOut = {
+          centre: pc, spread: Math.max(...radii) - Math.min(...radii), radius: radii[0],
+          sides: poly.pts.length, shape: core.shapeKind(poly), sidesRemembered: poly.shape.sides,
+          commits: [...g.commits],
+        };
+
+        // Escape mid-carry still abandons the whole gesture.
+        const e = surface();
+        e.input.setTool("ring");
+        e.down({x: 100, y: 100}).move({x: 140, y: 100});
+        e.key(" ", {code: "Space"});
+        e.move({x: 200, y: 100});
+        e.key("Escape");
+        e.up({x: 200, y: 100});
+        const escaped = {
+          strokes: e.strokes().length, commits: e.commits.length,
+          captured: e.canvas.captured,
+        };
+
+        // Space pressed BEFORE the pointer goes down keeps its old meaning on
+        // empty bed: that drag pans, and lays no shape.
+        const p = surface();
+        p.input.setTool("box");
+        p.key(" ", {code: "Space"});
+        p.drag([{x: 40, y: 300}, {x: 60, y: 320}]);
+        const panned = {
+          strokes: p.strokes().length, commits: p.commits.length,
+          origin: p.view.camera.toPx({x: 0, y: 0}),
+        };
+        console.log(JSON.stringify({ringOut, boxOut, polyOut, escaped, panned}));
+        """
+    )
+    ring = result["ringOut"]
+    # The size is held through the carry; only the centre travels.
+    assert abs(ring["held"]["r"] - 40) < 1e-9
+    assert abs(ring["carried"]["r"] - 40) < 1e-9
+    assert ring["carried"]["c"] == {"x": 160.0, "y": 100.0}
+    # Sizing resumes from the shape's new centre: the pointer at 220 is 60 out.
+    assert ring["centre"] == {"x": 160.0, "y": 100.0}
+    assert abs(ring["radius"] - 60) < 1e-9
+    assert ring["shape"] == "ring"
+    assert ring["commits"] == ["Add ring"]  # one gesture, one undo step
+    assert ring["strokes"] == 1
+
+    box = result["boxOut"]
+    assert box["pts"] == [
+        {"x": 100.0, "y": 70.0},
+        {"x": 210.0, "y": 70.0},
+        {"x": 210.0, "y": 130.0},
+        {"x": 100.0, "y": 130.0},
+    ]
+    assert box["shape"] == "box"
+    assert box["commits"] == ["Add box"]
+    assert box["strokes"] == 1
+
+    poly = result["polyOut"]
+    assert abs(poly["centre"]["x"] - 220) < 1e-9
+    assert abs(poly["centre"]["y"] - 200) < 1e-9
+    assert abs(poly["radius"] - 40) < 1e-9  # the size it had before the carry
+    assert poly["spread"] < 1e-9  # still regular
+    assert poly["sides"] == 6
+    assert poly["shape"] == "polygon"
+    assert poly["sidesRemembered"] == 6
+    assert poly["commits"] == ["Add polygon"]
+
+    assert result["escaped"] == {"strokes": 0, "commits": 0, "captured": None}
+    assert result["panned"]["strokes"] == 0
+    assert result["panned"]["commits"] == 0
+    assert result["panned"]["origin"] == {"x": 20.0, "y": 381.0 - 20.0}
+
+
+def test_space_over_a_placed_stroke_moves_and_resizes_the_whole_thing() -> None:
+    result = _run_node(
+        """
+        // A bent line: moved, then scaled.  The bend has to survive both, which
+        // is the whole reason bulges are left alone.
+        const l = surface();
+        line(l.doc, {x: 100, y: 100}, {x: 200, y: 100}, 0.4);
+        const bend = l.only().bulges[0];
+        l.key(" ", {code: "Space"});
+        l.move({x: 150, y: 95});
+        const framed = JSON.parse(JSON.stringify(l.view.overlay.grab));
+        l.drag([{x: 150, y: 95}, {x: 160, y: 105}, {x: 170, y: 115}]);
+        const movedPts = l.only().pts.map((q) => ({...q}));
+
+        // ...and then a corner grip, which scales it about the opposite corner.
+        const frame = core.strokeFrame(l.only());
+        l.move(frame.corners[2]);
+        const onGrip = l.view.overlay.grab.grip;
+        const plan = core.grabResize(
+          frame, 2, {x: frame.corners[2].x + 100, y: frame.corners[2].y + 10}, {min: 2},
+        );
+        l.drag([frame.corners[2], {x: frame.corners[2].x + 100, y: frame.corners[2].y + 10}]);
+        const scaled = core.strokeFrame(l.only());
+        const lineOut = {
+          framed, movedPts, onGrip, bend, after: l.only().bulges[0],
+          sx: plan.sx, sy: plan.sy, ends: l.only().pts.map((q) => ({...q})),
+          anchorSpan: (scaled.maxX - scaled.minX) / (frame.maxX - frame.minX),
+          bowRatio: (scaled.maxY - scaled.minY) / (frame.maxY - frame.minY),
+          commits: [...l.commits],
+        };
+
+        // ⇧ keeps the aspect on that same drag.
+        const a = surface();
+        line(a.doc, {x: 100, y: 100}, {x: 200, y: 100}, 0.4);
+        const aFrame = core.strokeFrame(a.only());
+        a.key(" ", {code: "Space"});
+        a.move(aFrame.corners[2]);
+        a.drag([aFrame.corners[2], {x: aFrame.corners[2].x + 100, y: aFrame.corners[2].y + 10}],
+               {shiftKey: true});
+        const aAfter = core.strokeFrame(a.only());
+        const aspect = {
+          w: (aAfter.maxX - aAfter.minX) / (aFrame.maxX - aFrame.minX),
+          h: (aAfter.maxY - aAfter.minY) / (aFrame.maxY - aFrame.minY),
+          commits: [...a.commits],
+        };
+
+        // A ring resizes uniformly however lopsided the drag is, because a ring
+        // that stopped being a circle would not be a ring.
+        const r = surface();
+        r.input.setTool("ring");
+        r.drag([{x: 200, y: 200}, {x: 250, y: 200}]);
+        const disc = r.only();
+        const rFrame = core.strokeFrame(disc);
+        r.key(" ", {code: "Space"});
+        r.move(rFrame.corners[2]);
+        r.drag([rFrame.corners[2], {x: 300, y: 270}]);
+        const rc = {x: (disc.pts[0].x + disc.pts[2].x) / 2, y: (disc.pts[1].y + disc.pts[3].y) / 2};
+        const rr = disc.pts.map((q) => Math.hypot(q.x - rc.x, q.y - rc.y));
+        const ringOut = {
+          roundness: Math.max(...rr) - Math.min(...rr), radius: rr[0],
+          shape: core.shapeKind(disc), commits: [...r.commits],
+          bulges: disc.bulges.map((v) => Number(v.toFixed(9))),
+        };
+
+        // A polygon stays regular for the same reason.
+        const g = surface();
+        g.input.setTool("polygon");
+        g.input.setShapeSides(5);
+        g.drag([{x: 200, y: 200}, {x: 240, y: 200}]);
+        const gon = g.only();
+        const gFrame = core.strokeFrame(gon);
+        g.key(" ", {code: "Space"});
+        g.move(gFrame.corners[1]);
+        g.drag([gFrame.corners[1], {x: gFrame.corners[1].x + 60, y: gFrame.corners[1].y - 5}]);
+        const gc = gon.pts.reduce(
+          (acc, q) => ({x: acc.x + q.x / 5, y: acc.y + q.y / 5}), {x: 0, y: 0},
+        );
+        const gr = gon.pts.map((q) => Math.hypot(q.x - gc.x, q.y - gc.y));
+        const polyOut = {
+          spread: Math.max(...gr) - Math.min(...gr), shape: core.shapeKind(gon),
+          commits: [...g.commits],
+        };
+
+        // A box may stretch: it is the one shape with two sizes.
+        const b = surface();
+        b.input.setTool("box");
+        b.drag([{x: 50, y: 50}, {x: 150, y: 100}]);
+        b.key(" ", {code: "Space"});
+        b.move({x: 150, y: 100});
+        b.drag([{x: 150, y: 100}, {x: 250, y: 120}]);
+        const boxOut = {
+          pts: b.only().pts.map((q) => ({...q})), shape: core.shapeKind(b.only()),
+          commits: [...b.commits],
+        };
+
+        // Hit order: a grip beats an interior, and the topmost frame wins.
+        const h = surface();
+        line(h.doc, {x: 100, y: 100}, {x: 300, y: 100});          // bottom
+        const top = line(h.doc, {x: 140, y: 40}, {x: 160, y: 160});  // crosses it, on top
+        h.key(" ", {code: "Space"});
+        h.move({x: 150, y: 100});
+        const inside = h.view.overlay.grab.stroke === top;
+        h.move({x: 300, y: 100});                                  // a grip of the BOTTOM line
+        const gripWins = {
+          stroke: h.view.overlay.grab.stroke === h.doc.strokes[0],
+          grip: h.view.overlay.grab.grip,
+        };
+        h.keyUp(" ", {code: "Space"});
+        const gone = h.view.overlay.grab;
+
+        // Without Space the bed is exactly what it was: a drag on a line bends
+        // it, and moves nothing.
+        const n = surface();
+        line(n.doc, {x: 100, y: 100}, {x: 200, y: 100});
+        n.drag([{x: 150, y: 100}, {x: 150, y: 140}]);
+        const bent = {
+          bulge: n.only().bulges[0], ends: n.only().pts.map((q) => ({...q})),
+          commits: [...n.commits],
+        };
+
+        // Cancel safety, all three ways out.
+        const geom = (s) => JSON.stringify(
+          s.doc.strokes.map(
+            (k) => ({pts: k.pts, bulges: k.bulges, closed: k.closed, shape: k.shape}),
+          ),
+        );
+        const trial = (finish) => {
+          const s = surface();
+          s.input.setTool("box");
+          s.drag([{x: 50, y: 50}, {x: 150, y: 100}]);
+          const was = geom(s);
+          s.key(" ", {code: "Space"});
+          s.move({x: 100, y: 75});
+          s.down({x: 100, y: 75}).move({x: 140, y: 120});
+          const moved = geom(s) !== was;
+          finish(s);
+          return {
+            moved, restored: geom(s) === was, commits: s.commits.length,
+            captured: s.canvas.captured, shape: core.shapeKind(s.only()),
+            cursor: s.canvas.style.cursor,
+          };
+        };
+        const escape = trial((s) => s.key("Escape"));
+        const cancelled = trial((s) => s.cancel());
+        const lost = trial((s) => s.lostCapture());
+
+        // A grab let go of on a grip says what the grip says again, not the
+        // closed hand it was wearing while it held the stroke.
+        const gripSurface = surface();
+        gripSurface.input.setTool("box");
+        gripSurface.drag([{x: 50, y: 50}, {x: 150, y: 100}]);
+        const gripFrame = core.strokeFrame(gripSurface.only());
+        gripSurface.key(" ", {code: "Space"});
+        gripSurface.move(gripFrame.corners[2]);
+        const gripCursor = gripSurface.canvas.style.cursor;
+        gripSurface.down(gripFrame.corners[2]).move({x: 200, y: 160});
+        gripSurface.key("Escape");
+        const gripCancel = {gripCursor, after: gripSurface.canvas.style.cursor};
+
+        // Space over a placed stroke grabs it whatever tool is out: the bed is
+        // mode-free, and a ring is grabbed with the Ring tool still in hand.
+        const toolSurface = surface();
+        line(toolSurface.doc, {x: 100, y: 100}, {x: 200, y: 100}, 0);
+        toolSurface.input.setTool("ring");
+        toolSurface.key(" ", {code: "Space"});
+        toolSurface.move({x: 150, y: 100});
+        toolSurface.drag([{x: 150, y: 100}, {x: 170, y: 120}]);
+        const anyTool = {
+          strokes: toolSurface.doc.strokes.length,
+          pts: toolSurface.only().pts.map((q) => ({...q})),
+          commits: [...toolSurface.commits],
+        };
+        console.log(JSON.stringify({
+          lineOut, aspect, ringOut, polyOut, boxOut,
+          hits: {inside, gripWins, gone}, bent, escape, cancelled, lost,
+          gripCancel, anyTool,
+        }));
+        """
+    )
+    line_out = result["lineOut"]
+    # The frame is the stroke's own box, with four grips on its corners.
+    assert line_out["framed"]["kind"] is None  # a plain line is not a shape
+    assert line_out["framed"]["grip"] is None  # hovering its inside, not a grip
+    rect = line_out["framed"]["rect"]
+    assert rect["minX"] == 100 and rect["maxX"] == 200
+    assert line_out["framed"]["grips"] == [
+        {"x": rect["minX"], "y": rect["minY"]},
+        {"x": rect["maxX"], "y": rect["minY"]},
+        {"x": rect["maxX"], "y": rect["maxY"]},
+        {"x": rect["minX"], "y": rect["maxY"]},
+    ]
+    # Moved by the drag, both ends together.
+    assert line_out["movedPts"] == [{"x": 120.0, "y": 120.0}, {"x": 220.0, "y": 120.0}]
+    assert line_out["onGrip"] == 2
+    # Scaled with two factors — and the bend is still exactly the bend it was.
+    assert line_out["bend"] == line_out["after"] == 0.4
+    assert abs(line_out["sx"] - 2) < 1e-9
+    assert abs(line_out["sy"] - 1.5) < 0.01
+    # The points land where those two factors put them: the anchor corner of the
+    # frame held still, and the far end went twice as far out.
+    assert line_out["ends"] == [{"x": 120.0, "y": 130.0}, {"x": 320.0, "y": 130.0}]
+    assert abs(line_out["anchorSpan"] - 2) < 1e-6
+    # KNOWN SEAM, pinned rather than hidden: a bulge is tan(θ/4) and carries no
+    # length, so a span's bow follows ITS CHORD.  Scale a bent line's width by
+    # two and the bow grows by two as well, whatever the height factor was — the
+    # curve leaves the box the corner was dragged to.  One number per span
+    # cannot hold a squashed arc (an ellipse), which is the same seam fromSVG
+    # names when it flattens one.  The bend survives, which is what was asked.
+    assert abs(line_out["bowRatio"] - 2) < 0.01
+    assert line_out["commits"] == ["Move line", "Resize line"]
+
+    # ⇧ locks the aspect: one factor for both sides, and the bow agrees with it.
+    assert abs(result["aspect"]["w"] - result["aspect"]["h"]) < 5e-3
+    assert result["aspect"]["commits"] == ["Resize line"]
+
+    ring_out = result["ringOut"]
+    assert ring_out["roundness"] < 1e-9  # still a circle, on a lopsided drag
+    assert ring_out["shape"] == "ring"
+    assert ring_out["commits"] == ["Add ring", "Resize ring"]
+    # The quarter-circle bulges are untouched: tan(45°/2) on all four spans.
+    assert ring_out["bulges"] == [round(math.tan(math.pi / 8), 9)] * 4
+
+    assert result["polyOut"]["spread"] < 1e-9  # still regular
+    assert result["polyOut"]["shape"] == "polygon"
+    assert result["polyOut"]["commits"] == ["Add polygon", "Resize polygon"]
+
+    box_out = result["boxOut"]
+    assert box_out["pts"] == [
+        {"x": 50.0, "y": 50.0},
+        {"x": 250.0, "y": 50.0},
+        {"x": 250.0, "y": 120.0},
+        {"x": 50.0, "y": 120.0},
+    ]
+    assert box_out["shape"] == "box"
+    assert box_out["commits"] == ["Add box", "Resize box"]
+
+    assert result["hits"]["inside"] is True
+    assert result["hits"]["gripWins"] == {"stroke": True, "grip": 1}
+    assert result["hits"]["gone"] is None  # the frame goes when Space does
+
+    # The sentence the whole feature has to keep true.
+    assert result["bent"]["bulge"] != 0
+    assert result["bent"]["ends"] == [{"x": 100.0, "y": 100.0}, {"x": 200.0, "y": 100.0}]
+    assert result["bent"]["commits"] == ["Bend line"]
+
+    for name in ("escape", "cancelled", "lost"):
+        assert result[name]["moved"] is True, name
+        assert result[name]["restored"] is True, name
+        assert result[name]["commits"] == 1, name  # the Add box, and nothing after
+        assert result[name]["captured"] is None, name
+        assert result[name]["shape"] == "box", name
+        # Nothing is held any more, so the pointer stops saying it holds it.
+        assert result[name]["cursor"] == "grab", name
+
+    assert result["gripCancel"] == {"gripCursor": "nesw-resize", "after": "nesw-resize"}
+
+    # Space over a placed stroke moves it with a shape tool out, and lays
+    # nothing: the grab reads what is under the pointer, not what is in hand.
+    assert result["anyTool"]["strokes"] == 1
+    assert result["anyTool"]["pts"] == [{"x": 120.0, "y": 120.0}, {"x": 220.0, "y": 120.0}]
+    assert result["anyTool"]["commits"] == ["Move line"]
+
+
 def test_pan_and_zoom_move_the_view_and_never_the_document() -> None:
+    # CHANGED ON PURPOSE (2026-09-18): a space-drag on a LINE used to pan, and
+    # now it moves that line — Space is the grab modifier.  Space on empty bed
+    # still pans, which is the half of the old promise that had to survive.
     result = _run_node(
         """
         const s = surface();
@@ -1228,7 +1619,11 @@ def test_pan_and_zoom_move_the_view_and_never_the_document() -> None:
         const origin = () => s.view.camera.toPx({x: 0, y: 0});
 
         s.key(" ", {code: "Space"});
-        s.drag([{x: 150, y: 100}, {x: 160, y: 100}, {x: 170, y: 120}]);   // on the line: still pans
+        s.move({x: 150, y: 100});                                         // the frame appears
+        s.drag([{x: 150, y: 100}, {x: 160, y: 100}, {x: 170, y: 120}]);   // on the line: MOVES it
+        const grabbed = {origin: origin(), pts: s.doc.strokes[0].pts.map((q) => ({...q}))};
+
+        s.drag([{x: 40, y: 300}, {x: 50, y: 300}, {x: 60, y: 320}]);      // empty bed: still pans
         const panned = origin();
         s.keyUp(" ", {code: "Space"});
 
@@ -1250,17 +1645,22 @@ def test_pan_and_zoom_move_the_view_and_never_the_document() -> None:
         s.key("0", {metaKey: true});
         console.log(JSON.stringify({
           untouched: JSON.stringify(s.doc.strokes) === before,
-          commits: s.commits.length,
-          panned, middle,
+          commits: [...s.commits],
+          grabbed, panned, middle,
           scaleBefore, scaleAfter: s.view.camera.scale, drift, fits: s.view.fits,
         }));
         """
     )
-    assert result["untouched"] is True
-    assert result["commits"] == 0
-    # The bed origin follows the pointer: the space-drag ran 20 mm right and
-    # 20 mm UP the bed, which is 20 px right and 20 px up the screen; the
-    # middle-drag ran 20 mm right at constant height.
+    # The document did change — by exactly one move, and by nothing else.
+    assert result["untouched"] is False
+    assert result["commits"] == ["Move line"]
+    # The line went where the drag went, 20 mm right and 20 mm up the bed, and
+    # the view did not move an inch while it did.
+    assert result["grabbed"]["pts"] == [{"x": 120.0, "y": 120.0}, {"x": 220.0, "y": 120.0}]
+    assert result["grabbed"]["origin"] == {"x": 0.0, "y": 381.0}
+    # The bed origin follows the pointer: the space-drag on EMPTY BED ran 20 mm
+    # right and 20 mm UP the bed, which is 20 px right and 20 px up the screen;
+    # the middle-drag ran 20 mm right at constant height.
     assert result["panned"] == {"x": 20.0, "y": 381.0 - 20.0}
     assert result["middle"] == {"x": 40.0, "y": 381.0 - 20.0}
     assert result["scaleAfter"] > result["scaleBefore"]
@@ -1313,14 +1713,31 @@ def test_the_new_tools_meet_the_real_renderer() -> None:
           closePath() {} arc() { this.n += 1; } addPath() {}
         };
         const ops = [];
+        // Enough of a context to read back WHAT WAS DRAWN, not merely that
+        // something was: a rectangle keeps its corner, size and dashes, and an
+        // arc rides along on the stroke that paints it, so a grip can be found
+        // by where it is and how big it is on the bed.
         const ctx = {
           lineWidth: 1, strokeStyle: "", fillStyle: "", globalAlpha: 1,
           font: "", textAlign: "left", lineJoin: "", lineCap: "",
+          dash: null, at: null,
           setTransform() {}, translate() {}, save() {}, restore() {},
-          clearRect() {}, fillRect() {}, strokeRect() {},
-          beginPath() {}, moveTo() {}, lineTo() {}, arc() {},
-          fill() {}, setLineDash() {},
-          stroke() { ops.push({op: "stroke", style: this.strokeStyle, alpha: this.globalAlpha}); },
+          clearRect() {}, fillRect() {},
+          strokeRect(x, y, w, h) {
+            ops.push({
+              op: "rect", style: this.strokeStyle, x, y, w, h,
+              dashed: Boolean(this.dash && this.dash.length),
+            });
+          },
+          beginPath() { this.at = null; }, moveTo() {}, lineTo() {},
+          arc(x, y, r) { this.at = {x, y, r}; },
+          fill() {}, setLineDash(d) { this.dash = d; },
+          stroke() {
+            ops.push({
+              op: "stroke", style: this.strokeStyle, alpha: this.globalAlpha,
+              fill: this.fillStyle, at: this.at,
+            });
+          },
           measureText: (t) => ({width: t.length * 6}),
           fillText: (t) => ops.push({op: "text", text: t}),
         };
@@ -1339,7 +1756,15 @@ def test_the_new_tools_meet_the_real_renderer() -> None:
             canvas.getContext = () => ctx;
             const view = canvasView.createCanvasView(canvas, {core, padding: 0});
             view.setScene({bedWidth: BED, bedHeight: BED, bead: 5, nozzle: 5});
-            return view;
+            // The real view, with the layer it was handed kept where the test
+            // can read it: what the gesture machine publishes has to be what the
+            // renderer is given, not a convenient copy of it.
+            const seen = {last: null};
+            const watched = Object.assign({}, view, {
+              seen,
+              setOverlay(layer) { seen.last = layer; view.setOverlay(layer); },
+            });
+            return watched;
           }});
           s.doc.width = BED;
           s.doc.height = BED;
@@ -1350,12 +1775,17 @@ def test_the_new_tools_meet_the_real_renderer() -> None:
           };
           s.paint = () => {
             ops.length = 0;
+            // The arc that rode on the last stroke of the previous frame is not
+            // part of this one.
+            ctx.at = null;
             for (const fn of frames.splice(0)) fn(0);
             return {
               text: ops.filter((o) => o.op === "text").map((o) => o.text),
               clay: ops.filter((o) => o.op === "stroke" && o.style === CLAY).length,
               dark: ops.filter((o) => o.op === "stroke" && o.style === CLAY_DARK).length,
               all: ops.filter((o) => o.op === "stroke").length,
+              rects: ops.filter((o) => o.op === "rect"),
+              rings: ops.filter((o) => o.op === "stroke" && o.at),
             };
           };
           build(s);
@@ -1400,9 +1830,64 @@ def test_the_new_tools_meet_the_real_renderer() -> None:
         });
         corner.canvas.dispatch("pointermove", corner.at({x: 300, y: 100}));
         const marked = corner.paint();
+
+        // The grab frame, through the REAL camera and painted by the REAL
+        // renderer: the rectangle and the four grips in bed millimetres, and
+        // grips that are SCREEN-sized like the anchors — 9 px at 2.1 px per mm
+        // is 4.3 mm of bed, so a point 8.5 mm from the corner is inside the
+        // frame and is not on its grip.
+        const grabbed = studio((s) => { ring(s.doc, 100, 100, 40); });
+        grabbed.paint();   // the camera fits the bed on its first frame, not before
+        const sc = grabbed.view.camera.scale;
+        // What the frame costs to paint is measured against the same bed with
+        // no frame on it: everything below is the frame and nothing else.
+        const bare = grabbed.paint();
+        const gFrame = core.strokeFrame(grabbed.doc.strokes[0]);
+        // A grip is drawn at 4.5 SCREEN pixels, so on the bed it is this wide —
+        // which is how a grip is told from an anchor (3.6 px) in what was drawn.
+        const gripR = 4.5 / sc;
+        const painted = (shot, r = gripR) => {
+          const rect = shot.rects.filter((o) => o.style === CLAY_DARK);
+          const grips = shot.rings.filter((o) => Math.abs(o.at.r - r) < 1e-9);
+          return {
+            rects: rect.length,
+            dashed: rect.length ? rect[0].dashed : null,
+            box: rect.length ? {x: rect[0].x, y: rect[0].y, w: rect[0].w, h: rect[0].h} : null,
+            grips: grips.map((o) => ({x: o.at.x, y: o.at.y, fill: o.fill})),
+          };
+        };
+        grabbed.key(" ", {code: "Space"});
+        grabbed.canvas.dispatch("pointermove", grabbed.at(gFrame.corners[2]));
+        const onGrip = grabbed.view.seen.last.grab;
+        const onGripPaint = painted(grabbed.paint());
+        grabbed.canvas.dispatch("pointermove", grabbed.at({
+          x: gFrame.corners[2].x - 6, y: gFrame.corners[2].y - 6,
+        }));
+        const offGrip = grabbed.view.seen.last.grab;
+        const framePaint = grabbed.paint();
+        const insidePaint = painted(framePaint);
+        // The frame follows the camera, not the pixels it was first drawn in.
+        grabbed.view.camera.zoomAt(0, 0, 2);
+        const zoomedScale = grabbed.view.camera.scale;
+        grabbed.canvas.dispatch("pointermove", grabbed.at({
+          x: gFrame.corners[2].x - 6, y: gFrame.corners[2].y - 6,
+        }));
+        const zoomedPaint = painted(grabbed.paint(), 4.5 / zoomedScale);
+        // Let Space go and the frame is off the bed entirely.
+        grabbed.keyUp(" ", {code: "Space"});
+        const gonePaint = painted(grabbed.paint());
         console.log(JSON.stringify({
           boxFrame, midDrag, afterRelease, rosette, marked,
           mirrored: mirror.doc.strokes.length,
+          grab: {
+            scale: sc,
+            onGrip: {grip: onGrip.grip, kind: onGrip.kind, rect: onGrip.rect, grips: onGrip.grips},
+            offGrip: {grip: offGrip.grip, kind: offGrip.kind},
+            bare: painted(bare),
+            onGripPaint, insidePaint, zoomedPaint, gonePaint,
+            zoomedGripMM: 4.5 / zoomedScale,
+            painted: framePaint.all,
+          },
         }));
         """
     )
@@ -1421,6 +1906,62 @@ def test_the_new_tools_meet_the_real_renderer() -> None:
     assert result["mirrored"] == 2
     assert result["rosette"]["text"] == ["6 copies"]
     assert result["marked"]["text"] == ["Round this corner · 20.0 mm"]
+    # The grab frame reaches the real renderer: the ring's own box, its four
+    # corners, and the kind that decides how it resizes.
+    grab = result["grab"]
+    assert abs(grab["scale"] - 800 / 381) < 1e-9
+    assert grab["onGrip"]["grip"] == 2
+    assert grab["onGrip"]["kind"] == "ring"
+    rect = grab["onGrip"]["rect"]
+    assert abs(rect["minX"] - 60) < 0.15 and abs(rect["maxX"] - 140) < 0.15
+    assert grab["onGrip"]["grips"][2] == {"x": rect["maxX"], "y": rect["maxY"]}
+    # 8.5 mm off the corner: on the bed that is inside a 9 mm reach, but a grip
+    # is 9 SCREEN pixels, which is 4.3 mm at this zoom.
+    assert grab["offGrip"]["grip"] is None
+    assert grab["offGrip"]["kind"] == "ring"
+    # ...and the frame is what the renderer DRAWS.  Nothing of it is on the bed
+    # before Space is held: one dashed clay outline and four grips appear, and
+    # the box painted is the ring's own box, corner and size.
+    assert grab["bare"] == {"rects": 0, "dashed": None, "box": None, "grips": []}
+    shot = grab["onGripPaint"]
+    assert shot["rects"] == 1
+    assert shot["dashed"] is True
+    box = shot["box"]
+    assert abs(box["x"] - 60) < 0.15 and abs(box["y"] - 60) < 0.15
+    assert abs(box["w"] - 80) < 0.3 and abs(box["h"] - 80) < 0.3
+    # Four grips, on the four corners of the box that was drawn, in the order
+    # the gesture machine hit-tests them.
+    corners = [
+        (box["x"], box["y"]),
+        (box["x"] + box["w"], box["y"]),
+        (box["x"] + box["w"], box["y"] + box["h"]),
+        (box["x"], box["y"] + box["h"]),
+    ]
+    assert [(g["x"], g["y"]) for g in shot["grips"]] == corners
+    # The grip under the pointer is filled clay, the way the anchor under the
+    # pointer is; the other three are the bed's own colour.
+    assert [g["fill"] for g in shot["grips"]] == [
+        "#fbfaf6",
+        "#fbfaf6",
+        "#a94f32",
+        "#fbfaf6",
+    ]
+    # Inside the frame, nothing is filled: no corner is being offered.
+    inside = grab["insidePaint"]
+    assert inside["rects"] == 1
+    assert [g["fill"] for g in inside["grips"]] == ["#fbfaf6"] * 4
+    assert [(g["x"], g["y"]) for g in inside["grips"]] == corners
+    # Zoom in and the frame is still round the same millimetres of clay, while
+    # the grip itself halves on the bed — it is a screen-sized handle, like an
+    # anchor, not a thing that swells with the camera.
+    zoomed = grab["zoomedPaint"]
+    assert zoomed["rects"] == 1
+    assert [(g["x"], g["y"]) for g in zoomed["grips"]] == corners
+    assert abs(grab["zoomedGripMM"] - (4.5 / (2 * 800 / 381))) < 1e-9
+    # Let Space go and the frame is gone: no outline, no grips.
+    assert grab["gonePaint"] == {"rects": 0, "dashed": None, "box": None, "grips": []}
+    # The clay is still on screen underneath all of it.
+    assert grab["painted"] >= 1
 
 
 def test_the_gestures_meet_the_real_renderer() -> None:
@@ -1435,11 +1976,19 @@ def test_the_gestures_meet_the_real_renderer() -> None:
           closePath() {} arc() { this.n += 1; } addPath() {}
         };
         const texts = [];
+        // The grab frame is a dashed rectangle in the dark clay, and nothing
+        // else on this bed draws one, so recording rectangles is enough to see
+        // where the frame was painted.
+        const rects = [];
+        const CLAY_DARK = "#7f3421";
         const ctx = {
           lineWidth: 1, strokeStyle: "", fillStyle: "", globalAlpha: 1,
           font: "", textAlign: "left", lineJoin: "", lineCap: "",
           setTransform() {}, translate() {}, save() {}, restore() {},
-          clearRect() {}, fillRect() {}, strokeRect() {},
+          clearRect() {}, fillRect() {},
+          strokeRect(x, y, w, h) {
+            if (this.strokeStyle === CLAY_DARK) rects.push({x, y, w, h});
+          },
           beginPath() {}, moveTo() {}, lineTo() {}, arc() {},
           fill() {}, stroke() {}, setLineDash() {},
           measureText: (t) => ({width: t.length * 6}),
@@ -1497,12 +2046,59 @@ def test_the_gestures_meet_the_real_renderer() -> None:
         paint();
         const ringLabel = texts.slice();
         s.canvas.dispatch("pointerup", px({x: 371, y: 300}));
+        // Read before the grab section adds a stroke of its own.
+        const strokeCount = s.doc.strokes.length;
+        const contact = core.continuity(s.doc, {bead: 5, overlap: 0.2});
+
+        // Space over a placed stroke, at the same camera: the frame is hit in
+        // SCREEN pixels, so every radius here travelled through camera.mm()
+        // too — and the rectangle painted is measured off the stroke as it
+        // moves, so it is the frame round what is actually there.
+        s.input.setTool("draw");
+        const held = ring(s.doc, 120, 120, 30);
+        s.view.setScene({doc: s.doc});
+        s.key(" ", {code: "Space"});
+        s.canvas.dispatch("pointermove", px({x: 120, y: 120}));
+        rects.length = 0;
+        paint();
+        const framed = rects.slice();
+
+        const before = s.commits.length;
+        s.canvas.dispatch("pointerdown", px({x: 120, y: 120}));
+        s.canvas.dispatch("pointermove", px({x: 160, y: 150}));
+        rects.length = 0;
+        paint();
+        const midMove = rects.slice();
+        s.canvas.dispatch("pointerup", px({x: 160, y: 150}));
+        const moved = core.strokeFrame(held);
+
+        // ...and a corner grip, found at the frame's own corner through the
+        // same camera: a ring resizes uniformly however lopsided the drag.
+        const grip = core.strokeFrame(held).corners[2];
+        s.canvas.dispatch("pointermove", px(grip));
+        s.canvas.dispatch("pointerdown", px(grip));
+        s.canvas.dispatch("pointermove", px({x: grip.x + 30, y: grip.y + 6}));
+        s.canvas.dispatch("pointerup", px({x: grip.x + 30, y: grip.y + 6}));
+        const sized = core.strokeFrame(held);
+        s.keyUp(" ", {code: "Space"});
+        rects.length = 0;
+        paint();
+        const afterSpace = rects.slice();
 
         console.log(JSON.stringify({
           scale, band, ringLabel,
-          strokes: s.doc.strokes.length,
-          contact: core.continuity(s.doc, {bead: 5, overlap: 0.2}),
+          strokes: strokeCount,
+          contact,
           frames: frames.length,
+          grab: {
+            framed, midMove, afterSpace,
+            commits: s.commits.slice(before),
+            moved: {
+              cx: (moved.minX + moved.maxX) / 2, cy: (moved.minY + moved.maxY) / 2,
+              w: moved.maxX - moved.minX, h: moved.maxY - moved.minY,
+            },
+            sized: {w: sized.maxX - sized.minX, h: sized.maxY - sized.minY},
+          },
         }));
         """
     )
@@ -1518,3 +2114,27 @@ def test_the_gestures_meet_the_real_renderer() -> None:
     # them — and the pair really is one stroke, measured through draw-core's
     # continuity on the geometry the gesture actually committed.
     assert result["contact"] == {"strokes": 2, "travels": 1, "groups": [[0], [1, 2]]}
+
+    # Space over a placed ring, at this same camera: one dashed frame is drawn,
+    # round the ring's own box in millimetres.
+    grab = result["grab"]
+    assert len(grab["framed"]) == 1
+    box = grab["framed"][0]
+    assert abs(box["x"] - 90) < 0.15 and abs(box["y"] - 90) < 0.15
+    assert abs(box["w"] - 60) < 0.3 and abs(box["h"] - 60) < 0.3
+    # Mid-move the frame has travelled with the clay: it is measured off the
+    # stroke as it goes, not left where the gesture started.
+    assert len(grab["midMove"]) == 1
+    carried = grab["midMove"][0]
+    assert abs(carried["x"] - 130) < 0.15 and abs(carried["y"] - 120) < 0.15
+    assert abs(carried["w"] - box["w"]) < 1e-9 and abs(carried["h"] - box["h"]) < 1e-9
+    # The ring landed where the drag put it, at the size it was.
+    assert abs(grab["moved"]["cx"] - 160) < 0.15 and abs(grab["moved"]["cy"] - 150) < 0.15
+    assert abs(grab["moved"]["w"] - box["w"]) < 1e-9
+    # A lopsided corner drag still leaves a circle, and the two gestures are two
+    # undo steps with the potter's own words on them.
+    assert abs(grab["sized"]["w"] - grab["sized"]["h"]) < 1e-9
+    assert grab["sized"]["w"] > grab["moved"]["w"]
+    assert grab["commits"] == ["Move ring", "Resize ring"]
+    # Space released: the frame is not drawn at all.
+    assert grab["afterSpace"] == []

@@ -25,6 +25,7 @@ Press **New drawing** under 01 Design, or **Start a drawing** in the empty previ
 - Drag on empty bed to draw freehand. It settles into editable points when you let go.
 - Pull any line and it bends into an arc under your cursor. Drag a point to move it; **Option-click** a line to add a point; **Delete** removes what's under the cursor.
 - **Rings**, **Box**, and **Polygon** drag a shape onto the bed. **Shape & repeat** opens mirroring, repeats, and corner rounding.
+- **Hold Space to move or resize a whole shape.** While you drag a ring, box, or polygon out, hold Space: the shape keeps the size it has and follows your cursor, so you can put it where you want it. Let Space go and you're sizing again, and the whole thing is still one step to undo. Hold Space over anything already on the bed and a frame appears around it with a grip at each corner. Drag inside the frame to move it, drag a corner to resize it. A ring stays a circle and a polygon stays even-sided however you pull; hold shift to keep a box or a line at its proportions. A bend you pulled into a line is still that bend afterwards. Space over empty bed drags the view, as it always has.
 - **Reference** places a photo under the drawing to trace. Drag it to move, a corner to resize, the handle above to turn it. It never prints.
 
 Nothing plans while you draw. Press **Done**, then **Slice job**.
