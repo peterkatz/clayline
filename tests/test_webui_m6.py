@@ -52,9 +52,9 @@ def test_static_shell_is_offline_progressive_and_vendored() -> None:
             "path",
             "character",
             "printer",
-            "export",
         )
     ]
+    assert 'data-section="export"' not in html
     assert positions == sorted(positions)
     for required_id in (
         "dropZone",

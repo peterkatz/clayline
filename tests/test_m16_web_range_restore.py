@@ -1,4 +1,4 @@
-"""Web/backend contract for live ranges and Restore from G-code."""
+"""Web/backend contract for live ranges and Restore pattern from G-code."""
 
 from __future__ import annotations
 
@@ -109,7 +109,7 @@ def test_restore_payload_asks_for_mesh_and_warns_on_mismatch() -> None:
     assert "does not match" in mismatch["source_mesh"]["warning"]
 
 
-def test_web_shell_exposes_range_restore_and_gcode_drop_without_touching_tiles() -> None:
+def test_web_shell_exposes_range_and_pattern_restore_without_touching_tiles() -> None:
     for control in (
         "weaveRangeEnabled",
         "weaveRangeFrom",
@@ -131,12 +131,56 @@ def test_web_shell_exposes_range_restore_and_gcode_drop_without_touching_tiles()
     assert "pattern.settings.wavelength_follows_nozzle = S.wavelengthFollows" in WEAVE
     assert "S.exactPattern = JSON.parse(JSON.stringify(pattern))" in WEAVE
     assert 'file.name.toLowerCase().endsWith(".gcode")' in WEAVE
-    assert "Restore from G-code…" in HTML
     assert "one-based" in HTML
     assert "both ends included" in HTML
     assert 'scheduleModulation("settle")' in WEAVE
-    assert "restore_id: S.restoreRecipeId" in WEAVE
     assert "restored snapshot" in WEAVE
+
+
+def test_the_web_restore_button_lives_with_the_pattern_and_brings_back_only_it() -> None:
+    """Pete, 2026-09-18: only the pattern comes across.  The form on the table,
+    where it sits, how it was sliced, the print range and the printer are the
+    artist's current job and this button must not touch any of them."""
+
+    pattern_section = HTML[
+        HTML.index('data-weave-section="oscilloscope"') : HTML.index('data-weave-section="printer"')
+    ]
+    for control in ("weavePatternSave", "weavePatternLoad", "weaveRestoreButton"):
+        assert f'id="{control}"' in pattern_section
+    assert "Restore pattern from G-code…" in pattern_section
+    assert "Only the pattern comes across" in pattern_section
+
+    restore = WEAVE[
+        WEAVE.index("  async function restorePatternFromGcode(file) {") : WEAVE.index(
+            "  function ensureRestoreProfileOption(profileName) {"
+        )
+    ]
+    assert "applyCanonicalPattern(payload.pattern?.canonical_json, payload.pattern);" in restore
+    assert "`Pattern restored from ${file.name}`" in restore
+    assert 'scheduleModulation("settle");' in restore
+    # Nothing else in the file is read back into the studio.
+    for retired in (
+        "#weaveUpAxis",
+        "#weaveScale",
+        "#weaveOffsetX",
+        "#weaveLayerHeight",
+        "#weaveBeadWidth",
+        "#weaveFlow",
+        "#weaveProfile",
+        "#weaveRangeFrom",
+        "#weaveRangeTo",
+        "S.pendingRange",
+        "layer_range",
+        "settings",
+        "needs_mesh",
+        "source_mesh",
+    ):
+        assert retired not in restore
+    # The packaged app's picker is filtered by the marker, not the accept list.
+    assert 'document.body.dataset.claylineFileRequest = "gcode";' in WEAVE
+    # A print file on the Model box does the same thing the button does.
+    assert "restorePatternFromGcode(file);" in WEAVE
+    assert "pattern from a print file" in HTML
 
 
 def test_web_restore_workers_keep_embedded_custom_profile_through_finalize(

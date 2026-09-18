@@ -21,7 +21,3 @@ Print the first pass only and look at it. A coil that's smeared flat and dragged
 ## Layer height
 
 Clayline starts layer height at 30% of the nozzle. Once the coil width is measured and the flow looks right, this is the number to adjust for how tall each pass builds. Lower gives a tighter, stronger wall; higher builds faster and shows more coil.
-
-## What's still provisional
-
-Clayline's standard join depth of 20% and its starting flow of 1.00 have not yet been confirmed by a full accepted tile print on the PotterBot. Treat them as starting points, not results. The formal calibration prints that Clayline can generate, a flow ladder, a closed ring, and a pair of touching rings, are not in the app yet; they're available to people who run Clayline from its source code.

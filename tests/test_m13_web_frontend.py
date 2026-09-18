@@ -186,7 +186,6 @@ def test_weave_rail_order_and_complete_ui_states_are_explicit() -> None:
         "interior",
         "oscilloscope",
         "printer",
-        "export",
     ]
     headings = [
         "Model",
@@ -195,7 +194,6 @@ def test_weave_rail_order_and_complete_ui_states_are_explicit() -> None:
         "Interior",
         "Weave pattern",
         "Printer",
-        "Export",
     ]
     workspace_start = HTML.index('id="weaveWorkspace"')
     positions = [HTML.index(f"<h2>{heading}</h2>", workspace_start) for heading in headings]
@@ -602,14 +600,18 @@ def test_experimental_zblend_reach_is_optional_persisted_and_physically_explaine
     assert ".zblend-reach-readout.is-caution" in CSS
 
 
-def test_filename_is_local_only_and_profile_uses_backend_work_bounds() -> None:
-    filename_binding = WEAVE[WEAVE.index('$("#weaveFilename").addEventListener') :]
-    filename_binding = filename_binding[: filename_binding.index("});") + 3]
-    assert "scheduleModulation" not in filename_binding
-    assert '$("#weaveFilename").value.trim() || result.filename' in WEAVE
-    # A print file is a print file whatever was typed: a form exported as
+def test_the_print_file_is_named_after_the_form_and_profile_uses_backend_work_bounds() -> None:
+    # There is no Save as box any more: the studio names the file after the
+    # form it sliced, and the save panel is where another name gets typed.
+    assert "#weaveFilename" not in WEAVE
+    assert 'id="weaveFilename"' not in HTML
+    assert (
+        'link.download = normalizedWeaveGcodeName(result.filename || "clayline-weave.gcode");'
+        in WEAVE
+    )
+    # A print file is a print file whatever it is called: a form exported as
     # "lantern.clayline" must never reach the app as though it were a project.
-    assert "link.download = normalizedWeaveGcodeName(" in WEAVE
+    assert "function normalizedWeaveGcodeName(value)" in WEAVE
     assert "function normalizedWeaveGcodeName(value)" in WEAVE
     assert "return `${safe}.gcode`;" in WEAVE
     assert "profile.work_bounds" in WEAVE
@@ -1220,7 +1222,7 @@ def test_a_fitted_texture_is_a_wave_and_never_rewrites_the_interior() -> None:
     for caller, following in (
         ("applyWeaveSettings", "function restoreWeaveSettings"),
         ("requestNoisePreset", "async function savePattern"),
-        ("loadPatternFile", "async function restoreGcode"),
+        ("loadPatternFile", "  // A print file Clayline saved gives up one thing"),
     ):
         body = _function(caller, following)
         assert "applyCanonicalPattern(" in body
@@ -1372,7 +1374,7 @@ def test_weave_takes_a_project_from_the_drop_zone_and_the_browse_dialog() -> Non
         'accept=".stl,.obj,.ply,.3mf,.clayline,.gcode,.json,'
         'model/stl,model/obj,model/3mf,text/x-gcode,application/json"'
     ) in HTML
-    assert "<small>mesh · project · saved G-code · saved pattern</small>" in HTML
+    assert "<small>mesh · project · pattern from a print file · saved pattern</small>" in HTML
 
     dropped = _function("setDroppedFile", "function bindMeshControls")
     # A project is recognised before the mesh/G-code/pattern branches and goes
@@ -1470,14 +1472,16 @@ def test_opening_a_weave_project_is_one_undo_step_then_mesh_then_slice() -> None
     assert "if (project.state.sliced && S.mesh) await runSlice();" in open_project
     assert open_project.index("await uploadMesh();") < open_project.index("await runSlice();")
 
-    # A stale recipe from an earlier G-code restore never rides along.
+    # There is no whole-recipe restore left to ride along: the page keeps no
+    # emission, source-mesh or recipe identity from a print file at all.
     for field in (
-        "S.restoreEmission",
-        "S.restoreSource",
-        "S.restoreRecipeId",
-        "S.restoreProfileName",
+        "restoreEmission",
+        "restoreSource",
+        "restoreRecipeId",
+        "restoreProfileName",
+        "restore_id",
     ):
-        assert f"{field} = null;" in open_project
+        assert field not in WEAVE
 
 
 def test_a_reopened_project_keeps_the_last_layer_the_artist_chose() -> None:
@@ -1563,7 +1567,7 @@ def test_no_new_project_string_speaks_to_a_developer() -> None:
         "Saving project…",
         "Project file downloaded",
         "Clayline couldn't make a project file from this form.",
-        "mesh · project · saved G-code · saved pattern",
+        "mesh · project · pattern from a print file · saved pattern",
     ]
     for sentence in visible:
         assert sentence in HTML or sentence in WEAVE

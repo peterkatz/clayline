@@ -14,7 +14,7 @@ The pattern is applied live: once the form is sliced, every change to the wave r
 
 ### 01 Model
 
-Drop a mesh file on the box: STL, OBJ, PLY, or 3MF, in millimetres. The same box also takes a print file Clayline saved earlier, to restore every setting from it, or a saved pattern.
+Drop a mesh file on the box: STL, OBJ, PLY, or 3MF, in millimetres. The same box also takes a saved project, a saved pattern, or a print file Clayline saved earlier — a print file gives you its pattern and nothing else, so the form on the table, its size, the layers and the range stay exactly as they are.
 
 **Up axis** says which way is up in the file. Rhino exports are usually Y up. If the sliced rings look like a tangled contour map instead of stacked walls, flip this.
 
@@ -75,17 +75,11 @@ The wave editor shows one wrapped cycle of the pattern with a ghost cycle on eac
 
 **Pattern preview** shows the pot's wall unrolled flat like a fabric swatch, several layers side by side, so you can see ribs lining up, a weave alternating, or the pattern drifting where the wave count changes on a taper. **Expand** opens it large.
 
-**Save pattern** writes everything in this section to a small file you can load onto another form later with **Load pattern**.
+Three buttons sit under the preview. **Save pattern** writes the wave, the extrusion curve and every setting in this section to a small file. **Load pattern** brings one back onto whatever form is on the table — the form, its size and its settings stay as they are. **Restore pattern from G-code…** pulls the pattern out of a print file Clayline saved: only the pattern comes across, not the model, the size, the layers, or the range. Dropping a print file on the box under 01 Model does the same thing.
 
 ### 06 Printer
 
 Your printer, **Clay flow**, and **Start charge**, exactly as in Draw in Clay. See [Printing](printing.md).
-
-### 07 Export
-
-**Save as** and **Reproducible output** work as in Draw in Clay. **Restore from G-code…** loads a print file Clayline saved earlier and brings back every Weave setting and the pattern from it. The original model is matched by its content, not just its name, and Clayline says so before continuing with a different one.
-
-Export unlocks only after the final path passes every check.
 
 ### Slice form
 
@@ -93,7 +87,7 @@ Cuts the model into rings. After that, the pattern controls play against the rea
 
 ### Saving your project
 
-**Save project…** under 01 Model, or **File → Save Project…** (Command-S), writes the whole job to one file: the model itself and every setting, from the nozzle and the layer height to the wave you shaped and the name you export under. **Open project…**, or **File → Open Project…** (Shift-Command-O), brings it all back as you left it, on this Mac or another. If the form was sliced when you saved it, Clayline slices it again, so the pattern is live in front of you straight away. The box under 01 Model takes a saved project too.
+**Save project…** under 01 Model, or **File → Save Project…** (Command-S), writes the whole job to one file: the model itself and every setting, from the nozzle and the layer height to the wave you shaped. **Open project…**, or **File → Open Project…** (Shift-Command-O), brings it all back as you left it, on this Mac or another. If the form was sliced when you saved it, Clayline slices it again, so the pattern is live in front of you straight away. The box under 01 Model takes a saved project too.
 
 A print file is not a project. It holds the finished path for the machine, not the model you would go on shaping, so keep the project beside it. **File → Export G-code…** (Shift-Command-E) is the one that writes a print file.
 

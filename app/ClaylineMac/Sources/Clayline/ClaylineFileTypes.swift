@@ -31,23 +31,27 @@ struct ClaylineImportSelection: Equatable {
 
 /// One file-picker request from the web layer: the document mode the page is
 /// in, plus whether the picker was opened for a reference photo, for a
-/// project, or for the gallery of example drawings. draw.js and app.js stamp
-/// `body.dataset.claylineFileRequest` right before clicking their file inputs,
-/// and the delegate's read script clears the one-shot marker so a later SVG
-/// picker can never inherit it.
+/// project, for a print file, or for the gallery of example drawings. draw.js,
+/// app.js and weave.js stamp `body.dataset.claylineFileRequest` right before
+/// clicking their file inputs, and the delegate's read script clears the
+/// one-shot marker so a later SVG picker can never inherit it.
 struct ClaylineOpenRequest: Equatable {
     let mode: ClaylineDocumentMode
     let isReferencePhoto: Bool
     let isProject: Bool
+    /// The Weave pattern section asked for a print file Clayline saved, to
+    /// take its pattern out. Nothing else in that file is read.
+    let isPrintFile: Bool
     /// The page asked for the example drawings rather than the artist's own
     /// folder. It only changes where the drawing picker starts.
     let isGallery: Bool
 
     /// The Draw in Clay picker for drawings — the one panel that starts in a
     /// remembered folder or in the gallery. Weave's picker, the project
-    /// picker and the reference-photo picker are none of its business.
+    /// picker, the print-file picker and the reference-photo picker are none
+    /// of its business.
     var isDrawingPicker: Bool {
-        mode == .tiles && !isProject && !isReferencePhoto
+        mode == .tiles && !isProject && !isReferencePhoto && !isPrintFile
     }
 
     init(raw: String?) {
@@ -59,6 +63,7 @@ struct ClaylineOpenRequest: Equatable {
         let requestToken = parts.count > 1 ? String(parts[1]) : ""
         isReferencePhoto = requestToken == "reference-photo"
         isProject = requestToken == "project"
+        isPrintFile = requestToken == "gcode"
         isGallery = requestToken == "gallery"
     }
 }
@@ -81,6 +86,8 @@ enum ClaylineFileTypes {
     static let meshExtensions: Set<String> = ["obj", "stl", "3mf", "ply"]
     static let projectExtension = "clayline"
     static let projectTypes = [project]
+    /// One print file Clayline wrote, opened only to take its pattern out.
+    static let printFileTypes = [gcode]
 
     /// The reference lightbox's photo formats, matching the web layer's
     /// REFERENCE_TYPES in draw.js — a photo traced over, never printed.
@@ -92,12 +99,13 @@ enum ClaylineFileTypes {
         return types
     }()
 
-    /// The Weave drop zone's box says it takes a project as well as a mesh,
-    /// and its input accepts one, so the panel that box opens must offer one
-    /// too; the page routes a chosen `.clayline` by its suffix. Draw's picker
-    /// is a multi-select of SVGs and keeps its own project button.
+    /// The Weave drop zone's box says it takes a project and a print file as
+    /// well as a mesh, and its input accepts all three, so the panel that box
+    /// opens must offer them too; the page routes a chosen `.clayline` or
+    /// `.gcode` by its suffix. Draw's picker is a multi-select of SVGs and
+    /// keeps its own project button.
     static func allowedContentTypes(for mode: ClaylineDocumentMode) -> [UTType] {
-        mode == .weave ? meshTypes + projectTypes : [svg]
+        mode == .weave ? meshTypes + projectTypes + printFileTypes : [svg]
     }
 
     static func kind(for url: URL) -> ClaylineDocumentKind? {

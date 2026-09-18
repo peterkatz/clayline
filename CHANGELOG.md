@@ -2,6 +2,19 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.2.2 — 2026-09-18
+
+### Changed
+- **The Export step is gone from both modes.** The print file is named after
+  your design or your model, and the save panel lets you change it. The same
+  job always writes the same file.
+- **Restore pattern from G-code…** sits beside **Save pattern** and **Load
+  pattern** in the Weave pattern section. It pulls only the pattern out of a
+  print file Clayline saved: not the model, the size, the layers, or the range.
+  A print file dropped on the Model box does the same.
+- **The guide** no longer describes the Export step, and its Calibration page
+  no longer calls the standard join depth and starting flow provisional.
+
 ## 0.2.1 — 2026-09-18
 
 ### Fixed

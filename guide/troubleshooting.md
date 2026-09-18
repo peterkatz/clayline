@@ -51,11 +51,11 @@ Clayline assumes one unit in the file is one millimetre. Type the real height on
 **Solid or Infill can't be chosen.**
 Vase mode is on. Turn it off under 03 Bottom first.
 
-**Export is greyed out.**
-It unlocks after the final path passes every check. Look at Warnings in Before you print for what's holding it.
+**Download G-code is greyed out.**
+It unlocks after the final path passes every check, and so does **File → Export G-code…**. Look at Warnings in Before you print for what's holding it.
 
-**I want to reprint exactly what I printed last month.**
-Drop the print file Clayline saved on the box under 01 Model, or use **Restore from G-code…** under 07 Export. Every setting and the pattern come back. Keep the model file next to it.
+**I want the pattern off a print file I made last month.**
+Use **Restore pattern from G-code…** under 05 Weave pattern, or drop the print file on the box under 01 Model. Only the pattern comes back: the form on the table, its size, the layers and the range stay exactly as you have them. To rebuild a whole job, open the project you saved beside the print file.
 
 ## The app
 

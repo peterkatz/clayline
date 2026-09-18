@@ -2588,6 +2588,12 @@ input[type="range"] {
   margin-top: 10px;
 }
 
+/* Three buttons in one narrow rail: the long one takes a full-width row of its
+   own rather than squeezing its own label out of sight. */
+.pattern-file-row > button:nth-child(3) {
+  grid-column: 1 / -1;
+}
+
 .compact-button {
   min-height: 30px;
   padding: 6px 9px;

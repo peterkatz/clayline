@@ -372,9 +372,9 @@ struct ClaylineWebView: NSViewRepresentable {
             initiatedByFrame frame: WKFrameInfo,
             completionHandler: @escaping ([URL]?) -> Void
         ) {
-            // One read answers both questions — mode, and whether the page
-            // opened the picker for a reference photo — and clears the
-            // one-shot photo marker so a later SVG picker never inherits it.
+            // One read answers both questions — mode, and what the page opened
+            // the picker for — and clears the one-shot marker so a later SVG
+            // picker never inherits it.
             let script = """
             (() => {
               const body = document.body;
@@ -413,8 +413,14 @@ struct ClaylineWebView: NSViewRepresentable {
                 panel.title = "Open a Reference Photo"
                 panel.allowedContentTypes = ClaylineFileTypes.referencePhotoTypes
                 panel.allowsMultipleSelection = false
+            } else if request.isPrintFile {
+                panel.title = "Open a Clayline Print File"
+                panel.allowedContentTypes = ClaylineFileTypes.printFileTypes
+                panel.allowsMultipleSelection = false
             } else {
-                panel.title = mode == .weave ? "Open One Mesh or Project" : "Open Drawings"
+                panel.title = mode == .weave
+                    ? "Open One Mesh, Project, or Print File"
+                    : "Open Drawings"
                 panel.allowedContentTypes = ClaylineFileTypes.allowedContentTypes(for: mode)
                 panel.allowsMultipleSelection =
                     mode == .tiles && parameters.allowsMultipleSelection

@@ -86,7 +86,12 @@ def test_schema_v2_snapshot_uses_the_exact_prd_allowlists() -> None:
     snapshot = _block("function drawSettingsSnapshot()", "function sameKeys")
     for forbidden in ("copies", "scale_factor", "page_mode", "split_pages", "payload:"):
         assert forbidden not in snapshot
-    assert 'filename: $("#filename").value' in snapshot
+    # Save as and Reproducible output are gone from the rail; both keys stay in
+    # the envelope as constants so every stored snapshot and project still opens.
+    assert 'filename: "",' in snapshot
+    assert "reproducible: true," in snapshot
+    assert '$("#filename")' not in APP
+    assert '$("#reproducible")' not in APP
 
 
 def test_reference_rides_the_pass_snapshot_and_never_reaches_a_slice_request() -> None:
@@ -246,9 +251,9 @@ def test_rail_order_width_overlap_and_protection_copy_match_the_prd() -> None:
             "path",
             "character",
             "printer",
-            "export",
         )
     ]
+    assert 'data-section="export"' not in HTML
     assert positions == sorted(positions)
     for removed in ("scaleMode", "scaleValue", "layers", "beadWidthFollowChip"):
         assert f'id="{removed}"' not in HTML

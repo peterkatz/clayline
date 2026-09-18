@@ -13,7 +13,20 @@ final class FileTypeAndImportTests: XCTestCase {
                 "com.clayline.mesh.3mf",
                 "public.polygon-file-format",
                 "com.clayline.project",
+                "com.clayline.gcode",
             ]
+        )
+    }
+
+    /// The Model box says it takes a print file, so the panel it opens has to
+    /// offer one; the page takes the pattern out of whatever is chosen there.
+    func testPrintFileTypeIsOwnedByClaylineAndReachesTheWeavePanel() {
+        XCTAssertEqual(ClaylineFileTypes.printFileTypes.map(\.identifier), ["com.clayline.gcode"])
+        XCTAssertTrue(
+            ClaylineFileTypes.allowedContentTypes(for: .weave).contains(ClaylineFileTypes.gcode)
+        )
+        XCTAssertFalse(
+            ClaylineFileTypes.allowedContentTypes(for: .tiles).contains(ClaylineFileTypes.gcode)
         )
     }
 
@@ -143,5 +156,21 @@ final class FileTypeAndImportTests: XCTestCase {
         }
         XCTAssertEqual(ClaylineOpenRequest(raw: "weave:project").mode, .weave)
         XCTAssertFalse(ClaylineOpenRequest(raw: "tiles:projects").isProject)
+    }
+
+    /// Restore pattern from G-code… stamps its own one-shot marker, so the
+    /// panel it opens shows print files instead of meshes — and no other
+    /// picker inherits it.
+    func testOpenRequestParsesThePrintFileMarker() {
+        let request = ClaylineOpenRequest(raw: "weave:gcode")
+        XCTAssertTrue(request.isPrintFile)
+        XCTAssertFalse(request.isProject)
+        XCTAssertFalse(request.isReferencePhoto)
+        XCTAssertFalse(request.isDrawingPicker)
+        XCTAssertEqual(request.mode, .weave)
+        for raw in ["weave:", "weave:project", "tiles:reference-photo", "tiles:gcodes"] {
+            XCTAssertFalse(ClaylineOpenRequest(raw: raw).isPrintFile, raw)
+        }
+        XCTAssertFalse(ClaylineOpenRequest(raw: nil).isPrintFile)
     }
 }

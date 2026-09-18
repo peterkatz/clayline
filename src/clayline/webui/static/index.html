@@ -206,14 +206,6 @@
           </div>
         </section>
 
-        <section class="rail-section" data-section="export">
-          <div class="section-index">07</div>
-          <div class="section-body">
-            <h2>Export</h2>
-            <label class="field" title="Export filename. Leave blank to name the file after your design — the suggested name updates automatically."><span>Save as</span><input id="filename" type="text" value="" placeholder="design-name.gcode" maxlength="180" spellcheck="false"></label>
-            <label class="switch-row" title="Reproducible output. Leaves the timestamp out of the file header so re-slicing the same job gives a byte-identical file — handy for comparing exports."><span><strong>Reproducible output</strong><small>Same job, same file — omit the timestamp.</small></span><input id="reproducible" type="checkbox" role="switch" checked></label>
-          </div>
-        </section>
         </div>
 
         <div class="slice-dock">
@@ -449,9 +441,9 @@
                 </div>
               </div>
               <p class="section-copy">Load the base mesh — the form your pattern wraps. Every honest ring and mesh warning is kept.</p>
-              <label class="drop-zone" id="weaveDropZone" for="weaveFileInput" title="Load one STL, OBJ, PLY, or 3MF mesh in millimetres, open a saved project, restore a saved Weave G-code recipe, or load a saved pattern.">
+              <label class="drop-zone" id="weaveDropZone" for="weaveFileInput" title="Load one STL, OBJ, PLY, or 3MF mesh in millimetres, open a saved project, take the pattern out of a print file Clayline saved, or load a saved pattern.">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg>
-                <span><strong>Drop a file here</strong><small>mesh · project · saved G-code · saved pattern</small></span>
+                <span><strong>Drop a file here</strong><small>mesh · project · pattern from a print file · saved pattern</small></span>
                 <input id="weaveFileInput" type="file" accept=".stl,.obj,.ply,.3mf,.clayline,.gcode,.json,model/stl,model/obj,model/3mf,text/x-gcode,application/json">
               </label>
               <div class="draw-project-row weave-project-row">
@@ -695,10 +687,13 @@
               <p class="physical-readout" id="weaveCombCaption">0.0 mm swing · one cycle ≈ 18.0 mm → — waves at the widest ring.</p>
 
               <div class="pattern-file-row">
-                <button class="secondary-button compact-button" id="weavePatternSave" type="button">Save pattern</button>
-                <button class="secondary-button compact-button" id="weavePatternLoad" type="button">Load pattern</button>
+                <button class="secondary-button compact-button" id="weavePatternSave" type="button" title="Write the wave, the extrusion curve and every setting in this section to a small file you can load onto another form.">Save pattern</button>
+                <button class="secondary-button compact-button" id="weavePatternLoad" type="button" title="Load a pattern file saved by Clayline. The form, its size and its settings stay as they are.">Load pattern</button>
+                <button class="secondary-button compact-button" id="weaveRestoreButton" type="button" title="Pull the pattern out of a print file Clayline saved. Only the pattern comes across: not the model, the size, the layers, or the range.">Restore pattern from G-code…</button>
                 <input id="weavePatternFile" type="file" accept="application/json,.json" hidden>
+                <input id="weaveRestoreFile" type="file" accept=".gcode,text/x-gcode,text/plain" hidden>
               </div>
+              <p class="field-hint" id="weaveRestoreStatus" aria-live="polite">A print file Clayline saved gives up its pattern here. The form, its size, the layers and the range stay as they are.</p>
             </div>
           </section>
 
@@ -711,21 +706,6 @@
               <label class="field"><span>Clay flow <output id="weaveFlowOutput">1.00×</output></span><input id="weaveFlow" type="range" value="1" min="0.5" max="1.5" step="0.01"></label>
               <label class="field" title="Start charge before the first line, in the printer's E units. The profile's start block pushes this much clay out over the bed centre before printing so the barrel is under pressure. Blank keeps the profile's own charge; 0 skips the charge entirely. The profile's amount shows as the placeholder."><span>Start charge (E)</span><input id="weaveStartCharge" type="number" min="0" step="100" placeholder="profile"></label>
               <p class="profile-fact" id="weaveProfileFact">Profile truth supplies speeds, bounds, start/end blocks, and pressure travel.</p>
-            </div>
-          </section>
-
-          <section class="rail-section weave-section" data-weave-section="export">
-            <div class="section-index">07</div>
-            <div class="section-body">
-              <h2>Export</h2>
-              <label class="field"><span>Save as</span><input id="weaveFilename" type="text" placeholder="form-name.gcode" maxlength="180" spellcheck="false"></label>
-              <label class="switch-row"><span><strong>Reproducible output</strong><small>Same mesh and pattern, same bytes.</small></span><input id="weaveReproducible" type="checkbox" role="switch" checked></label>
-              <div class="pattern-file-row">
-                <button class="secondary-button compact-button" id="weaveRestoreButton" type="button">Restore from G-code…</button>
-                <input id="weaveRestoreFile" type="file" accept=".gcode,text/x-gcode,text/plain" hidden>
-              </div>
-              <p class="field-hint" id="weaveRestoreStatus" aria-live="polite">A saved Clayline header can restore every Weave setting; the source mesh is matched by content hash.</p>
-              <p class="field-hint">Export unlocks after the final path passes every check.</p>
             </div>
           </section>
         </div>

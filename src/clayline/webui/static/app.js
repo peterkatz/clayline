@@ -540,8 +540,6 @@ function applyDefaults(d) {
   setMmField("#wavelength", d.modulation_wavelength);
   $("#flow").value = String(d.flow_multiplier);
   $("#startCharge").value = Number.isFinite(d.start_charge_e) ? String(d.start_charge_e) : "";
-  $("#filename").value = "";
-  $("#reproducible").checked = true;
 }
 
 function updateProfileFacts() {
@@ -1191,7 +1189,6 @@ function renderPages() {
   const list = $("#pageList");
   list.replaceChildren();
   updateDesignSizeHint();
-  $("#filename").placeholder = suggestedFilename();
   if (!state.files.length) {
     const empty = document.createElement("p");
     empty.className = "muted-line";
@@ -2135,8 +2132,11 @@ function drawSettingsSnapshot() {
       thread_protection_model: selectedThreadProtectionModel(),
       flow_multiplier: numberValue("#flow"),
       start_charge_e: optionalNumberValue("#startCharge"),
-      reproducible: $("#reproducible").checked,
-      filename: $("#filename").value,
+      // Both are constants now that the studio names the file after the
+      // design and never stamps it with the hour. They stay in the envelope so
+      // every project file and stored snapshot still opens unchanged.
+      reproducible: true,
+      filename: "",
     },
   };
 }
@@ -2231,8 +2231,11 @@ function requestPayload(snapshot = drawSettingsSnapshot()) {
     flow_multiplier: job.flow_multiplier,
     start_charge_e: Number.isFinite(job.start_charge_e) ? job.start_charge_e : null,
     split_pages: false,
-    reproducible: job.reproducible,
-    filename: job.filename ? job.filename : null,
+    // The print file carries no timestamp, ever: the same job writes the same
+    // file. The name comes from the design, which is what the backend falls
+    // back to when none is sent.
+    reproducible: true,
+    filename: null,
   };
   if (job.bead_width_mode === "measured") payload.bead_width = job.bead_width_mm;
   if (job.thread_protection_model !== null) {
@@ -2284,8 +2287,6 @@ function applyDrawSettings(snapshot) {
   if (joint) joint.checked = true;
   setValue("#flow", job.flow_multiplier);
   $("#startCharge").value = Number.isFinite(job.start_charge_e) ? String(job.start_charge_e) : "";
-  $("#reproducible").checked = job.reproducible !== false;
-  $("#filename").value = typeof job.filename === "string" ? job.filename : "";
 
   const files = snapshot.passes.map((pass) => hydratePassMeasurement(pendingPassFile({
     name: pass.name,
@@ -2795,7 +2796,6 @@ function renderResult(result) {
     else btn.append(` ${label} `);
   }
   $("#fitButton").hidden = state.activeView !== "toolpath";
-  $("#filename").placeholder = suggestedFilename();
   $("#exportIdentity").textContent = `Lint PASS · ${result.gcode_sha256?.slice(0, 12) || "audited"} · ${result.gcode.length.toLocaleString()} bytes`;
   showState("result");
   window.claylineScrubber?.attach(result, {
@@ -3299,14 +3299,13 @@ function renderSplitDownloads(splits) {
 
 function downloadGcode() {
   if (!state.result || state.isSlicing) return;
-  const typed = $("#filename").value.trim();
   const blob = new Blob([state.result.gcode], { type: "text/x.gcode;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  // The server-suggested name (the design's own stem) is the default; a typed
-  // name always wins.
-  link.download = typed ? normalizedGcodeFilename(typed) : suggestedFilename();
+  // The file is named after the design; the save panel is where a different
+  // name gets typed.
+  link.download = suggestedFilename();
   link.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
@@ -3407,7 +3406,6 @@ function projectDisplayName(value) {
 function suggestedProjectName() {
   return (
     state.projectName
-    || projectFileStem($("#filename").value)
     || projectFileStem(state.files[0]?.name)
     || "drawing"
   );

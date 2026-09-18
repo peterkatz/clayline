@@ -165,7 +165,7 @@ def test_native_open_and_finder_routes_are_mode_aware() -> None:
 
     for file_extension in ("obj", "stl", "3mf", "ply"):
         assert f'"{file_extension}"' in file_types
-    assert "mode == .weave ? meshTypes + projectTypes : [svg]" in file_types
+    assert "mode == .weave ? meshTypes + projectTypes + printFileTypes : [svg]" in file_types
     assert "first.1" in file_types and "selected = [first.0]" in file_types
     assert "ignoredCount" in file_types
 
@@ -241,6 +241,17 @@ def test_browser_bridge_routes_open_export_and_finder_import_by_active_mode() ->
     assert "projectSaveResult" in desktop
     assert 'document.body.dataset.claylineFileRequest = "project"' in app
     assert "body.dataset.claylineFileRequest" in _source("ClaylineWebView.swift")
+    # Restore pattern from G-code… opens a panel of print files, not meshes:
+    # the packaged app filters by this one-shot marker, never by the accept list.
+    assert 'document.body.dataset.claylineFileRequest = "gcode"' in weave
+    file_types = _source("ClaylineFileTypes.swift")
+    assert 'isPrintFile = requestToken == "gcode"' in file_types
+    assert "static let printFileTypes = [gcode]" in file_types
+    assert "meshTypes + projectTypes + printFileTypes" in file_types
+    web_view = _source("ClaylineWebView.swift")
+    assert "request.isPrintFile" in web_view
+    assert 'panel.title = "Open a Clayline Print File"' in web_view
+    assert "ClaylineFileTypes.printFileTypes" in web_view
 
     assert "DESKTOP_MAX_MESH_BYTES = 1024 * 1024 * 1024" in weave
     assert "new Uint8Array(byteCount)" in weave

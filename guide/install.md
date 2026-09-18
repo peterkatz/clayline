@@ -45,6 +45,6 @@ The printer choice sets the bed size you see in the preview, the print speeds, t
 
 ## Getting a file to the printer
 
-After you slice, **Download G-code** in the right-hand panel saves the print file through the normal Mac save window. **File → Export G-code…** (Shift-Command-E) does the same, and **File → Open…** (Command-O) loads drawings or models. Command-S is the whole job, not the print file: see Saving your project in [Draw in Clay](tiles.md) and [Weave](weave.md). Give the file a name under **07 Export**, or leave the box blank to name it after your design.
+After you slice, **Download G-code** in the right-hand panel saves the print file through the normal Mac save window. **File → Export G-code…** (Shift-Command-E) does the same, and **File → Open…** (Command-O) loads drawings or models. Command-S is the whole job, not the print file: see Saving your project in [Draw in Clay](tiles.md) and [Weave](weave.md). The file is named after your design, and the save window is where you can change that.
 
 Copy the file to your printer the way you already do for any print. Clayline never sends anything to the machine itself.

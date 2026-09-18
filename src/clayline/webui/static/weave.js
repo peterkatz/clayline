@@ -183,10 +183,6 @@
     islandEmergence: null,
     rangeAutoIslandStop: false,
     crownFinish: null,
-    restoreEmission: null,
-    restoreSource: null,
-    restoreRecipeId: null,
-    restoreProfileName: null,
     // W16: a user edit that shapes local extrusion arms flow color by
     // default. A deliberate toolbar choice then wins for the rest of the
     // session; neither value belongs in the printable recipe/history.
@@ -448,7 +444,6 @@
     query.set("rotation_deg", String(numberValue("#weaveRotate", 0)));
     query.set("rotation_x_deg", String(numberValue("#weaveRotateX", 0)));
     query.set("rotation_y_deg", String(numberValue("#weaveRotateY", 0)));
-    if (S.restoreRecipeId) query.set("restore_id", S.restoreRecipeId);
     return query;
   }
 
@@ -457,7 +452,6 @@
     // from the nozzle through the same single defaults table as the CLI.
     return {
       mesh_id: S.mesh?.mesh_id || S.mesh?.id,
-      restore_id: S.restoreRecipeId,
       nozzle: numberValue("#weaveNozzle"),
       layer_height: numberValue("#weaveLayerHeight"),
       first_layer_height: numberValue("#weaveFirstLayer"),
@@ -589,20 +583,16 @@
     );
     return {
       slice_id: S.slice?.slice_id || S.slice?.id,
-      restore_id: S.restoreRecipeId,
       quality,
       pattern: patternObject(),
       profile: $("#weaveProfile").value,
       flow_multiplier: numberValue("#weaveFlow", 1),
       start_charge_e: numberValue("#weaveStartCharge", null),
-      reproducible: $("#weaveReproducible").checked,
+      // The print file carries no timestamp, ever: the same job writes the
+      // same file, so two prints of one form can be compared byte for byte.
+      reproducible: true,
       layer_range: autoCrown ? null : rangePayload(),
       island_range_auto: S.rangeAutoIslandStop,
-      prime_mm: S.restoreEmission?.prime_mm ?? null,
-      end_early_mm: S.restoreEmission?.end_early_mm ?? null,
-      wet_density_g_cm3: S.restoreEmission?.wet_density_g_cm3 ?? null,
-      job_id: S.restoreEmission?.job_id ?? null,
-      filename: $("#weaveFilename").value.trim() || null,
     };
   }
 
@@ -794,8 +784,11 @@
       export: {
         flow_multiplier: numberValue("#weaveFlow", 1),
         start_charge_e: numberValue("#weaveStartCharge", null),
-        reproducible: $("#weaveReproducible").checked,
-        filename: $("#weaveFilename").value,
+        // Both are constants now that the studio names the file after the
+        // form and never stamps it with the hour. They stay in the envelope
+        // so every project file and stored snapshot still opens unchanged.
+        reproducible: true,
+        filename: "",
       },
     };
   }
@@ -884,10 +877,6 @@
     setControlValue("#weaveFlow", exportSettings.flow_multiplier);
     $("#weaveStartCharge").value = Number.isFinite(exportSettings.start_charge_e)
       ? String(exportSettings.start_charge_e)
-      : "";
-    $("#weaveReproducible").checked = exportSettings.reproducible !== false;
-    $("#weaveFilename").value = typeof exportSettings.filename === "string"
-      ? exportSettings.filename
       : "";
     syncControls();
     syncProfileFacts();
@@ -1279,7 +1268,6 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         prepared_id: preparedPayload.prepared_id,
-        filename: $("#weaveFilename").value,
       }),
       signal: controller.signal,
     }));
@@ -1446,12 +1434,6 @@
     ].filter(Boolean).join(" · ");
     renderWarnings(payload.warnings || [], false);
     renderMeshPreviewTitle();
-    if (S.restoreSource) {
-      const matches = payload.source_sha256 === S.restoreSource.sha256;
-      $("#weaveRestoreStatus").textContent = matches
-        ? `Restore recipe ready · ${S.restoreSource.filename} content hash matches.`
-        : `Warning: this mesh does not match the saved ${S.restoreSource.filename} — reload the original file to restore exactly.`;
-    }
   }
 
   function renderSliceFacts(payload) {
@@ -3579,75 +3561,30 @@
     }
   }
 
-  async function restoreGcode(file) {
+  // A print file Clayline saved gives up one thing here: its pattern. The
+  // form on the table, how it is placed, how it was sliced, the print range
+  // and the printer are the artist's current job and are left exactly alone —
+  // which is what makes this safe to reach for mid-job. (The command line's
+  // `clayline weave --from` still rebuilds a whole job from the same file.)
+  async function restorePatternFromGcode(file) {
     if (!file) return;
     $("#weaveRestoreStatus").textContent = `Reading ${file.name}…`;
     try {
-      const query = S.mesh?.mesh_id
-        ? `?mesh_id=${encodeURIComponent(S.mesh.mesh_id)}`
-        : "";
-      const response = await fetch(`${API.restore}${query}`, {
+      const response = await fetch(API.restore, {
         method: "POST",
         headers: { "Content-Type": "text/x-gcode" },
         body: file,
       });
       const payload = await jsonResponse(response);
-      const settings = payload.settings || {};
-      S.restoreRecipeId = payload.restore_id || null;
-      S.restoreProfileName = settings.profile || null;
-      S.restoreSource = payload.source_mesh || null;
-      S.restoreEmission = {
-        prime_mm: settings.prime_mm,
-        end_early_mm: settings.end_early_mm,
-        wet_density_g_cm3: settings.wet_density_g_cm3,
-        job_id: settings.job_id,
-      };
-      S.pendingRange = payload.layer_range || null;
-      ensureRestoreProfileOption(settings.profile);
-      setControlValue("#weaveUpAxis", settings.up);
-      setControlValue("#weaveScale", settings.scale);
-      setControlValue("#weaveFitHeight", null);
-      setControlValue("#weaveOffsetX", settings.offset?.[0]);
-      setControlValue("#weaveOffsetY", settings.offset?.[1]);
-      setControlValue("#weaveRotate", settings.rotation_deg ?? 0);
-      setControlValue("#weaveRotateX", settings.rotation_x_deg ?? 0);
-      setControlValue("#weaveRotateY", settings.rotation_y_deg ?? 0);
-      setControlValue("#weaveLayerHeight", settings.layer_height);
-      setControlValue("#weaveFirstLayer", settings.first_layer_height);
-      setControlValue("#weaveSampleSpacing", settings.sample_spacing);
-      setControlValue("#weaveBeadWidth", settings.bead_width);
-      setControlValue("#weaveFlow", settings.flow_multiplier);
-      $("#weaveReproducible").checked = settings.reproducible !== false;
-      S.layerHeightFollows = false;
-      S.beadWidthFollows = false;
-      S.firstLayerFollows = false;
-      S.sampleSpacingAuto = false;
-      S.zBlendUnavailable = false;
-      $("#weaveZBlend").disabled = false;
       applyCanonicalPattern(payload.pattern?.canonical_json, payload.pattern);
       armFlowColorForCurrentPattern();
-      if (payload.layer_range) {
-        S.rangeTotal = Number(payload.layer_range.total);
-        setControlValue("#weaveRangeFrom", payload.layer_range.from);
-        setControlValue("#weaveRangeTo", payload.layer_range.to);
-        $("#weaveRangeEnabled").disabled = false;
-        $("#weaveRangeEnabled").checked = true;
-        syncRangeControls();
-      }
-      const warning = payload.source_mesh?.warning;
-      $("#weaveRestoreStatus").textContent = warning
-        ? `Warning: ${warning}`
-        : payload.needs_mesh
-          ? `Settings restored. Drop ${payload.source_mesh.filename}; its content hash will be checked.`
-          : `Settings restored · ${payload.source_mesh.filename} content hash matches.`;
-      invalidateExact("G-code recipe restored — load the matching source mesh.");
-      if (S.file) {
-        beginMetric();
-        await uploadMesh();
-      }
+      beginMetric();
+      invalidateExact("Pattern restored — rebuilding the final path.");
+      scheduleModulation("settle");
+      $("#weaveRestoreStatus").textContent = `Pattern restored from ${file.name}`;
     } catch (error) {
       $("#weaveRestoreStatus").textContent = `Restore stopped: ${error.message}`;
-      showWeaveState("error", `Restore from G-code failed. ${error.message}`, error.status);
+      showWeaveState("error", `Restoring the pattern failed. ${error.message}`, error.status);
     } finally {
       $("#weaveRestoreFile").value = "";
       $("#weaveFileInput").value = "";
@@ -3850,9 +3787,9 @@
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = normalizedWeaveGcodeName(
-      $("#weaveFilename").value.trim() || result.filename || "clayline-weave.gcode",
-    );
+    // The file is named after the form the studio sliced; the save panel is
+    // where a different name gets typed.
+    link.download = normalizedWeaveGcodeName(result.filename || "clayline-weave.gcode");
     link.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
@@ -3920,7 +3857,8 @@
       return;
     }
     if (file.name.toLowerCase().endsWith(".gcode")) {
-      restoreGcode(file);
+      // The Model box takes a print file too, and gives back only its pattern.
+      restorePatternFromGcode(file);
       return;
     }
     if (file.name.toLowerCase().endsWith(".json")) {
@@ -3980,12 +3918,6 @@
       });
     });
     $("#weaveProfile").addEventListener("change", () => {
-      if (S.restoreRecipeId && $("#weaveProfile").value !== S.restoreProfileName) {
-        S.restoreRecipeId = null;
-        S.restoreProfileName = null;
-        $("#weaveProfile").querySelectorAll("option[data-restore-profile]")
-          .forEach((option) => option.remove());
-      }
       syncProfileFacts();
       rebuildNozzleOptions();
       beginMetric();
@@ -4173,15 +4105,6 @@
         beginMetric(); syncControls(); scheduleModulation("settle");
       });
     });
-    $("#weaveReproducible").addEventListener("change", () => {
-      beginMetric(); scheduleModulation("settle");
-    });
-    $("#weaveFilename").addEventListener("input", () => {
-      if (S.exactResult?.exportable) {
-        $("#weaveExportIdentity").textContent = exportReadyText(S.exactResult.gcode_sha256);
-      }
-      weaveStateWriter?.schedule();
-    });
     $("#weaveZBlend").addEventListener("change", () => {
       armFlowColorForCurrentPattern();
       setActiveTexture(null); beginMetric(); handleZBlendChange();
@@ -4269,8 +4192,15 @@
     $("#weavePatternSave").addEventListener("click", savePattern);
     $("#weavePatternLoad").addEventListener("click", () => $("#weavePatternFile").click());
     $("#weavePatternFile").addEventListener("change", (event) => loadPatternFile(event.target.files?.[0]));
-    $("#weaveRestoreButton").addEventListener("click", () => $("#weaveRestoreFile").click());
-    $("#weaveRestoreFile").addEventListener("change", (event) => restoreGcode(event.target.files?.[0]));
+    // The packaged app's native picker filters by this one-shot marker — the
+    // Swift delegate reads and clears it before presenting the panel, so print
+    // files are selectable there; the input's accept list does the same job in
+    // an ordinary browser.
+    $("#weaveRestoreButton").addEventListener("click", () => {
+      document.body.dataset.claylineFileRequest = "gcode";
+      $("#weaveRestoreFile").click();
+    });
+    $("#weaveRestoreFile").addEventListener("change", (event) => restorePatternFromGcode(event.target.files?.[0]));
     $("#weavePatternExpand").addEventListener("click", openPatternOverlay);
     $("#weavePatternOverlayClose").addEventListener("click", closePatternOverlay);
     $("#weavePatternOverlay").addEventListener("click", (event) => {
@@ -4284,10 +4214,6 @@
     });
     $("#weaveResetButton").addEventListener("click", () => {
       weaveStateWriter?.suspend(() => {
-        S.restoreEmission = null;
-        S.restoreSource = null;
-        S.restoreRecipeId = null;
-        S.restoreProfileName = null;
         S.pendingRange = null;
         S.rangeTotal = null;
         S.islandEmergence = null;
@@ -4297,8 +4223,6 @@
         S.flowColorUserOverride = null;
         $("#weaveRangeEnabled").checked = false;
         $("#weaveRangeEnabled").disabled = true;
-        $("#weaveFilename").value = "";
-        $("#weaveReproducible").checked = true;
         if (S.defaults) applyWeaveDefaults(S.defaults);
       });
       weaveStateWriter?.clear();
@@ -4453,14 +4377,9 @@
     // flushed once at the very end (below), after the re-slice has put the
     // print range back — so the single history entry is the whole open.
     weaveStateWriter?.suspend(() => {
-      // A saved project carries no G-code recipe and no sliced layer count, so
-      // the settings land against a clean form and the saved print range goes
-      // to S.pendingRange — the same path a restored recipe already uses to
-      // wait for the slice that knows how many layers there are.
-      S.restoreEmission = null;
-      S.restoreSource = null;
-      S.restoreRecipeId = null;
-      S.restoreProfileName = null;
+      // A saved project carries no sliced layer count, so the settings land
+      // against a clean form and the saved print range goes to S.pendingRange,
+      // to wait for the slice that knows how many layers there are.
       S.slice = null;
       S.rangeTotal = null;
       applyWeaveSettings(project.settings, { settle: false });

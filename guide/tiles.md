@@ -102,17 +102,13 @@ A gentle hand-made rhythm, off by default. **Hand ripple · flow** pulses how mu
 
 Choose your printer. **Clay flow** scales how much clay is pushed per millimetre: above 1.00 lays a fatter coil, below it a leaner one. **Start charge** is the push of clay the printer makes over the bed centre before the first line. Leave it blank for the printer's normal amount, type a smaller number, or type 0 to skip it. See [Printing](printing.md) for how these three work together at the start of a print.
 
-### 07 Export
-
-**Save as** names the file. Leave it blank and Clayline names it after your design. **Reproducible output** leaves the timestamp out of the file so slicing the same job twice gives an identical file, which is useful for comparing.
-
 ### Slice job
 
 Builds the toolpath, checks it, and draws both previews. Nothing prints from here. The button tells you which mode and how many passes it's about to build.
 
 ### Saving your project
 
-**Save project…** under 01 Design, or **File → Save Project…** (Command-S), writes the whole job to one file: every pass, the drawing inside it, any photo you placed to trace, and every setting from the nozzle to the name you export under. **Open project…**, or **File → Open Project…** (Shift-Command-O), brings it all back as you left it, on this Mac or another. If the job was sliced when you saved it, Clayline slices it again so the preview is waiting for you. You can also drop a saved project on the box under 01 Design.
+**Save project…** under 01 Design, or **File → Save Project…** (Command-S), writes the whole job to one file: every pass, the drawing inside it, any photo you placed to trace, and every setting from the nozzle to the hand ripple in the line. **Open project…**, or **File → Open Project…** (Shift-Command-O), brings it all back as you left it, on this Mac or another. If the job was sliced when you saved it, Clayline slices it again so the preview is waiting for you. You can also drop a saved project on the box under 01 Design.
 
 A print file is not a project. It holds the finished path for the machine, not the drawings you would go on editing, so keep the project beside it. **File → Export G-code…** (Shift-Command-E) is the one that writes a print file.
 
