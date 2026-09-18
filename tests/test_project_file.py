@@ -148,6 +148,15 @@ def test_write_and_read_round_trip_both_modes_in_the_page() -> None:
             schema: "clayline.weave-settings.v1",
             placement: { up_axis: "z", scale: 1 },
             pattern_json: "{}",
+            // A saved job's last layer, and whether the artist chose it or the
+            // studio proposed it, travel in the file together.
+            slice: {
+              range_enabled: true,
+              range_from: 1,
+              range_to: 143,
+              range_total: 160,
+              range_auto_island_stop: false,
+            },
           };
           const mesh = utf8.encode("v 0 0 0\\nv 1 0 0\\nv 0 1 0\\nf 1 2 3\\n");
           const weaveBlob = await pf.write({
@@ -183,6 +192,7 @@ def test_write_and_read_round_trip_both_modes_in_the_page() -> None:
             settings_schema: pf.SETTINGS_SCHEMA,
             caps: [pf.MAX_ARCHIVE_BYTES, pf.MAX_MANIFEST_BYTES, pf.MAX_REFERENCE_BYTES],
             mesh_sha256: weave.sources[0].sha256,
+            weave_slice: weave.settings.slice,
           }));
         })().catch((error) => { console.error(error); process.exit(1); });
         """
@@ -212,6 +222,14 @@ def test_write_and_read_round_trip_both_modes_in_the_page() -> None:
         "weave": "clayline.weave-settings.v1",
     }
     assert result["caps"] == [1024 * 1024 * 1024, 32 * 1024 * 1024, 64 * 1024 * 1024]
+    # The reopened job knows its own last layer, and that the artist typed it.
+    assert result["weave_slice"] == {
+        "range_enabled": True,
+        "range_from": 1,
+        "range_to": 143,
+        "range_total": 160,
+        "range_auto_island_stop": False,
+    }
     assert (
         result["mesh_sha256"] == hashlib.sha256(b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").hexdigest()
     )

@@ -705,22 +705,33 @@ def build_form_move_stream(
                 blended.top_follow.supported_z_offsets
             )
             first_ghost = blended.top_follow.ghost_segments[0][0]
+            # What happened to the clay, in the studio's own words: the rim it
+            # was asked for, the rim this wall can hold up, and where the rest
+            # of the shape went.
             reach_description = (
-                "the experimental configured reach gets to "
+                "Even with Z-blend reach opened up, this wall holds "
                 if slope_multiplier > 1.0
-                else "the configured geometric limit gets to "
+                else "At this coil width and layer height the wall holds "
             )
             top_follow_warnings.append(
                 FormWarning(
                     code=FormWarningCode.TOP_FOLLOW_LIMIT,
                     severity=Severity.WARNING,
                     message=(
-                        f"Top-follow requested {requested_swing:.2f} mm of rim relief; "
-                        f"{reach_description}"
-                        f"{supported_swing:.2f} mm. The omitted source contour is ghosted, "
-                        "not emitted."
+                        f"The rim was asked to rise and fall {requested_swing:.2f} mm "
+                        f"across this form. {reach_description}"
+                        f"{supported_swing:.2f} mm, so the rim follows the form that far "
+                        "and the rest of it stays a faded ghost — that part is not printed."
                     ),
                     point=Point(first_ghost[0], first_ghost[1]),
+                )
+            )
+        if blended.top_follow is not None and blended.top_follow.slope_headroom > 0.0:
+            top_follow_warnings.append(
+                FormWarning(
+                    code=FormWarningCode.TOP_FOLLOW_EASED,
+                    severity=Severity.WARNING,
+                    message="Z-blend was eased slightly to stay within the climb limit.",
                 )
             )
         if blended.top_follow is not None and slope_multiplier > 1.0:
@@ -733,10 +744,11 @@ def build_form_move_stream(
                     code=FormWarningCode.TOP_FOLLOW_EXPERIMENTAL,
                     severity=Severity.WARNING,
                     message=(
-                        f"Z-blend reach {slope_multiplier:.2f}\N{MULTIPLICATION SIGN} permits "
-                        f"up to {angle_degrees:.1f}\N{DEGREE SIGN} of path climb. This setting "
-                        "is not physically calibrated for this clay and printer; run a short "
-                        "test before the full object."
+                        f"Z-blend reach {slope_multiplier:.2f}\N{MULTIPLICATION SIGN} lets the "
+                        f"coil climb up to {angle_degrees:.1f}\N{DEGREE SIGN} as it travels "
+                        "round the form, with that much less clay under it to hold it up. "
+                        "Nothing here has been tried on your clay at that angle — print a "
+                        "short test piece before the whole form."
                     ),
                 )
             )
@@ -1867,14 +1879,23 @@ def _adapt_warning(
             f"{item.layer_span.last_layer + layer_offset + 1}"
         )
     )
-    location = (
-        f"print layer={public_print_layer} island={island_text} "
-        f"span={public_span} z={z_text}; source layer={public_source_layer}"
-    )
+    fields = (public_print_layer, island_text, public_span, z_text, public_source_layer)
+    if all(field == "none" for field in fields):
+        # A warning about the whole form carries no ring and no layer span, so
+        # every field here would read "none". An artist cannot act on
+        # "[print layer=none island=none ...]", so the sentence stands alone.
+        # The provenance above still records the same fields for tooling.
+        message = item.message
+    else:
+        location = (
+            f"print layer={public_print_layer} island={island_text} "
+            f"span={public_span} z={z_text}; source layer={public_source_layer}"
+        )
+        message = f"{item.message} [{location}]"
     return Warning(
         code=item.code,  # type: ignore[arg-type] -- boundary adapter keeps Weave taxonomy
         severity=item.severity,
-        message=f"{item.message} [{location}]",
+        message=message,
         point=item.point,
         provenance=provenance,
         page_id="form",

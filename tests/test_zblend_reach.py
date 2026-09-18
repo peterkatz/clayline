@@ -262,6 +262,29 @@ def test_extended_reach_is_warned_emitted_and_independently_linted() -> None:
     assert "; parameter.top_follow_slope_multiplier=" not in baseline.emission.gcode
     assert not any(warning.code.value == "top_follow_experimental" for warning in baseline.warnings)
 
+    # Both whole-form warnings say what happened to the clay, in the words the
+    # studio already uses on the control.  The engine's own name for Z-blend
+    # never reaches a person.
+    limit = next(warning for warning in result.warnings if warning.code.value == "top_follow_limit")
+    assert limit.message == (
+        "The rim was asked to rise and fall 20.10 mm across this form. Even with "
+        "Z-blend reach opened up, this wall holds 2.65 mm, so the rim follows the "
+        "form that far and the rest of it stays a faded ghost — that part is not printed."
+    )
+    assert experimental.message == (
+        "Z-blend reach 1.50\N{MULTIPLICATION SIGN} lets the coil climb up to 24.2° as it "
+        "travels round the form, with that much less clay under it to hold it up. Nothing "
+        "here has been tried on your clay at that angle — print a short test piece before "
+        "the whole form."
+    )
+    # At the tested reach the same warning names the wall that carries the rim.
+    baseline_limit = next(
+        warning for warning in baseline.warnings if warning.code.value == "top_follow_limit"
+    )
+    assert "At this coil width and layer height the wall holds " in baseline_limit.message
+    for warning in (*result.warnings, *baseline.warnings):
+        assert "op-follow" not in warning.message
+
     profile = load_profile("potterbot-xl")
     declared = "; parameter.top_follow_slope_multiplier=1.5"
     for malformed in ("nope", "nan", "0.99", "3.01"):

@@ -1480,6 +1480,47 @@ def test_opening_a_weave_project_is_one_undo_step_then_mesh_then_slice() -> None
         assert f"{field} = null;" in open_project
 
 
+def test_a_reopened_project_keeps_the_last_layer_the_artist_chose() -> None:
+    # The saved job says for itself whether its last layer was the studio's
+    # island proposal or the artist's own number.  Without it every reopened
+    # job came back "automatic", and switching Z-blend on then moved the last
+    # layer to the top of the form: a different job from the saved one.
+    snapshot = _function("weaveSettingsSnapshot", "function validWeaveSettings")
+    assert "range_auto_island_stop: S.rangeAutoIslandStop," in snapshot
+
+    settings = _function("applyWeaveSettings", "function restoreWeaveSettings")
+    # A project saved before this key existed is a job whose last layer the
+    # artist owns, so it never asks for rim work nobody chose.
+    assert "const autoIslandStop = slice.range_auto_island_stop === true;" in settings
+    assert "S.rangeAutoIslandStop = autoIslandStop;" in settings
+    assert "autoIslandStop,\n      };" in settings
+
+    # A project opens before there is a slice, so the saved range is parked and
+    # the controls are still empty: the first slice carries the parked numbers
+    # instead of letting the server propose its own stop.
+    slice_payload = _function("slicePayload", "function parkedRangePayload")
+    assert (
+        "layer_range: S.rangeAutoIslandStop ? null : (rangePayload() || parkedRangePayload()),"
+    ) in slice_payload
+    parked = _function("parkedRangePayload", "function rangePayload")
+    # Only a restored settings snapshot parks a range with this flag; a
+    # restored G-code recipe parks one without it and is left alone.
+    assert "if (!parked || parked.enabled !== true) return null;" in parked
+    assert "return [from, to];" in parked
+
+    # And the slice that follows does not overwrite what was restored.
+    facts = _function("renderSliceFacts", "function applyPrintRange")
+    assert (
+        'S.rangeAutoIslandStop = typeof S.pendingRange?.autoIslandStop === "boolean"\n'
+        "      ? S.pendingRange.autoIslandStop\n"
+        "      : Boolean(S.islandEmergence?.default_applied);"
+    ) in facts
+    # Undo and redo travel with the same snapshot, so the flag rides along.
+    assert (
+        "weaveStateWriter?.suspend(() => applyWeaveSettings(snapshot, { settle: true }));" in WEAVE
+    )
+
+
 def test_the_page_routes_a_project_file_by_the_mode_it_was_saved_in() -> None:
     assert "saveProject: saveWeaveProject," in WEAVE
     assert "openProject: openWeaveProject," in WEAVE

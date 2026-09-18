@@ -13,6 +13,8 @@ from itertools import pairwise
 
 import numpy as np
 
+from clayline import emit_core
+from clayline.emit_core import coordinate_rounding_allowance
 from clayline.wave import (
     evaluate_curve,
     pattern_layer_is_active,
@@ -156,6 +158,11 @@ class TopFollowPlan:
     ghost_segments: tuple[tuple[tuple[float, float, float], tuple[float, float, float]], ...]
     support_scale: float
     slope_clamped: bool
+    # Climb given back beyond the geometric limit, so the written file lands
+    # under it. Zero on every path solved the ordinary way; positive only when
+    # the final check rejected an earlier build of this same form and the
+    # relief was re-solved with room to spare.
+    slope_headroom: float = 0.0
 
     def __post_init__(self) -> None:
         if (
@@ -168,6 +175,8 @@ class TopFollowPlan:
             raise ValueError("top-follow supported Z offsets must be finite")
         if not 0.0 <= self.support_scale <= 1.0:
             raise ValueError("top-follow support scale must be in [0, 1]")
+        if not math.isfinite(self.slope_headroom) or self.slope_headroom < 0.0:
+            raise ValueError("top-follow slope headroom must be finite and nonnegative")
 
     @property
     def omitted(self) -> bool:
@@ -342,12 +351,44 @@ def zblend_disabled_hint(sliced: SlicedForm, seam: SeamPolicy) -> str | None:
     return None
 
 
+def top_follow_rounding_slope(
+    path: ZBlendPath,
+    *,
+    layer_height: float,
+    bead_width: float,
+    slope_multiplier: float,
+) -> float:
+    """Return this path's rounding allowance measured as a climb.
+
+    :func:`coordinate_rounding_allowance` is a rise in millimetres. Divided by
+    the shortest step this path actually takes, it becomes the steepest climb
+    that writing the coordinates down can add anywhere on it — the number a
+    repair has to give back for the written file to read under the limit.
+
+    Deliberately reached through the module rather than through this module's
+    own imported name: a test that switches the solver's allowance off to
+    reproduce the old refusal must still leave the repair able to measure what
+    the rounding really costs.
+    """
+
+    slope_limit = SLOPE_MAX_RATIO * slope_multiplier * layer_height / bead_width
+    shortest = min(
+        math.hypot(right.x - left.x, right.y - left.y)
+        for revolution in path.revolutions
+        for left, right in pairwise(revolution.points)
+    )
+    if shortest <= 0.0:
+        return 0.0
+    return emit_core.coordinate_rounding_allowance(slope_limit) / shortest
+
+
 def _top_follow_support_scale(
     revolutions: tuple[ZBlendRevolution, ...],
     *,
     layer_height: float,
     bead_width: float,
     slope_multiplier: float,
+    slope_headroom: float = 0.0,
 ) -> float:
     """Scale relief until inter-layer support and final-path slope are printable.
 
@@ -378,7 +419,18 @@ def _top_follow_support_scale(
                 description="same-column thickness",
             )
 
-    slope_max = SLOPE_MAX_RATIO * slope_multiplier * layer_height / bead_width
+    slope_limit = SLOPE_MAX_RATIO * slope_multiplier * layer_height / bead_width
+    # The solved path is written to the file with rounded coordinates, and the
+    # rounded step is what anyone measures afterwards. Spend the rounding here,
+    # so the tightest step lands under the limit once written instead of
+    # exactly on it beforehand. The same tightened bound guards the nominal
+    # path inside _bounded_relief_scale, because at scale zero it is the
+    # written path.
+    rounding_allowance = coordinate_rounding_allowance(slope_limit)
+    # ``slope_headroom`` is climb handed back after a final check rejected an
+    # earlier build of this form. It is zero for every ordinary solve, so the
+    # bound below is bit-for-bit what it was.
+    slope_max = max(0.0, slope_limit - slope_headroom)
     for revolution in revolutions:
         for left, right in pairwise(revolution.points):
             distance_xy = math.hypot(right.x - left.x, right.y - left.y)
@@ -388,7 +440,7 @@ def _top_follow_support_scale(
                 )
             nominal_change = (right.z - right.profile_z_offset) - (left.z - left.profile_z_offset)
             offset_change = right.profile_z_offset - left.profile_z_offset
-            rise_limit = slope_max * distance_xy
+            rise_limit = max(0.0, slope_max * distance_xy - rounding_allowance)
             scale = _bounded_relief_scale(
                 scale,
                 base=nominal_change,
@@ -549,6 +601,7 @@ def _top_follow_plan(
     terminal: tuple[ZBlendPoint, ...],
     support_scale: float,
     slope_clamped: bool,
+    slope_headroom: float,
 ) -> TopFollowPlan:
     """Carry omitted source contour as preview-only data, never as moves."""
 
@@ -586,16 +639,29 @@ def _top_follow_plan(
         ghost_segments=ghost_segments,
         support_scale=support_scale,
         slope_clamped=slope_clamped,
+        slope_headroom=slope_headroom,
     )
 
 
-def build_zblend_path(sliced: SlicedForm, pattern: Pattern) -> ZBlendPath:
+def build_zblend_path(
+    sliced: SlicedForm,
+    pattern: Pattern,
+    *,
+    top_follow_slope_headroom: float = 0.0,
+) -> ZBlendPath:
     """Morph one closed ring track into a continuous-Z Weave path.
 
     Whole ring counts remain local to each source ring.  A cumulative integer
     cycle offset keeps the stored phases unwrapped and continuous when counts
     change, without changing the periodic waveform value.
+
+    ``top_follow_slope_headroom`` is climb held back from the rim relief. It is
+    zero everywhere except on a rebuild that a final check asked for, so an
+    ordinary path is unchanged.
     """
+
+    if not math.isfinite(top_follow_slope_headroom) or top_follow_slope_headroom < 0.0:
+        raise ZBlendGeometryError("Top-follow slope headroom must be finite and nonnegative.")
 
     hint = zblend_disabled_hint(sliced, pattern.settings.seam)
     if hint is not None:
@@ -666,6 +732,7 @@ def build_zblend_path(sliced: SlicedForm, pattern: Pattern) -> ZBlendPath:
             layer_height=sliced.layer_height,
             bead_width=sliced.bead_width,
             slope_multiplier=pattern.settings.top_follow_slope_multiplier,
+            slope_headroom=top_follow_slope_headroom,
         )
     else:
         top_follow_scale = 1.0
@@ -736,6 +803,7 @@ def build_zblend_path(sliced: SlicedForm, pattern: Pattern) -> ZBlendPath:
             terminal=revolutions[-1].points,
             support_scale=top_follow_scale,
             slope_clamped=profile_slope_clamped,
+            slope_headroom=top_follow_slope_headroom,
         )
         if follow_top and crown_layer_index is not None
         else None
@@ -1279,5 +1347,6 @@ __all__ = [
     "ZBlendRevolution",
     "build_zblend_path",
     "profile_silhouette_shapes",
+    "top_follow_rounding_slope",
     "zblend_disabled_hint",
 ]

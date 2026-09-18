@@ -1569,6 +1569,32 @@ def _modulate_weave_payload(
     }
 
 
+# Mirrors the #weaveTopFollowSlope control's own min="1" step="0.25"
+# (index.html): the one notch this recovery action ever offers is the same
+# one the slider itself would land on.
+TOP_FOLLOW_REACH_FLOOR = 1.0
+TOP_FOLLOW_REACH_STEP = 0.25
+
+
+def _lower_zblend_reach_action(prepared_result: Any) -> dict[str, Any] | None:
+    """One notch down on Z-blend reach, or ``None`` already at the floor.
+
+    House pattern: mirrors the ``disable_z_blend`` recovery action below —
+    a machine ``kind``, a potter-worded ``label``, and here the one number
+    the page needs to move the control itself.
+    """
+
+    current_reach = prepared_result.pattern.settings.top_follow_slope_multiplier
+    next_reach = max(TOP_FOLLOW_REACH_FLOOR, current_reach - TOP_FOLLOW_REACH_STEP)
+    if next_reach >= current_reach:
+        return None
+    return {
+        "kind": "lower_zblend_reach",
+        "label": f"Lower reach to {next_reach:.2f}\N{MULTIPLICATION SIGN} and rebuild",
+        "top_follow_slope_multiplier": next_reach,
+    }
+
+
 def _weave_settings_snapshot(prepared_result: Any, payload: dict[str, Any]) -> dict[str, Any]:
     """Serialize exactly what built ``prepared_result``, in the persisted shape.
 
@@ -1629,49 +1655,92 @@ def _finalize_weave_payload(
     """Finish artifacts from one exact prepared object, never rebuilt geometry."""
 
     from clayline.weave_analysis import largest_pinch_free_amplitude
-    from clayline.weave_workflow import WeaveWorkflowError, finalize_weave_result
+    from clayline.weave_workflow import (
+        TopFollowClimbRefused,
+        WeaveWorkflowError,
+        finalize_weave_result,
+    )
     from clayline.webui.weave_payload import warning_rows_with_safe_offer
 
     started = time.perf_counter()
     try:
         result = finalize_weave_result(prepared_result)
+    except TopFollowClimbRefused as exc:
+        # Layer 3 (no dead ends): the bounded repair in finalize_weave_result
+        # already tried easing the rim and rebuilding, up to its budget, and
+        # still could not bring this one spot under the climb limit. The
+        # headline names something the artist can do about it; the raw
+        # internal finding rides in data.technical for reproduction, never
+        # as the sentence itself (interface charter: no engine terms surface).
+        raise UiRequestError(
+            "Z-blend at this reach climbs too steeply in one spot on this form.",
+            code="top_follow_climb_refused",
+            data={
+                "recovery_action": _lower_zblend_reach_action(prepared_result),
+                "technical": {"message": str(exc)},
+                "settings_snapshot": _weave_settings_snapshot(prepared_result, payload),
+            },
+        ) from exc
     except WeaveWorkflowError as exc:
         # 2026-07-22 (reopened): "Weave emission failed lint" reached Pete
         # on a fresh install with restored persisted settings — custom wave
         # points, seam policy, print range, none of which the reproduction
-        # attempts that chased it carried. The artist-facing sentence stays
-        # exactly what it was; the exact settings that produced it now ride
-        # along in data, so the next occurrence is reproducible from the
-        # error report alone instead of a fresh multi-hour investigation.
+        # attempts that chased it carried. The exact settings that produced
+        # it ride along in data, so the next occurrence is reproducible from
+        # the error report alone instead of a fresh multi-hour investigation.
+        # Layer 3: the artist-facing sentence is now the plan's generic one —
+        # the raw lint finding is not artist language — and the raw message
+        # moves to data.technical alongside it.
         if str(exc).startswith("Weave emission failed lint"):
             raise UiRequestError(
-                str(exc),
+                "Clayline's final check found a problem it could not repair, "
+                "so nothing was exported.",
                 code="emission_lint_failed",
-                data={"settings_snapshot": _weave_settings_snapshot(prepared_result, payload)},
+                data={
+                    "technical": {"message": str(exc)},
+                    "settings_snapshot": _weave_settings_snapshot(prepared_result, payload),
+                },
             ) from exc
         raise
     finalized_at = time.perf_counter()
-    if result.emission.stream is not prepared_result.stream:
+    # The audit may have eased the shaped rim and rebuilt the path rather than
+    # refuse the job.  When it did, the exact trace the artist is looking at is
+    # no longer the one being exported, so ``exact`` becomes the repaired trace
+    # and the response carries it back for the page to draw.  Without a repair
+    # this is the same object it always was, and the identity still holds.
+    repaired = None if result.climb_repair is None else result.climb_repair.prepared
+    exact = prepared_result if repaired is None else repaired
+    if result.emission.stream is not exact.stream:
         raise UiRequestError("finalized Weave result rebuilt the exact MoveStream")
-    if result.emission.prepared is not prepared_result.prepared:
+    if result.emission.prepared is not exact.prepared:
         raise UiRequestError("finalized Weave result rebuilt the exact prepared trace")
     report = result.job_report.to_dict()
     safe_amplitude = (
         largest_pinch_free_amplitude(
-            prepared_result.sliced,
-            prepared_result.pattern,
-            zblend_path=prepared_result.zblend_path,
+            exact.sliced,
+            exact.pattern,
+            zblend_path=exact.zblend_path,
         )
-        if any(warning.code.value == "pinch" for warning in prepared_result.warnings)
+        if any(warning.code.value == "pinch" for warning in exact.warnings)
         else None
     )
     gcode_bytes = result.emission.gcode.encode("utf-8")
     artifact_stem = _artifact_stem(
         payload.get("filename"),
-        source_name=prepared_result.sliced.source_path.name,
+        source_name=exact.sliced.source_path.name,
+    )
+    # Only the drawn path is replaced. Everything else the settle response sent
+    # — the pattern visuals, the reach readout, the print range — describes the
+    # same form and the same controls; easing the relief moves the rim by less
+    # than those readouts show.
+    repaired_views: dict[str, Any] = (
+        {}
+        if repaired is None
+        else {"geometry_repaired": True, "trace": _weave_trace_payload(repaired)}
     )
     finished = time.perf_counter()
     return result, {
+        **repaired_views,
         "schema": "clayline.ui.weave-finalized.v1",
         "quality": "settle",
         "geometry_exact": True,

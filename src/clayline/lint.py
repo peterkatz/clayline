@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from clayline.emit import project_header_value
+from clayline.emit_core import coordinate_rounding_allowance
 from clayline.models import Profile, Severity
 from clayline.page_z import (
     ORDINARY,
@@ -1079,6 +1080,14 @@ def _validate_top_follow_path(
 
     tolerance = 1e-5
     slope_limit = slope_multiplier * layer_height / bead_width
+    # Measure in rise space. A short step's slope is a small rise over a small
+    # length, so the decimals this file is written with move it far more than a
+    # slope tolerance allows for. Give every step the rise that rounding alone
+    # can account for, and the wider of that and the old slope tolerance
+    # decides. Past roughly a fifth of a millimetre the tolerance is wider, so
+    # the verdict is unchanged. This stays a reading of the file: it knows the
+    # file's own decimal precision and nothing about how the path was planned.
+    rounding_allowance = coordinate_rounding_allowance(slope_limit)
     for left, right in pairwise(sequence):
         if right[0] != left[0]:
             continue
@@ -1092,8 +1101,9 @@ def _validate_top_follow_path(
                     right[4],
                 )
             continue
-        actual = rise / distance_xy
-        if actual > slope_limit + tolerance:
+        allowance = max(rounding_allowance, tolerance * distance_xy)
+        if rise > slope_limit * distance_xy + allowance:
+            actual = rise / distance_xy
             issue(
                 "weave_top_follow_slope",
                 f"top-follow slope {actual:.6g} exceeds {slope_limit:.6g}",

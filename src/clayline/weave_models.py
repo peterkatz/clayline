@@ -52,6 +52,11 @@ class FormWarningCode(StrEnum):
     WAVE_FINER_THAN_BEAD = "wave_finer_than_bead"
     TOP_FOLLOW_LIMIT = "top_follow_limit"
     TOP_FOLLOW_EXPERIMENTAL = "top_follow_experimental"
+    # 2026-09-17 (Pete's tumbler was refused by a limit its own rounding
+    # crossed): when the finished file still reads a hair over the climb
+    # limit, the rim relief is eased and the path rebuilt rather than the job
+    # refused. The artist is told, because the shape did change.
+    TOP_FOLLOW_EASED = "top_follow_eased"
     # 2026-07-19 (Pete's Dripper1.stl): a form whose bottom tip slices smaller
     # than the bead has no printable ring on its first layer(s); printing
     # starts at the first real ring, rebased to the bed, and says so.

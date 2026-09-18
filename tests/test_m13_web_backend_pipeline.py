@@ -15,6 +15,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 import pytest
+import trimesh
 
 from clayline.weave_workflow import build_weave_result
 from clayline.weave_zblend import zblend_disabled_hint
@@ -198,8 +199,10 @@ def test_finalize_lint_failure_carries_a_replayable_settings_snapshot(
     must be reproducible from the report alone, without a fresh
     investigation to even find the settings that produced it.
 
-    The visible sentence stays exactly the plain lint message; the exact
-    settings that built the failing prepared trace ride in
+    Layer 3 (2026-09-17, docs/handoff-zblend-slope-repair.md): the visible
+    sentence is now the plan's generic, potter-worded one -- the raw lint
+    message is not artist language and moves to ``detail.data.technical``.
+    The exact settings that built the failing prepared trace still ride in
     ``detail.data.settings_snapshot``, in the same pattern_json/placement/
     slice/export shape the studio's own persistence writes.
     """
@@ -245,8 +248,12 @@ def test_finalize_lint_failure_carries_a_replayable_settings_snapshot(
             )
             assert finalized.status_code == 422, finalized.text
             detail = finalized.json()["detail"]
-            assert detail["message"].startswith("Weave emission failed lint:")
+            assert detail["message"] == (
+                "Clayline's final check found a problem it could not repair, "
+                "so nothing was exported."
+            )
             assert detail["code"] == "emission_lint_failed"
+            assert detail["data"]["technical"]["message"].startswith("Weave emission failed lint:")
             snapshot = detail["data"]["settings_snapshot"]
             assert snapshot["schema"] == "clayline.weave-settings.v1"
             pattern = json.loads(snapshot["pattern_json"])
@@ -257,6 +264,61 @@ def test_finalize_lint_failure_carries_a_replayable_settings_snapshot(
             assert snapshot["slice"]["bead_width"] == 5.0
             assert snapshot["export"]["reproducible"] is True
             assert snapshot["source"]["filename"] == "cylinder.obj"
+
+    asyncio.run(exercise())
+
+
+def _trunk_to_prongs_mesh() -> bytes:
+    """One continuous trunk that breaks into three separate prongs part way up."""
+
+    trunk = trimesh.creation.cylinder(radius=10.0, height=20.0, sections=24)
+    trunk.apply_translation((0.0, 0.0, 10.0))
+    prongs = []
+    for x, y in ((-5.0, -4.0), (5.0, -4.0), (0.0, 5.0)):
+        prong = trimesh.creation.cylinder(radius=3.0, height=20.0, sections=24)
+        prong.apply_translation((x, y, 30.0))
+        prongs.append(prong)
+    return trimesh.util.concatenate([trunk, *prongs]).export(file_type="stl")
+
+
+def test_a_range_the_slice_was_asked_for_is_never_reported_as_the_studios_own_stop() -> None:
+    """A reopened project sends its saved range; the answer must not rename it.
+
+    The studio reads ``default_applied`` to decide whether the last layer is
+    its own proposal or the artist's choice, and that decision changes which
+    rim the job asks for.  An asked-for range that came back "automatic" is
+    how a saved job turned into a different one.
+    """
+
+    async def exercise() -> None:
+        async with _client(create_app()) as client:
+            mesh = await client.post(
+                "/api/weave/mesh?filename=trunk-to-prongs.stl",
+                content=_trunk_to_prongs_mesh(),
+                headers={**ORIGIN, "content-type": "application/octet-stream"},
+            )
+            assert mesh.status_code == 200, mesh.text
+            request = {
+                "mesh_id": mesh.json()["mesh_id"],
+                "layer_height": 2.0,
+                "first_layer_height": 1.0,
+                "sample_spacing": 1.0,
+                "bead_width": 1.0,
+            }
+            proposed = await client.post("/api/weave/slice", json=request, headers=ORIGIN)
+            assert proposed.status_code == 200, proposed.text
+            assert proposed.json()["island_emergence"]["default_applied"] is True
+            assert proposed.json()["print_range"]["to"] == 10
+
+            asked = await client.post(
+                "/api/weave/slice",
+                json={**request, "layer_range": [1, 10]},
+                headers=ORIGIN,
+            )
+            assert asked.status_code == 200, asked.text
+            # The same last layer, this time because the job asked for it.
+            assert asked.json()["island_emergence"]["default_applied"] is False
+            assert asked.json()["print_range"]["to"] == 10
 
     asyncio.run(exercise())
 

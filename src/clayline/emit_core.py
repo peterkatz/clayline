@@ -10,6 +10,27 @@ from typing import Any
 
 from clayline.models import ExtrusionMode, MoveKind, deposition_run_key
 
+# Every coordinate in the file is written with this many decimals, so the
+# smallest difference a file can express is this quantum. Anything that has to
+# reason about what rounding can do to a written coordinate reads these two
+# names rather than repeating the literal, so the writer and the readers cannot
+# drift apart.
+COORDINATE_DECIMALS = 6
+COORDINATE_QUANTUM_MM = 10.0**-COORDINATE_DECIMALS
+
+
+def coordinate_rounding_allowance(slope_limit: float) -> float:
+    """Rise that writing a step's endpoints at ``COORDINATE_DECIMALS`` can add.
+
+    Both ends of a step move by at most half a quantum per axis, so the written
+    rise can grow by one quantum and the written XY length can shrink by
+    ``sqrt(2)`` quanta. Keeping a step's rise this far under ``slope_limit``
+    times its length leaves the written step at or under the limit.
+    """
+
+    return COORDINATE_QUANTUM_MM * (1.0 + abs(slope_limit) * math.sqrt(2.0))
+
+
 _DWELL = re.compile(
     r"^G4\s+S(-?(?:\d+(?:\.\d*)?|\.\d+))(?:\s*;\s*.*)?\s*$",
     re.IGNORECASE,
@@ -479,9 +500,9 @@ def _metadata_comment_value(key: str, value: Any) -> str:
 
 
 def _format_number(value: float) -> str:
-    if abs(value) < 0.5e-6:
+    if abs(value) < COORDINATE_QUANTUM_MM / 2.0:
         value = 0.0
-    return f"{value:.6f}".rstrip("0").rstrip(".")
+    return f"{value:.{COORDINATE_DECIMALS}f}".rstrip("0").rstrip(".")
 
 
 def _comment_value(value: str) -> str:

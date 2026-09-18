@@ -469,8 +469,24 @@
       // Keep an untouched safe proposal implicit on the next slice.  The
       // server can re-evaluate it for changed geometry, while modulation
       // still receives the displayed selected range below.
-      layer_range: S.rangeAutoIslandStop ? null : rangePayload(),
+      // A project opens before there is a slice, so the saved range is still
+      // parked and the controls are empty.  A job the artist chose the last
+      // layer of goes to the server with that range, or the server proposes
+      // its own stop and the job comes back different from the saved one.
+      layer_range: S.rangeAutoIslandStop ? null : (rangePayload() || parkedRangePayload()),
     };
+  }
+
+  // The parked range of a restored settings snapshot, and only that: a
+  // restored G-code recipe parks its range without this flag and keeps
+  // asking the server the way it always has.
+  function parkedRangePayload() {
+    const parked = S.pendingRange;
+    if (!parked || parked.enabled !== true) return null;
+    const from = Math.trunc(Number(parked.from));
+    const to = Math.trunc(Number(parked.to));
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < from) return null;
+    return [from, to];
   }
 
   function rangePayload() {
@@ -764,6 +780,11 @@
         range_from: numberValue("#weaveRangeFrom", 1),
         range_to: numberValue("#weaveRangeTo", 1),
         range_total: S.rangeTotal,
+        // Whether the last layer was the studio's own island proposal or a
+        // number the artist typed is part of the job: the two ask for
+        // different rim work, so a saved job that comes back without it comes
+        // back as a different job.
+        range_auto_island_stop: S.rangeAutoIslandStop,
         first_layer_follows: S.firstLayerFollows,
         sample_spacing_auto: S.sampleSpacingAuto,
         layer_height_follows_nozzle: S.layerHeightFollows,
@@ -830,6 +851,11 @@
     setControlValue("#weaveBeadWidth", slice.bead_width);
     setControlValue("#weaveRangeFrom", slice.range_from);
     setControlValue("#weaveRangeTo", slice.range_to);
+    // A snapshot written before this key existed is a job whose last layer the
+    // artist owns: treat it as typed, so restoring it never asks for rim work
+    // nobody chose.
+    const autoIslandStop = slice.range_auto_island_stop === true;
+    S.rangeAutoIslandStop = autoIslandStop;
     if (S.slice && Number.isInteger(S.rangeTotal)) {
       S.pendingRange = null;
       $("#weaveRangeEnabled").disabled = false;
@@ -844,6 +870,7 @@
         to: slice.range_to,
         total: slice.range_total,
         enabled: Boolean(slice.range_enabled),
+        autoIslandStop,
       };
       $("#weaveRangeEnabled").checked = false;
       $("#weaveRangeEnabled").disabled = true;
@@ -939,7 +966,13 @@
     if (!visible) setRoughPreviewWorking(false);
   }
 
-  function showWeaveState(kind, message = "", failureStatus = null, recoveryAction = null) {
+  function showWeaveState(
+    kind,
+    message = "",
+    failureStatus = null,
+    recoveryAction = null,
+    technicalLine = null,
+  ) {
     $("#weaveEmptyState").hidden = kind !== "empty";
     $("#weaveLoadingState").hidden = kind !== "loading";
     $("#weaveErrorState").hidden = kind !== "error";
@@ -948,6 +981,14 @@
     if (kind === "loading" && message) $("#weaveLoadingLabel").textContent = message;
     if (kind === "error") {
       $("#weaveErrorMessage").textContent = message;
+      // The raw internal finding (when the server sent one) rides along in
+      // its own small, secondary line — never the headline an artist reads
+      // first. See docs/interface-charter.md: engine terms never surface.
+      const technical = $("#weaveErrorTechnical");
+      if (technical) {
+        technical.textContent = technicalLine || "";
+        technical.hidden = !technicalLine;
+      }
       // A 4xx is a deterministic refusal of these exact inputs (too big,
       // unsupported, doesn't fit) — retrying identically is a dead end, so
       // the button only shows for transient failures (network, 5xx).
@@ -977,6 +1018,24 @@
     if (action?.kind === "disable_z_blend") {
       $("#weaveZBlend").checked = false;
       applyCapabilities({ capabilities: { z_blend_eligible: true } });
+      weaveStateWriter?.flush();
+      if (S.slice) runModulation("settle");
+      else if (S.mesh) runSlice();
+      else if (S.file) uploadMesh();
+      return;
+    }
+    // Layer 3 (no dead ends): the climb check refused this reach even after
+    // the repair rebuild tried easing it. One notch down is the same value
+    // the #weaveTopFollowSlope slider itself would land on (min 1, step
+    // 0.25), moved through the same control the artist would have dragged —
+    // so the readout, the pattern preview, and history all agree with what
+    // is about to rebuild.
+    if (action?.kind === "lower_zblend_reach") {
+      const nextReach = action.top_follow_slope_multiplier;
+      if (typeof nextReach === "number" && Number.isFinite(nextReach)) {
+        setControlValue("#weaveTopFollowSlope", nextReach);
+      }
+      syncControls();
       weaveStateWriter?.flush();
       if (S.slice) runModulation("settle");
       else if (S.mesh) runSlice();
@@ -1170,7 +1229,13 @@
       if (error.name !== "AbortError" && sequence === S.sequence.modulate) {
         if (!(await recoverFromExpiredSession(error))) {
           recordInteriorRefusal(error);
-          showWeaveState("error", error.message, error.status);
+          showWeaveState(
+            "error",
+            error.message,
+            error.status,
+            error.data?.recovery_action || null,
+            error.data?.technical?.message || null,
+          );
         }
       }
     } finally {
@@ -1225,8 +1290,15 @@
     const finalized = { ...preparedPayload, ...payload };
     S.result = finalized;
     S.exactResult = finalized;
-    renderWarnings(finalized.warnings || [], true);
-    renderReport(finalized.report, finalized);
+    if (payload.geometry_repaired === true) {
+      // The final check eased the Z-blend and rebuilt the path instead of
+      // refusing the job. What is on screen has to become the path that
+      // downloads, so the replacement trace is drawn before anything else.
+      await renderResult(finalized, "settle");
+    } else {
+      renderWarnings(finalized.warnings || [], true);
+      renderReport(finalized.report, finalized);
+    }
     const exportable = finalized.exportable === true && Boolean(finalized.result_id);
     $("#weaveDownloadButton").disabled = !exportable;
     $("#weaveExportIdentity").textContent = exportable
@@ -1393,7 +1465,12 @@
     $("#weaveStatLayers").textContent = String(facts.layer_count ?? "—");
     $("#weavePreviewTitle").textContent = `${S.file?.name || "Mesh"} · ${facts.layer_count ?? "—"} sliced layers`;
     S.islandEmergence = payload.island_emergence || null;
-    S.rangeAutoIslandStop = Boolean(S.islandEmergence?.default_applied);
+    // A parked range is a saved job landing again.  Whether its last layer was
+    // the studio's proposal or the artist's own choice was saved with it, so it
+    // survives this slice instead of being read back off the server.
+    S.rangeAutoIslandStop = typeof S.pendingRange?.autoIslandStop === "boolean"
+      ? S.pendingRange.autoIslandStop
+      : Boolean(S.islandEmergence?.default_applied);
     S.crownFinish = null;
     applyPrintRange(payload.print_range || {
       from: 1,
@@ -2467,7 +2544,7 @@
     hint.classList.toggle("is-caution", multiplier > 1);
     hint.textContent = multiplier > 1
       ? `${multiplier.toFixed(2)}× allows ${angleText}. Less clay support is experimental — test a short rim before a full print.`
-      : `1.00× uses ${angleText}, the existing geometric climb limit.`;
+      : `1.00× keeps the coil to ${angleText}: the usual climb for this coil and layer height.`;
     control.setAttribute("aria-valuetext", `${multiplier.toFixed(2)} times reach`);
   }
 
@@ -2487,7 +2564,7 @@
     readout.classList.toggle("is-caution", ghosted);
     readout.textContent = ghosted
       ? `Reaches ${reached.toFixed(1)} of ${requested.toFixed(1)} mm of rim relief · the remaining ${remaining.toFixed(1)} mm stays visible as the faded source-form ghost.`
-      : `Reaches ${reached.toFixed(1)} of ${requested.toFixed(1)} mm of rim relief · the full source rim fits within the configured geometric limit.`;
+      : `Reaches ${reached.toFixed(1)} of ${requested.toFixed(1)} mm of rim relief · the whole rim is within what the coil can climb at this reach.`;
   }
 
   // The Interior section's own truth: which conditional block is showing, the

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import pairwise
 from pathlib import Path
 
@@ -39,11 +39,29 @@ from clayline.weave_restore_codec import (
     encode_restore_capsule,
     pattern_header_projection,
 )
-from clayline.weave_zblend import ZBlendPath, build_zblend_path
+from clayline.weave_zblend import ZBlendPath, build_zblend_path, top_follow_rounding_slope
+
+# The one final-check finding a Weave job can repair instead of refusing: the
+# shaped rim climbs a shade too steeply once its coordinates are written down.
+TOP_FOLLOW_CLIMB_CODE = "weave_top_follow_slope"
+# Strictly bounded, like the Draw settle path's selective recovery: at most
+# three rebuilds, each giving back twice the climb of the one before.
+MAX_CLIMB_REPAIR_REBUILDS = 3
 
 
 class WeaveWorkflowError(ValueError):
     """Raised when a Weave result cannot be built or reused safely."""
+
+
+class TopFollowClimbRefused(WeaveWorkflowError):
+    """The final check still refuses this job over its written climb.
+
+    Raised only once the bounded repair in :func:`finalize_weave_result` has
+    either exhausted its rebuild budget or found nothing to ease (no shaped
+    rim, or no recipe to replay). A caller that wants to offer a way out
+    (Layer 3: lower the reach a notch and rebuild) can catch this
+    specifically instead of parsing the message.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +86,54 @@ class WeaveEmission:
 
 
 @dataclass(frozen=True, slots=True)
+class WeaveRebuildRecipe:
+    """Exactly what :func:`prepare_weave_result` was given, kept for a rebuild.
+
+    Every value here is already resolved — the loaded pattern, the resolved
+    profile, and the job id the first build realized — so replaying it is a
+    pure function of the same inputs and reproduces the same bytes.  The
+    ``sliced`` form is the one handed in, before any range selection, because
+    that selection is part of what has to be replayed.
+    """
+
+    sliced: SlicedForm
+    pattern: Pattern
+    profile: Profile
+    profile_prime_mm: float | None
+    profile_end_early_mm: float | None
+    flow_multiplier: float
+    wet_density_g_cm3: float
+    prime_mm: float | None
+    end_early_mm: float | None
+    start_charge_e: float | None
+    reproducible: bool
+    job_id: str
+    layer_range: LayerRangeInput
+    top_follow_slope_headroom: float
+
+
+@dataclass(frozen=True, slots=True)
+class ClimbRepair:
+    """What the bounded climb repair did, for callers that must follow it.
+
+    ``prepared`` is the eased trace that was finalized, which is NOT the
+    object the caller handed to :func:`finalize_weave_result`.  Anything
+    showing the artist a preview has to switch to this one, or the picture on
+    screen stops being the file that downloads.
+    """
+
+    rebuilds: int
+    slope_headroom: float
+    prepared: PreparedWeaveResult
+
+    def __post_init__(self) -> None:
+        if self.rebuilds < 1 or self.rebuilds > MAX_CLIMB_REPAIR_REBUILDS:
+            raise WeaveWorkflowError("a climb repair records between one and three rebuilds")
+        if not math.isfinite(self.slope_headroom) or self.slope_headroom <= 0.0:
+            raise WeaveWorkflowError("a climb repair gives back a finite, positive climb")
+
+
+@dataclass(frozen=True, slots=True)
 class WeaveResult:
     """One frozen M11 result used by API, CLI, report, preview, and export."""
 
@@ -77,6 +143,10 @@ class WeaveResult:
     emission: WeaveEmission
     job_report: JobReport
     zblend_path: ZBlendPath | None = None
+    # Present only when the final check rejected the first build's climb and
+    # an eased rebuild was accepted in its place.  ``None`` on every job that
+    # passed the first time, which is every job that passes today.
+    climb_repair: ClimbRepair | None = None
 
     @property
     def warnings(self) -> tuple[Warning, ...]:
@@ -170,6 +240,9 @@ class PreparedWeaveResult:
     settings: EmissionSettings
     prepared: PreparedEmission
     zblend_path: ZBlendPath | None = None
+    # How this trace was built, so the final check can ask for one eased
+    # rebuild instead of refusing the job.  Never used on a job that passes.
+    rebuild: WeaveRebuildRecipe | None = None
 
     def __post_init__(self) -> None:
         if self.prepared.source_stream is not self.stream:
@@ -197,8 +270,14 @@ def prepare_weave_result(
     job_id: str | None = None,
     layer_range: LayerRangeInput = None,
     start_charge_e: float | None = None,
+    top_follow_slope_headroom: float = 0.0,
 ) -> PreparedWeaveResult:
-    """Build the exact immutable export trace without serializing artifacts."""
+    """Build the exact immutable export trace without serializing artifacts.
+
+    ``top_follow_slope_headroom`` is climb held back from the shaped rim. It is
+    zero unless :func:`finalize_weave_result` is rebuilding this trace after
+    its own final check read the written path as a shade too steep.
+    """
 
     resolved_pattern = load_pattern(pattern)
     selected = select_layer_range(sliced, layer_range)
@@ -215,7 +294,13 @@ def prepare_weave_result(
     resolved_profile = _resolve_profile(selected, profile)
     profile_defaults = emission_defaults(resolved_profile)
     zblend_path = (
-        build_zblend_path(selected, resolved_pattern) if resolved_pattern.settings.z_blend else None
+        build_zblend_path(
+            selected,
+            resolved_pattern,
+            top_follow_slope_headroom=top_follow_slope_headroom,
+        )
+        if resolved_pattern.settings.z_blend
+        else None
     )
     stream = build_form_move_stream(
         selected,
@@ -236,7 +321,11 @@ def prepare_weave_result(
         if first_deposited_layer > 0:
             selected = trim_leading_unprinted_layers(selected, first_deposited_layer)
             zblend_path = (
-                build_zblend_path(selected, resolved_pattern)
+                build_zblend_path(
+                    selected,
+                    resolved_pattern,
+                    top_follow_slope_headroom=top_follow_slope_headroom,
+                )
                 if resolved_pattern.settings.z_blend
                 else None
             )
@@ -432,6 +521,51 @@ def prepare_weave_result(
         settings=settings,
         prepared=prepared,
         zblend_path=zblend_path,
+        rebuild=WeaveRebuildRecipe(
+            # The form as handed in, not ``selected``: the range selection and
+            # the leading-layer trim are part of what a rebuild has to redo.
+            sliced=sliced,
+            pattern=resolved_pattern,
+            profile=resolved_profile,
+            profile_prime_mm=profile_prime_mm,
+            profile_end_early_mm=profile_end_early_mm,
+            flow_multiplier=flow_multiplier,
+            wet_density_g_cm3=wet_density_g_cm3,
+            prime_mm=prime_mm,
+            end_early_mm=end_early_mm,
+            start_charge_e=start_charge_e,
+            reproducible=reproducible,
+            # The realized id, never the ``None`` that would mint a fresh one
+            # and move the header bytes on a rebuild.
+            job_id=stream.job_id,
+            layer_range=layer_range,
+            top_follow_slope_headroom=top_follow_slope_headroom,
+        ),
+    )
+
+
+def _rebuild_prepared_weave_result(
+    recipe: WeaveRebuildRecipe,
+    *,
+    top_follow_slope_headroom: float,
+) -> PreparedWeaveResult:
+    """Replay one recipe with the rim relief eased by a measured climb."""
+
+    return prepare_weave_result(
+        recipe.sliced,
+        recipe.pattern,
+        profile=recipe.profile,
+        profile_prime_mm=recipe.profile_prime_mm,
+        profile_end_early_mm=recipe.profile_end_early_mm,
+        flow_multiplier=recipe.flow_multiplier,
+        wet_density_g_cm3=recipe.wet_density_g_cm3,
+        prime_mm=recipe.prime_mm,
+        end_early_mm=recipe.end_early_mm,
+        start_charge_e=recipe.start_charge_e,
+        reproducible=recipe.reproducible,
+        job_id=recipe.job_id,
+        layer_range=recipe.layer_range,
+        top_follow_slope_headroom=top_follow_slope_headroom,
     )
 
 
@@ -478,8 +612,75 @@ def _first_deposited_stream_layer(
     return None
 
 
+def _climb_repair_base_headroom(prepared_result: PreparedWeaveResult) -> float | None:
+    """Climb this form must give back per rebuild, or ``None`` if it cannot.
+
+    A form with no shaped rim has no relief to ease, and a trace with no
+    recipe cannot be rebuilt at all; both refuse exactly as before.
+    """
+
+    path = prepared_result.zblend_path
+    if prepared_result.rebuild is None or path is None or path.top_follow is None:
+        return None
+    base = top_follow_rounding_slope(
+        path,
+        layer_height=prepared_result.sliced.layer_height,
+        bead_width=prepared_result.sliced.bead_width,
+        slope_multiplier=prepared_result.pattern.settings.top_follow_slope_multiplier,
+    )
+    return base if math.isfinite(base) and base > 0.0 else None
+
+
 def finalize_weave_result(prepared_result: PreparedWeaveResult) -> WeaveResult:
-    """Finalize one prepared Weave trace through the audited artifact back half."""
+    """Finalize one prepared Weave trace through the audited artifact back half.
+
+    When the final check's only complaint is that the written shaped rim climbs
+    a shade too steeply, the relief is eased and the trace rebuilt rather than
+    the job refused — at most ``MAX_CLIMB_REPAIR_REBUILDS`` times, each rebuild
+    giving back twice the climb of the one before.  The climb given back starts
+    from the rounding this very path pays (:func:`top_follow_rounding_slope`),
+    which is also the whole size of the disagreement being repaired, so one
+    rebuild settles it in practice.  A job that passes never enters this path
+    and costs nothing.
+    """
+
+    attempt = prepared_result
+    base_headroom: float | None = None
+    rebuilds = 0
+    while True:
+        try:
+            finalized = _finalize_once(attempt)
+        except _ClimbRejected as rejection:
+            if base_headroom is None:
+                base_headroom = _climb_repair_base_headroom(attempt)
+            if base_headroom is None or rebuilds >= MAX_CLIMB_REPAIR_REBUILDS:
+                raise TopFollowClimbRefused(str(rejection)) from rejection
+            rebuilds += 1
+            assert attempt.rebuild is not None
+            attempt = _rebuild_prepared_weave_result(
+                attempt.rebuild,
+                top_follow_slope_headroom=base_headroom * 2.0**rebuilds,
+            )
+            continue
+        if rebuilds == 0:
+            return finalized
+        assert attempt.rebuild is not None
+        return replace(
+            finalized,
+            climb_repair=ClimbRepair(
+                rebuilds=rebuilds,
+                slope_headroom=attempt.rebuild.top_follow_slope_headroom,
+                prepared=attempt,
+            ),
+        )
+
+
+class _ClimbRejected(WeaveWorkflowError):
+    """The final check refused this attempt, and only over its written climb."""
+
+
+def _finalize_once(prepared_result: PreparedWeaveResult) -> WeaveResult:
+    """Finalize one attempt; raise :class:`_ClimbRejected` when only climb refused it."""
 
     stream = prepared_result.stream
     profile = prepared_result.profile
@@ -491,7 +692,10 @@ def finalize_weave_result(prepared_result: PreparedWeaveResult) -> WeaveResult:
     lint_report = lint_gcode(gcode, profile)
     if not lint_report.ok:
         details = "; ".join(f"{item.code}: {item.message}" for item in lint_report.errors[:5])
-        raise WeaveWorkflowError(f"Weave emission failed lint: {details}")
+        message = f"Weave emission failed lint: {details}"
+        if all(item.code == TOP_FOLLOW_CLIMB_CODE for item in lint_report.errors):
+            raise _ClimbRejected(message)
+        raise WeaveWorkflowError(message)
     emission = WeaveEmission(stream, settings, prepared, gcode, lint_report, motion_line_numbers)
     report = build_report(
         stream,
@@ -582,8 +786,13 @@ def _first_layer_flow_factor() -> float:
 
 
 __all__ = [
+    "MAX_CLIMB_REPAIR_REBUILDS",
+    "TOP_FOLLOW_CLIMB_CODE",
+    "ClimbRepair",
     "PreparedWeaveResult",
+    "TopFollowClimbRefused",
     "WeaveEmission",
+    "WeaveRebuildRecipe",
     "WeaveResult",
     "WeaveWorkflowError",
     "build_weave_result",
