@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="152.4mm" height="152.4mm" viewBox="0 0 152.4 152.4">
+  <title>clayline tile: rosette</title>
+  <g fill="none" stroke="rgb(139, 125, 116)" stroke-width="4.572" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="27.432" cy="27.432" r="26.670"/>
+    <circle cx="33.359" cy="33.359" r="18.288"/>
+    <circle cx="27.432" cy="124.968" r="26.670"/>
+    <circle cx="33.359" cy="119.041" r="18.288"/>
+    <circle cx="124.968" cy="27.432" r="26.670"/>
+    <circle cx="119.041" cy="33.359" r="18.288"/>
+    <circle cx="124.968" cy="124.968" r="26.670"/>
+    <circle cx="119.041" cy="119.041" r="18.288"/>
+    <circle cx="76.200" cy="76.200" r="28.194"/>
+    <circle cx="76.200" cy="86.106" r="18.288"/>
+    <circle cx="76.200" cy="27.432" r="23.241"/>
+    <circle cx="76.200" cy="124.968" r="23.241"/>
+    <circle cx="27.432" cy="76.200" r="23.241"/>
+    <circle cx="124.968" cy="76.200" r="23.241"/>
+    <circle cx="51.816" cy="51.816" r="9.525"/>
+    <circle cx="51.816" cy="100.584" r="9.525"/>
+    <circle cx="100.584" cy="51.816" r="9.525"/>
+    <circle cx="100.584" cy="100.584" r="9.525"/>
+  </g>
+</svg>

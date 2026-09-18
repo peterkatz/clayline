@@ -43,7 +43,7 @@ def test_two_modes_are_mounted_with_exact_public_language_and_unique_ids() -> No
     assert 'id="tilesWorkspace" data-mode-panel="tiles"' in HTML
     assert 'id="weaveWorkspace" data-mode-panel="weave" hidden' in HTML
     assert '<script src="/static/weave.js" defer></script>' in HTML
-    assert "<title>Clayline — Ceramic Printing Toolpath Studio</title>" in HTML
+    assert "<title>Clayline Toolpath Studio</title>" in HTML
     assert "<small>Ceramic Printing Toolpath Studio</small>" in HTML
     assert create_app().title == "Clayline — Ceramic Printing Toolpath Studio (local)"
 

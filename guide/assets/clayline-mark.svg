@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Clayline">
+  <g fill="none" stroke="#a94f32" stroke-width="7.77">
+    <circle cx="32.35" cy="32.35" r="26.47"/>
+    <circle cx="67.65" cy="32.35" r="26.47"/>
+    <circle cx="32.35" cy="67.65" r="26.47"/>
+    <circle cx="67.65" cy="67.65" r="26.47"/>
+  </g>
+</svg>

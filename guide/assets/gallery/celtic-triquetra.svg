@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="152.4mm" height="152.4mm" viewBox="0 0 152.4 152.4">
+  <title>clayline tile: celtic-triquetra — Celtic triquetra — three woven vesica lobes</title>
+  <g fill="none" stroke="rgb(139, 125, 116)" stroke-width="4.572" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="76.200" cy="76.200" r="45.720"/>
+    <circle cx="76.200" cy="45.720" r="35.052"/>
+    <circle cx="102.596" cy="91.440" r="35.052"/>
+    <circle cx="49.804" cy="91.440" r="35.052"/>
+    <circle cx="76.200" cy="76.200" r="9.144"/>
+  </g>
+</svg>

@@ -1,9 +1,6 @@
-site_name: Clayline
+site_name: Clayline Toolpath Studio
 site_url: https://peterkatz.github.io/clayline/
 site_description: Drawings and 3D models in. Print files for clay paste printers out.
-repo_url: https://github.com/peterkatz/clayline
-repo_name: peterkatz/clayline
-edit_uri: ""
 docs_dir: guide
 site_dir: build/site
 copyright: Copyright &copy; 2026 Pete Katz. Released under the GNU General Public License, version 3.
@@ -11,18 +8,21 @@ copyright: Copyright &copy; 2026 Pete Katz. Released under the GNU General Publi
 theme:
   name: material
   language: en
+  logo: assets/clayline-mark.svg
+  favicon: assets/clayline-icon.svg
+  font: false
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: deep orange
-      accent: deep orange
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: deep orange
-      accent: deep orange
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
@@ -32,6 +32,9 @@ theme:
     - navigation.top
     - content.code.copy
     - search.suggest
+
+extra_css:
+  - stylesheets/clayline.css
 
 nav:
   - Home: index.md

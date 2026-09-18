@@ -1,0 +1,555 @@
+/* The guide wears the studio's own paper, ink and clay. */
+
+:root {
+  --cl-paper: #f4f0e8;
+  --cl-paper-deep: #e9e2d6;
+  --cl-canvas: #fbfaf6;
+  --cl-ink: #1f211f;
+  --cl-muted: #5e605b;
+  --cl-line: #d6d0c4;
+  --cl-line-strong: #a9a397;
+  --cl-clay: #a94f32;
+  --cl-clay-dark: #7f3421;
+  --cl-clay-soft: #ead2c5;
+  --cl-sage: #50685b;
+  --cl-sage-soft: #dce5dd;
+
+  --cl-serif: Georgia, "Times New Roman", Times, serif;
+
+  /* No web fonts: the system stacks the studio itself uses. */
+  --md-text-font: Inter, ui-sans-serif;
+  --md-code-font: ui-monospace, SFMono-Regular, Menlo;
+
+  /* Surfaces the page paints on, per scheme. */
+  --cl-surface: var(--cl-canvas);
+  --cl-surface-deep: var(--cl-paper);
+  --cl-hairline: var(--cl-line);
+  --cl-hairline-strong: var(--cl-line-strong);
+  --cl-clay-ink: var(--cl-clay-dark);
+}
+
+/* ---------- Light ---------- */
+
+[data-md-color-scheme="default"] {
+  --md-default-fg-color: #1f211f;
+  --md-default-fg-color--light: #5e605b;
+  --md-default-fg-color--lighter: #a9a397;
+  --md-default-fg-color--lightest: #d6d0c4;
+  /* The page sits on the studio's parchment, the same surface as its rails;
+     cards and frames lift off it on the studio's canvas. */
+  --md-default-bg-color: #f4f0e8;
+  --md-default-bg-color--light: rgba(244, 240, 232, 0.72);
+  --md-default-bg-color--lighter: rgba(244, 240, 232, 0.45);
+  --md-default-bg-color--lightest: rgba(244, 240, 232, 0.2);
+
+  --md-typeset-color: #1f211f;
+  --md-typeset-a-color: #7f3421;
+  --md-typeset-mark-color: #ead2c5;
+  --md-typeset-del-color: rgba(169, 79, 50, 0.16);
+  --md-typeset-ins-color: rgba(80, 104, 91, 0.18);
+  --md-typeset-kbd-color: #efeade;
+  --md-typeset-kbd-accent-color: #fbfaf6;
+  --md-typeset-kbd-border-color: #c9c2b4;
+  --md-typeset-table-color: #cfc8ba;
+
+  --md-code-fg-color: #34362f;
+  --md-code-bg-color: #efeade;
+  --md-code-hl-comment-color: #7b7d76;
+  --md-code-hl-string-color: #50685b;
+  --md-code-hl-number-color: #a94f32;
+  --md-code-hl-keyword-color: #7f3421;
+
+  --md-footer-bg-color: #1f211f;
+  --md-footer-bg-color--dark: #14150f;
+  --md-footer-fg-color: #f4f0e8;
+  --md-footer-fg-color--light: rgba(244, 240, 232, 0.72);
+  --md-footer-fg-color--lighter: rgba(244, 240, 232, 0.45);
+
+  --md-shadow-z1: 0 1px 2px rgba(31, 33, 31, 0.06);
+  --md-shadow-z2: 0 2px 10px rgba(31, 33, 31, 0.1);
+  --md-shadow-z3: 0 6px 24px rgba(31, 33, 31, 0.14);
+
+  --cl-surface: #fbfaf6;
+  --cl-surface-deep: #e9e2d6;
+  --cl-hairline: #d6d0c4;
+  --cl-hairline-strong: #a9a397;
+  --cl-clay-ink: #7f3421;
+}
+
+/* ---------- Dark ---------- */
+
+[data-md-color-scheme="slate"] {
+  --md-hue: 30deg;
+
+  --md-default-fg-color: #ece7dd;
+  --md-default-fg-color--light: #b2ada2;
+  --md-default-fg-color--lighter: #757067;
+  --md-default-fg-color--lightest: #403c36;
+  --md-default-bg-color: #1a1917;
+  --md-default-bg-color--light: rgba(26, 25, 23, 0.72);
+  --md-default-bg-color--lighter: rgba(26, 25, 23, 0.45);
+  --md-default-bg-color--lightest: rgba(26, 25, 23, 0.2);
+
+  --md-typeset-color: #ece7dd;
+  --md-typeset-a-color: #e08a63;
+  --md-typeset-mark-color: rgba(169, 79, 50, 0.4);
+  --md-typeset-del-color: rgba(169, 79, 50, 0.28);
+  --md-typeset-ins-color: rgba(120, 156, 136, 0.26);
+  --md-typeset-kbd-color: #2c2a26;
+  --md-typeset-kbd-accent-color: #3a3731;
+  --md-typeset-kbd-border-color: #14130f;
+  --md-typeset-table-color: #47433c;
+
+  --md-code-fg-color: #ddd8ce;
+  --md-code-bg-color: #262420;
+  --md-code-hl-comment-color: #928c82;
+  --md-code-hl-string-color: #9cbaa8;
+  --md-code-hl-number-color: #e08a63;
+  --md-code-hl-keyword-color: #e0a07f;
+
+  --md-footer-bg-color: #131210;
+  --md-footer-bg-color--dark: #0d0c0b;
+  --md-footer-fg-color: #f4f0e8;
+  --md-footer-fg-color--light: rgba(244, 240, 232, 0.72);
+  --md-footer-fg-color--lighter: rgba(244, 240, 232, 0.45);
+
+  --md-shadow-z1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --md-shadow-z2: 0 2px 10px rgba(0, 0, 0, 0.5);
+  --md-shadow-z3: 0 6px 24px rgba(0, 0, 0, 0.6);
+
+  --cl-surface: #232120;
+  --cl-surface-deep: #2b2825;
+  --cl-hairline: #3a3732;
+  --cl-hairline-strong: #55514a;
+  --cl-clay-ink: #e08a63;
+}
+
+/* ---------- The header band: parchment, ink and the clay mark ---------- */
+
+[data-md-color-primary="custom"] {
+  --md-primary-fg-color: #f4f0e8;
+  --md-primary-fg-color--light: #fbfaf6;
+  --md-primary-fg-color--dark: #e9e2d6;
+  --md-primary-bg-color: #1f211f;
+  --md-primary-bg-color--light: rgba(31, 33, 31, 0.62);
+}
+
+[data-md-color-scheme="slate"][data-md-color-primary="custom"] {
+  --md-primary-fg-color: #efe9dd;
+  --md-primary-fg-color--dark: #e2dacb;
+}
+
+[data-md-color-accent="custom"] {
+  --md-accent-fg-color: #a94f32;
+  --md-accent-fg-color--transparent: rgba(169, 79, 50, 0.1);
+  --md-accent-bg-color: #fbfaf6;
+  --md-accent-bg-color--light: rgba(251, 250, 246, 0.75);
+}
+
+[data-md-color-scheme="slate"][data-md-color-accent="custom"] {
+  --md-accent-fg-color: #e08a63;
+  --md-accent-fg-color--transparent: rgba(224, 138, 99, 0.14);
+  --md-accent-bg-color: #1a1917;
+  --md-accent-bg-color--light: rgba(26, 25, 23, 0.75);
+}
+
+.md-header {
+  border-bottom: 1px solid var(--cl-line-strong);
+  box-shadow: none;
+}
+
+.md-header[data-md-state="shadow"],
+.md-header--shadow {
+  box-shadow: 0 2px 10px rgba(31, 33, 31, 0.1);
+}
+
+.md-header__title {
+  font-family: var(--cl-serif);
+  font-weight: 520;
+  letter-spacing: -0.025em;
+}
+
+.md-header__topic:first-child {
+  font-weight: 520;
+}
+
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  height: 1.4rem;
+  width: 1.4rem;
+}
+
+/* Material's header search field assumes a dark band; ours is parchment. */
+.md-search__form {
+  background-color: rgba(31, 33, 31, 0.07);
+}
+
+.md-search__form:hover {
+  background-color: rgba(31, 33, 31, 0.12);
+}
+
+.md-search__input::placeholder {
+  color: rgba(31, 33, 31, 0.55);
+}
+
+[data-md-toggle="search"]:checked ~ .md-header .md-search__form {
+  background-color: var(--md-default-bg-color);
+}
+
+[data-md-toggle="search"]:checked ~ .md-header .md-search__input::placeholder {
+  color: var(--md-default-fg-color--light);
+}
+
+/* ---------- Type ---------- */
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4,
+.md-typeset h5,
+.md-typeset h6 {
+  font-family: var(--cl-serif);
+  font-weight: 520;
+  letter-spacing: -0.025em;
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset h1 {
+  font-size: 1.85rem;
+  line-height: 1.18;
+  margin-bottom: 0.6rem;
+}
+
+.md-typeset h2 {
+  font-size: 1.35rem;
+  line-height: 1.25;
+  margin-top: 2rem;
+}
+
+.md-typeset h3 {
+  font-size: 1.05rem;
+}
+
+.md-typeset h5,
+.md-typeset h6 {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.md-typeset {
+  font-size: 0.74rem;
+  line-height: 1.68;
+}
+
+.md-typeset a {
+  text-underline-offset: 0.18em;
+}
+
+.md-typeset a:hover,
+.md-typeset a:focus {
+  color: var(--md-accent-fg-color);
+}
+
+.md-nav__title {
+  font-family: var(--cl-serif);
+  font-weight: 520;
+  letter-spacing: -0.02em;
+}
+
+.md-nav__item--active > .md-nav__link {
+  font-weight: 600;
+}
+
+/* ---------- Buttons: the primary one is clay ---------- */
+
+.md-typeset .md-button {
+  border-radius: 0.2rem;
+  border-color: var(--cl-hairline-strong);
+  color: var(--cl-clay-ink);
+  font-weight: 600;
+  padding: 0.62em 1.7em;
+}
+
+.md-typeset .md-button--primary {
+  background-color: var(--cl-clay);
+  border-color: var(--cl-clay);
+  color: #f7f3ec;
+}
+
+.md-typeset .md-button:focus,
+.md-typeset .md-button:hover {
+  background-color: var(--cl-clay-dark);
+  border-color: var(--cl-clay-dark);
+  color: #f7f3ec;
+}
+
+/* ---------- Admonitions in the studio's colours ---------- */
+
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: 0.2rem;
+  border-left-width: 0.16rem;
+  box-shadow: none;
+  background-color: var(--cl-surface);
+  font-size: 0.7rem;
+}
+
+.md-typeset .admonition.warning,
+.md-typeset details.warning {
+  border-color: var(--cl-clay);
+}
+
+.md-typeset .warning > .admonition-title,
+.md-typeset .warning > summary {
+  background-color: rgba(169, 79, 50, 0.1);
+}
+
+.md-typeset .warning > .admonition-title::before,
+.md-typeset .warning > summary::before {
+  background-color: var(--cl-clay);
+}
+
+.md-typeset .admonition-title,
+.md-typeset summary {
+  font-family: var(--cl-serif);
+  font-weight: 520;
+  letter-spacing: -0.015em;
+  font-size: 0.78rem;
+}
+
+/* ---------- Figures and pictures ---------- */
+
+.md-typeset img {
+  border-radius: 0.2rem;
+}
+
+.md-typeset figure {
+  margin: 1.4rem auto;
+}
+
+.md-typeset figcaption {
+  color: var(--md-default-fg-color--light);
+  font-size: 0.64rem;
+  max-width: none;
+  margin: 0.45rem 0 0;
+}
+
+/* ---------- Home page ---------- */
+
+.cl-hero {
+  text-align: center;
+  padding: 1.6rem 0 1.9rem;
+  border-bottom: 1px solid var(--cl-hairline);
+}
+
+.md-typeset .cl-hero-mark {
+  width: 4.6rem;
+  height: auto;
+  border-radius: 0;
+  margin: 0 auto 0.75rem;
+  display: block;
+}
+
+.md-typeset .cl-hero h1 {
+  font-size: 2.15rem;
+  line-height: 1.08;
+  margin: 0 0 0.5rem;
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset .cl-promise br {
+  display: block;
+}
+
+.md-typeset .cl-promise {
+  font-size: 0.95rem;
+  line-height: 1.4;
+  font-weight: 400;
+  color: var(--md-default-fg-color--light);
+  max-width: 22em;
+  margin: 0 auto 1.2rem;
+}
+
+.md-typeset .cl-hero-actions p {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem 1.1rem;
+  margin: 0 0 0.9rem;
+}
+
+.md-typeset .cl-hero-actions .md-button {
+  margin: 0;
+}
+
+.md-typeset .cl-hero > p:first-child {
+  margin: 0;
+}
+
+.md-typeset a.cl-quiet {
+  color: var(--md-default-fg-color--light);
+  font-weight: 600;
+  border-bottom: 1px solid var(--cl-hairline-strong);
+  padding-bottom: 0.1em;
+}
+
+.md-typeset a.cl-quiet:hover {
+  color: var(--md-accent-fg-color);
+  border-bottom-color: var(--md-accent-fg-color);
+}
+
+.md-typeset .cl-fineprint {
+  font-size: 0.62rem;
+  color: var(--md-default-fg-color--light);
+  margin: 0;
+}
+
+/* The demo, framed like a piece on a shelf. */
+.md-typeset figure.cl-demo {
+  margin: 1.8rem 0 0;
+  padding: 0.4rem;
+  background-color: var(--cl-surface-deep);
+  border: 1px solid var(--cl-hairline);
+  border-radius: 0.3rem;
+}
+
+.md-typeset figure.cl-demo img {
+  display: block;
+  width: 100%;
+  border-radius: 0.16rem;
+  border: 1px solid var(--cl-hairline);
+}
+
+.md-typeset figure.cl-demo p {
+  margin: 0;
+}
+
+.md-typeset figure.cl-demo figcaption {
+  padding: 0 0.2rem;
+  margin-bottom: 0.1rem;
+}
+
+/* Two ways to work. */
+.cl-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 1rem 0 1.4rem;
+}
+
+.md-typeset .cl-card {
+  background-color: var(--cl-surface);
+  border: 1px solid var(--cl-hairline);
+  border-radius: 0.3rem;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The card pictures come in as whole-studio screenshots; show the clay. */
+.md-typeset .cl-card > p:first-child {
+  margin: 0;
+  display: block;
+  overflow: hidden;
+  aspect-ratio: 16 / 10;
+  background-color: var(--cl-surface-deep);
+  border-bottom: 1px solid var(--cl-hairline);
+}
+
+.md-typeset .cl-card > p:first-child img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 0;
+  transform-origin: 50% 50%;
+}
+
+.md-typeset .cl-card--draw > p:first-child img {
+  transform: scale(2.8) translate(0, -4%);
+}
+
+.md-typeset .cl-card--weave > p:first-child img {
+  transform: scale(2.8) translate(0, -2%);
+}
+
+.md-typeset .cl-card h3 {
+  margin: 0.8rem 0.9rem 0.3rem;
+  font-size: 1rem;
+}
+
+.md-typeset .cl-card p {
+  margin: 0 0.9rem 0.9rem;
+  font-size: 0.7rem;
+  color: var(--md-default-fg-color--light);
+}
+
+/* A shelf of example drawings. */
+.cl-gallery {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0.9rem 0 0.5rem;
+}
+
+.md-typeset .cl-gallery > p {
+  margin: 0;
+  min-width: 0;
+}
+
+.md-typeset .cl-gallery img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  padding: 0.22rem;
+  background-color: #fbfaf6;
+  border: 1px solid var(--cl-hairline);
+  border-radius: 0.2rem;
+}
+
+/* ---------- Phone ---------- */
+
+@media screen and (max-width: 44.9375em) {
+  .cl-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .cl-gallery {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .md-typeset .cl-hero h1 {
+    font-size: 1.6rem;
+  }
+
+  .md-typeset .cl-promise {
+    font-size: 0.82rem;
+    max-width: none;
+  }
+
+  .md-typeset .cl-hero-mark {
+    width: 3.6rem;
+  }
+
+  .cl-hero {
+    padding: 0.8rem 0 1.4rem;
+  }
+
+  /* The full name fits on a phone without an ellipsis. */
+  .md-header__title {
+    font-size: 0.78rem;
+  }
+
+  .md-typeset h1 {
+    font-size: 1.5rem;
+  }
+
+  .md-typeset h2 {
+    font-size: 1.15rem;
+  }
+}
+
+/* No permalink pilcrow in the hero. */
+.md-typeset .cl-hero .headerlink {
+  display: none;
+}
