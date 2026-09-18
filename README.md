@@ -13,7 +13,7 @@ into your Applications folder. The **[user guide](https://peterkatz.github.io/cl
 covers installing, both modes, printing, calibration, and troubleshooting in
 plain language; this README is the developer's view.
 
-This is release `0.2.0`; [CHANGELOG.md](CHANGELOG.md) lists what each release
+This is release `0.2.1`; [CHANGELOG.md](CHANGELOG.md) lists what each release
 changed. The software pipeline has substantial local verification, but Clayline
 has not yet passed its required full-tile physical print. It is not on PyPI.
 

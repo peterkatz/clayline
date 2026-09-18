@@ -2,6 +2,22 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.2.1 — 2026-09-18
+
+### Fixed
+- **Z-blend no longer refuses a job over its own arithmetic.** On some forms
+  one tiny step of the rim path came out a hair over the climb limit purely
+  because of how the numbers were written into the print file, and the whole
+  job was refused with a message nobody could act on. The path now stays inside
+  the limit once written; if the final check still complains, Clayline eases the
+  rim slightly and rebuilds; and if even that fails, the message says what to
+  change and offers a button that does it.
+- **A reopened Weave project keeps its last layer the way you set it.** A job
+  saved with a last layer you typed came back as Clayline's own automatic stop,
+  which changed what the rim did once Z-blend was on.
+- **Two warnings about the rim now say what happened to the clay** instead of
+  using internal names.
+
 ## 0.2.0 — 2026-09-17
 
 ### New
