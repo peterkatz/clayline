@@ -14,8 +14,9 @@ covers installing, both modes, printing, calibration, and troubleshooting in
 plain language; this README is the developer's view.
 
 This is release `0.3.0`; [CHANGELOG.md](CHANGELOG.md) lists what each release
-changed. The software pipeline has substantial local verification, but Clayline
-has not yet passed its required full-tile physical print. It is not on PyPI.
+changed. The software pipeline has substantial local verification, and full
+tiles and Weave forms have been printed and accepted on the PotterBot. It is not
+on PyPI.
 
 > **G-code moves real machinery; use it at your own risk.** A lint PASS means the
 > file is internally consistent with the selected profile. It does not prove that
@@ -43,13 +44,13 @@ planner, and the shipped app is built from this tree.
 | M4 — layers, drape mode, pages | Software PASS; flow `1.0` and overlap `0.20` remain provisional | M4 status |
 | M5 — preview and report | Software PASS | M5 status |
 | M6 — CLI, Python facade, local UI | Software PASS, independently clean-clone verified | M6 status |
-| M7 — kiss-hop and release | Software PASS; physical product exit remains open | M7 status |
+| M7 — kiss-hop and release | Software PASS; physical product exit accepted | M7 status |
 | M8 — native macOS app | PASS; Developer ID-signed and notarized 0.1.0 download published | M8 status |
 | M9 — artist-first UX overhaul (scrubber, honest defaults, fuse/lap re-cut, pages sidebar, live bed fit) | PASS — verified live in-app + two independent clean-env verifiers | M9 status |
 | M10–M14 — Weave mesh mode | Software PASS; synthetic, real TwistTumbler/GH parity, clean-snapshot, and installed-app gates verified | M13 status · M14 status · completion audit; current nozzle confirmation remains pending |
 | M16 — Weave print range + reprint-this | Software PASS; real tumbler broken-rim trim restores Z-blend and reproducible restore is byte-identical | M16 status |
-| Tiles product exit | NOT RUN | A full PotterBot XL tile must be printed in drape mode and accepted |
-| Weave product exit (M15) | NOT RUN | M15 status and provisional print sheet; Pete must print and accept a Weave tumbler |
+| Tiles product exit | ACCEPTED | Full PotterBot XL tiles printed and accepted by Pete, 2026-09-18 |
+| Weave product exit (M15) | ACCEPTED | Weave forms printed and accepted by Pete, 2026-09-18; M15 status and print sheet |
 
 ## Reading your toolpath
 
@@ -439,8 +440,8 @@ the declared dependencies are already cached.
 
 ## Known limitations
 
-- Physical flow, overlap, ring closure, kiss fusion, and full-tile drape acceptance
-  are pending. The product exit gate is not green.
+- Flow, overlap and ring-closure numbers are starting points; tune them from
+  your own prints. Full-tile drape and Weave prints have been made and accepted.
 - M7 software acceptance is green after Pete approved the 152.4 mm photo
   tracings as the canonical fixtures. At the unchanged default 1 mm fuse
   tolerance, rings-grid is **1 stroke / 0 travels**, rosette is **1 / 0**, and
