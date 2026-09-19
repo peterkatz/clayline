@@ -218,6 +218,16 @@
     return control?.dataset.unit === "mm" ? window.claylineUnits.toMm(value) : value;
   }
 
+  // Optional boxes whose blank state means "follow the printer profile".
+  // Number("") is 0, so numberValue() would turn an empty box into a real 0,
+  // and a 0 start charge skips the barrel charge: the print starts dry.
+  function optionalNumberValue(id) {
+    const raw = String($(id)?.value ?? "").trim();
+    if (raw === "") return null;
+    const value = Number(raw);
+    return Number.isFinite(value) && value >= 0 ? value : null;
+  }
+
   function checkedValue(name, fallback = "chained") {
     return $(`input[name='${name}']:checked`)?.value || fallback;
   }
@@ -587,7 +597,7 @@
       pattern: patternObject(),
       profile: $("#weaveProfile").value,
       flow_multiplier: numberValue("#weaveFlow", 1),
-      start_charge_e: numberValue("#weaveStartCharge", null),
+      start_charge_e: optionalNumberValue("#weaveStartCharge"),
       // The print file carries no timestamp, ever: the same job writes the
       // same file, so two prints of one form can be compared byte for byte.
       reproducible: true,
@@ -783,7 +793,7 @@
       },
       export: {
         flow_multiplier: numberValue("#weaveFlow", 1),
-        start_charge_e: numberValue("#weaveStartCharge", null),
+        start_charge_e: optionalNumberValue("#weaveStartCharge"),
         // Both are constants now that the studio names the file after the
         // form and never stamps it with the hour. They stay in the envelope
         // so every project file and stored snapshot still opens unchanged.

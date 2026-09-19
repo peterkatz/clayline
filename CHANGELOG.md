@@ -2,6 +2,16 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.3.1 — 2026-09-19
+
+### Fixed
+- **A Weave print no longer starts dry.** With the **Start charge (E)** box
+  left blank, the print file skipped the printer's barrel charge, so the first
+  layer or two went down with nothing coming out of the nozzle. Blank now means
+  what the box says: the printer's own charge. Draw in Clay was not affected.
+- **A Weave project saved by 0.3.0 with that box blank comes back showing 0.**
+  Clear the box, or type the charge you want, before you save the print file.
+
 ## 0.3.0 — 2026-09-18
 
 ### New
