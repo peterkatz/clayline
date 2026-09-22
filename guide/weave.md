@@ -14,15 +14,17 @@ The pattern is applied live: once the form is sliced, every change to the wave r
 
 ### 01 Model
 
-Drop a mesh file on the box: STL, OBJ, PLY, or 3MF, in millimetres. The same box also takes a saved project, a saved pattern, or a print file Clayline saved earlier — a print file gives you its pattern and nothing else, so the form on the table, its size, the layers and the range stay exactly as they are.
+Drop a mesh file on the box: STL, OBJ, PLY, or 3MF, in millimetres. The same box also takes a saved project, a saved pattern, or a print file; what each brings back is below.
 
 **Up axis** says which way is up in the file. Rhino exports are usually Y up. If the sliced rings look like a tangled contour map instead of stacked walls, flip this.
 
 The size line shows the model's footprint and height. Type a height there to scale the whole form to an exact size. Under it, Clayline reports the triangle count, whether the form is watertight or has holes, and the unit it assumed. A model that comes in suspiciously small gets a note asking whether it was modelled in inches, with a one-click fix that scales it by 25.4.
 
-Click the form in the preview for handles: drag the form to slide it, a ring to rotate it, the corner cube to resize it. Empty space orbits the view. The exact numbers live under **Advanced**: a size multiplier, nudges along X and Y, rotations about each axis, and **Reset placement** to go back to the file's own position.
+Click the form in the preview for handles: drag the form to slide it, a ring to rotate it, the corner cube to resize it. Empty space orbits the view. The exact numbers live under **Advanced**: a size multiplier, **Width ×**, **Depth ×** and **Height ×** to stretch the placed form along the bed's own axes on top of that, nudges along X and Y, rotations about each axis, and **Reset placement** to go back to the file's own position. A stretch is real geometry: the sliced rings stretch with it, and the size line shows the result. With a height typed on the size line, though, that height wins: Height × then resizes the footprint needed to reach it rather than the height itself.
 
 ![A tumbler loaded and placed, before slicing](images/weave-loaded.png)
+
+The Model box also takes print files. One Clayline saved brings back every setting of that job and names the model it was sliced from; load that model and the job is rebuilt. One from another slicer is read move by move: each layer's outer wall becomes a ring, the rings become a surface, and that surface loads like any model, at the file's own layer height and with the pattern set plain, because the file's texture is already in it. Fill lines, extra perimeters and a skirt are left out and counted, and the Model section says what was assumed.
 
 ### 02 Slice
 
@@ -44,15 +46,17 @@ After slicing, the counts of layers, rings, and samples appear here.
 
 **Bottom layers** adds spirals of clay under the wall to make a base. Zero adds nothing. **Fill overlap** sets how tightly dense fill packs, wherever dense fill is laid: a bottom, a solid interior, or the skins of an infill. **Alternate bottom direction** crosses the passes of the base so it bonds stronger.
 
+### 04 Vase mode
+
 **Vase mode · spiral rise** makes the wall climb in one continuous coil with no layer seams at all. With it on, two more choices appear. **Z-blend** lets the coil follow an uneven rim, climbing from flat lower rows to one continuous top path; any part of the rim the clay can't reach stays visible as a faded ghost and is never printed. **Finish with a level rim** ends the print on one flat revolution with the wave fading out, instead of following the top.
 
-### 04 Interior
+### 05 Interior
 
 What the nozzle lays inside the wall. **Hollow** prints the wall and nothing inside it. **Solid** fills the inside, either **Crossing**, where the middle layers alternate direction and bond stronger, or **Spiral**, which rings every layer and reads as thrown pottery. **Infill** lays a lighter structure: **Lines** run straight across at one angle, turning on the wall so each rib welds to it, or **Concentric** follows the wall inward in nested rings. Rib spacing is counted in coil widths so it survives a nozzle change. **Base layers** and **Cap layers** add dense skins at the bottom and top, and **Ramp layers** tighten the ribs just under the cap so the roof has something to land on.
 
 Vase mode has to be off before Solid or Infill can be chosen, and choosing one clears settings a filled interior can't print beside; each says so where it lives.
 
-### 05 Weave pattern
+### 06 Weave pattern
 
 The wave editor shows one wrapped cycle of the pattern with a ghost cycle on each side, so the seam shows before clay does. Drag a point to reshape the wave, click empty space to add a point, right-click a point to remove it.
 
@@ -75,9 +79,9 @@ The wave editor shows one wrapped cycle of the pattern with a ghost cycle on eac
 
 **Pattern preview** shows the pot's wall unrolled flat like a fabric swatch, several layers side by side, so you can see ribs lining up, a weave alternating, or the pattern drifting where the wave count changes on a taper. **Expand** opens it large.
 
-Three buttons sit under the preview. **Save pattern** writes the wave, the extrusion curve and every setting in this section to a small file. **Load pattern** brings one back onto whatever form is on the table — the form, its size and its settings stay as they are. **Restore pattern from G-code…** pulls the pattern out of a print file Clayline saved: only the pattern comes across, not the model, the size, the layers, or the range. Dropping a print file on the box under 01 Model does the same thing.
+Three buttons sit under the preview. **Save pattern** writes the wave, the extrusion curve and every setting in this section to a small file. **Load pattern** brings one back onto whatever form is on the table — the form, its size and its settings stay as they are. **Restore pattern from G-code…** pulls the pattern out of a print file Clayline saved: only the pattern comes across, not the model, the size, the layers, or the range. Dropping a print file Clayline saved on the box under 01 Model instead brings back every setting of that job and names the model it was sliced from.
 
-### 06 Printer
+### 07 Printer
 
 Your printer, **Clay flow**, and **Start charge**, exactly as in Draw in Clay. See [Printing](printing.md).
 
@@ -89,7 +93,7 @@ Cuts the model into rings. After that, the pattern controls play against the rea
 
 **Save project…** under 01 Model, or **File → Save Project…** (Command-S), writes the whole job to one file: the model itself and every setting, from the nozzle and the layer height to the wave you shaped. **Open project…**, or **File → Open Project…** (Shift-Command-O), brings it all back as you left it, on this Mac or another. If the form was sliced when you saved it, Clayline slices it again, so the pattern is live in front of you straight away. The box under 01 Model takes a saved project too.
 
-A print file is not a project. It holds the finished path for the machine, not the model you would go on shaping, so keep the project beside it. **File → Export G-code…** (Shift-Command-E) is the one that writes a print file.
+A print file is not a project. It holds the finished path for the machine, not the model you would go on shaping, so keep the project beside it. **File → Export G-code…** (Shift-Command-E) is the one that writes a print file. **File → Export Mesh…** writes the sliced coils themselves as an OBJ, the same object the slice window shows, for a render or another program; it is not a print file either.
 
 ## Reading the result
 

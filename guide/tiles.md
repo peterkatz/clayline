@@ -111,7 +111,7 @@ Builds the toolpath, checks it, and draws both previews. Nothing prints from her
 
 **Save project…** under 01 Design, or **File → Save Project…** (Command-S), writes the whole job to one file: every pass, the drawing inside it, any photo you placed to trace, and every setting from the nozzle to the hand ripple in the line. **Open project…**, or **File → Open Project…** (Shift-Command-O), brings it all back as you left it, on this Mac or another. If the job was sliced when you saved it, Clayline slices it again so the preview is waiting for you. You can also drop a saved project on the box under 01 Design.
 
-A print file is not a project. It holds the finished path for the machine, not the drawings you would go on editing, so keep the project beside it. **File → Export G-code…** (Shift-Command-E) is the one that writes a print file.
+A print file is not a project. It holds the finished path for the machine, not the drawings you would go on editing, so keep the project beside it. **File → Export G-code…** (Shift-Command-E) is the one that writes a print file. **File → Export Mesh…** writes the sliced coils themselves as an OBJ, the same object the slice window shows, for a render or another program; it is not a print file either.
 
 ## Reading the result
 

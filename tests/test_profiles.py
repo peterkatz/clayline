@@ -110,7 +110,8 @@ def test_potterbot_profile_matches_successful_reference_exactly() -> None:
         "G28 ;Home",
         "G1 X207.5 Y202.5 Z20 F10000 ;Move X and Y to center, Z to 20mm high",
         "G92 E0",
-        "G1 E3000 F40000 ; Prime Extruder (v1.4.0: back to the reference charge; E100 started every job dry)",
+        "G1 E3000 F40000 ; Prime Extruder (v1.4.0: back to the reference charge; "
+        "E100 started every job dry)",
         "G92 E0",
         "G92 E0",
         "G92 E0",

@@ -63,6 +63,10 @@ class WeaveRestoreRecipe:
     end_early_mm: float
     reproducible: bool
     job_id: str | None
+    # Bed-axis stretch (width, depth, height); older headers have none, so 1.0.
+    scale_x: float = 1.0
+    scale_y: float = 1.0
+    scale_z: float = 1.0
     # Barrel charge before the first line; None keeps the profile's start block.
     start_charge_e: float | None = None
 
@@ -127,6 +131,16 @@ def parse_weave_gcode(value: str | bytes | Path) -> WeaveRestoreRecipe:
         # absent means unrotated on that axis.
         rotation_x_deg=_number(facts, "parameter.source_rotation_x_deg", default=0.0),
         rotation_y_deg=_number(facts, "parameter.source_rotation_y_deg", default=0.0),
+        # Bed-axis stretch (2026-09-21); absent means unstretched on that axis.
+        scale_x=_number(
+            facts, "parameter.source_scale_x", default=1.0, minimum=0.0, exclusive=True
+        ),
+        scale_y=_number(
+            facts, "parameter.source_scale_y", default=1.0, minimum=0.0, exclusive=True
+        ),
+        scale_z=_number(
+            facts, "parameter.source_scale_z", default=1.0, minimum=0.0, exclusive=True
+        ),
         layer_height=_number(facts, "layer_height_mm", minimum=0.0, exclusive=True),
         first_layer_height=_number(
             facts, "parameter.first_layer_height_mm", minimum=0.0, exclusive=True
@@ -173,6 +187,9 @@ def _recipe_from_decoded(decoded: DecodedWeaveRestore) -> WeaveRestoreRecipe:
         rotation_deg=decoded.rotation_deg,
         rotation_x_deg=decoded.rotation_x_deg,
         rotation_y_deg=decoded.rotation_y_deg,
+        scale_x=decoded.scale_x,
+        scale_y=decoded.scale_y,
+        scale_z=decoded.scale_z,
         layer_height=decoded.layer_height,
         first_layer_height=decoded.first_layer_height,
         sample_spacing=decoded.sample_spacing,
@@ -258,6 +275,16 @@ def _validate_capsule_projection(
             "G-code readable header 'parameter.source_rotation_y_deg' disagrees with its "
             "restore capsule"
         )
+    # Bed-axis stretch: present only when not 1.0, mirroring the capsule.
+    for key, factor in (
+        ("parameter.source_scale_x", decoded.scale_x),
+        ("parameter.source_scale_y", decoded.scale_y),
+        ("parameter.source_scale_z", decoded.scale_z),
+    ):
+        if factor != 1.0:
+            expected[key] = str(factor)
+        elif key in facts:
+            raise ValueError(f"G-code readable header {key!r} disagrees with its restore capsule")
     for key, wanted in expected.items():
         actual = facts.get(key)
         if actual != project_header_value(key, wanted):
@@ -329,6 +356,9 @@ def restore_weave_result(
         rotation_deg=recipe.rotation_deg,
         rotation_x_deg=recipe.rotation_x_deg,
         rotation_y_deg=recipe.rotation_y_deg,
+        scale_x=recipe.scale_x,
+        scale_y=recipe.scale_y,
+        scale_z=recipe.scale_z,
         profile=recipe.profile,
     )
     sliced = mesh.slice(

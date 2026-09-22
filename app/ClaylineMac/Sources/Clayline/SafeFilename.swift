@@ -7,11 +7,12 @@ enum SafeFilename {
     /// historical G-code default — but a saved pattern must never come back
     /// as `name.json.gcode` (Pete 2026-07-20: the picker greyed out the
     /// app's own file), and neither must a saved project.
-    static let knownExtensions = ["gcode", "json", "clayline"]
+    static let knownExtensions = ["gcode", "json", "clayline", "obj"]
     private static let emptyStemNames = [
         "gcode": fallback,
         "json": "clayline-pattern.json",
         "clayline": "clayline-project.clayline",
+        "obj": "clayline-coils.obj",
     ]
 
     static func download(_ proposed: String?) -> String {

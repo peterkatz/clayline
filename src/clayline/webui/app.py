@@ -459,6 +459,7 @@ def create_app(
                 result_id = weave_sessions.put(token, "result", result)
                 response_payload["result_id"] = result_id
                 response_payload["gcode_url"] = f"/api/weave/result/{result_id}/gcode"
+                response_payload["obj_url"] = f"/api/weave/result/{result_id}/obj"
             response = _json_response(Response, response_payload)
             _set_weave_cookie(response, token, created=created)
             return response
@@ -489,6 +490,7 @@ def create_app(
             result_id = weave_sessions.put(token, "result", result)
             response_payload["result_id"] = result_id
             response_payload["gcode_url"] = f"/api/weave/result/{result_id}/gcode"
+            response_payload["obj_url"] = f"/api/weave/result/{result_id}/obj"
             response = _json_response(Response, response_payload)
             _set_weave_cookie(response, token, created=created)
             return response
@@ -585,6 +587,49 @@ def create_app(
             return response
         except WeaveSessionError as exc:
             raise weave_session_http_error(exc) from exc
+
+    @app.get("/api/weave/result/{result_id}/obj", include_in_schema=False)
+    async def weave_obj(result_id: str, request: Request) -> Any:
+        # Export Mesh: the printed coils of the same settled result the
+        # G-code route serves, never the decimated drag preview.
+        from clayline.mesh_export import coil_obj_text
+        from clayline.webui.weave_session import WeaveSessionError
+
+        try:
+            cache, token, created = _resolve_weave_session(request)
+            result = cache.get("result", result_id)
+            stem = _artifact_stem(None, source_name=result.sliced.source_path.name)
+            text = await asyncio.to_thread(coil_obj_text, result.emission.prepared, name=stem)
+            response = Response(
+                content=text.encode("utf-8"),
+                media_type="model/obj; charset=utf-8",
+                headers={"Content-Disposition": f'attachment; filename="{stem}-coils.obj"'},
+            )
+            _set_weave_cookie(response, token, created=created)
+            return response
+        except WeaveSessionError as exc:
+            raise weave_session_http_error(exc) from exc
+
+    @app.get("/api/slice/obj", include_in_schema=False)
+    async def draw_obj(request: Request) -> Any:
+        # Draw in Clay keeps no result cache, so the coils come from the one
+        # slice most recently answered, named by its print file's hash.
+        from clayline.mesh_export import coil_obj_text
+
+        sha = request.query_params.get("sha", "")
+        held = _DRAW_COIL_CACHE.get(sha)
+        if held is None:
+            raise HTTPException(
+                status_code=404,
+                detail="That slice is no longer held. Slice again, then export the mesh.",
+            )
+        prepared, stem = held
+        text = await asyncio.to_thread(coil_obj_text, prepared, name=stem)
+        return Response(
+            content=text.encode("utf-8"),
+            media_type="model/obj; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{stem}-coils.obj"'},
+        )
 
     @app.delete("/api/weave/session", include_in_schema=False)
     async def clear_weave_session(request: Request) -> Any:
@@ -870,6 +915,9 @@ def _slice_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
     if settle_outcome is not None:
         response["settle_outcome"] = settle_outcome
+    _DRAW_COIL_CACHE.clear()
+    _DRAW_COIL_CACHE[response["gcode_sha256"]] = (result.emission.prepared, artifact_stem)
+    response["obj_url"] = f"/api/slice/obj?sha={response['gcode_sha256']}"
     if result.emission.thread_protection_audit is not None:
         response["thread_protection_audit"] = result.emission.thread_protection_audit.to_dict()
     return response
@@ -1126,9 +1174,34 @@ def _load_weave_mesh_payload(
     rotation_deg = _query_float(query, "rotation_deg", _defaults.DEFAULT_WEAVE_ROTATION_DEG)
     rotation_x_deg = _query_float(query, "rotation_x_deg", _defaults.DEFAULT_WEAVE_ROTATION_X_DEG)
     rotation_y_deg = _query_float(query, "rotation_y_deg", _defaults.DEFAULT_WEAVE_ROTATION_Y_DEG)
+    scale_x = _query_float(query, "scale_x", _defaults.DEFAULT_WEAVE_SCALE_X)
+    scale_y = _query_float(query, "scale_y", _defaults.DEFAULT_WEAVE_SCALE_Y)
+    scale_z = _query_float(query, "scale_z", _defaults.DEFAULT_WEAVE_SCALE_Z)
+    for label, factor in (("scale_x", scale_x), ("scale_y", scale_y), ("scale_z", scale_z)):
+        if factor <= 0:
+            raise UiRequestError(f"{label} must be positive")
+    rebuilt = None
     with tempfile.TemporaryDirectory(prefix="clayline-weave-upload-") as directory:
         path = Path(directory) / filename
-        path.write_bytes(body)
+        if filename.lower().endswith(".gcode"):
+            # Another slicer's print file: rebuild the form from its
+            # clay-laying moves and load that shell like any OBJ.
+            from clayline.gcode_import import GcodeImportError, is_clayline_gcode, rebuild_form
+
+            text = body.decode("utf-8", errors="replace")
+            if is_clayline_gcode(text):
+                raise UiRequestError(
+                    "This print file was written by Clayline. Drop it on the Model box to "
+                    "bring its settings back, then load the model it names."
+                )
+            try:
+                rebuilt = rebuild_form(text)
+            except GcodeImportError as exc:
+                raise UiRequestError(f"The print file could not be rebuilt: {exc}.") from exc
+            path = Path(directory) / f"{Path(filename).stem}-rebuilt.obj"
+            path.write_text(rebuilt.obj_text, encoding="utf-8")
+        else:
+            path.write_bytes(body)
         mesh = load_mesh(
             path,
             up=up,
@@ -1138,10 +1211,13 @@ def _load_weave_mesh_payload(
             rotation_deg=rotation_deg,
             rotation_x_deg=rotation_x_deg,
             rotation_y_deg=rotation_y_deg,
+            scale_x=scale_x,
+            scale_y=scale_y,
+            scale_z=scale_z,
             profile=profile,
         )
     honesty = mesh.honesty
-    return mesh, {
+    payload: dict[str, Any] = {
         "schema": "clayline.ui.weave-mesh.v1",
         "filename": filename,
         "source_sha256": mesh.source_sha256,
@@ -1160,6 +1236,19 @@ def _load_weave_mesh_payload(
         "warnings": [_form_warning_payload(warning) for warning in mesh.warnings],
         "preview": compact_mesh_payload(mesh),
     }
+    if rebuilt is not None:
+        payload["rebuilt_from_print_file"] = {
+            "source_name": filename,
+            "layer_height_mm": rebuilt.layer_height_mm,
+            "first_layer_z_mm": rebuilt.first_layer_z_mm,
+            "layer_count": rebuilt.layer_count,
+            "ring_count": rebuilt.ring_count,
+            "bead_width_mm": rebuilt.bead_width_mm,
+            "continuous_rise": rebuilt.continuous_rise,
+            "used_e_axis": rebuilt.used_e_axis,
+            "notes": list(rebuilt.notes),
+        }
+    return mesh, payload
 
 
 def _slice_weave_mesh_payload(
@@ -1621,6 +1710,9 @@ def _weave_settings_snapshot(prepared_result: Any, payload: dict[str, Any]) -> d
             "rotation_deg": sliced.rotation_deg,
             "rotation_x_deg": sliced.rotation_x_deg,
             "rotation_y_deg": sliced.rotation_y_deg,
+            "scale_x": sliced.scale_x,
+            "scale_y": sliced.scale_y,
+            "scale_z": sliced.scale_z,
         },
         "slice": {
             "profile": prepared_result.profile.name,
@@ -1805,11 +1897,16 @@ def _restore_weave_gcode_payload(
             "rotation_deg": recipe.rotation_deg,
             "rotation_x_deg": recipe.rotation_x_deg,
             "rotation_y_deg": recipe.rotation_y_deg,
+            "scale_x": recipe.scale_x,
+            "scale_y": recipe.scale_y,
+            "scale_z": recipe.scale_z,
             "layer_height": recipe.layer_height,
             "first_layer_height": recipe.first_layer_height,
             "sample_spacing": recipe.sample_spacing,
             "bead_width": recipe.bead_width,
             "flow_multiplier": recipe.flow_multiplier,
+            # Blank in the file means the printer's own charge, and comes back blank.
+            "start_charge_e": recipe.start_charge_e,
             "wet_density_g_cm3": recipe.wet_density_g_cm3,
             "prime_mm": recipe.prime_mm,
             "end_early_mm": recipe.end_early_mm,
@@ -1886,8 +1983,8 @@ def _mesh_basename(value: Any) -> str:
         raise UiRequestError("mesh filename must be a plain basename")
     if len(value.encode("utf-8")) > _MAX_SOURCE_NAME_BYTES:
         raise UiRequestError("mesh filename is too long")
-    if Path(value).suffix.lower() not in _MESH_SUFFIXES:
-        raise UiRequestError("mesh filename must end in .obj, .stl, .ply, or .3mf")
+    if Path(value).suffix.lower() not in _MESH_SUFFIXES and not value.lower().endswith(".gcode"):
+        raise UiRequestError("mesh filename must end in .obj, .stl, .ply, .3mf, or .gcode")
     return value
 
 
@@ -1976,6 +2073,12 @@ def _set_weave_cookie(response: Any, token: str, *, created: bool) -> None:
 
 def _milliseconds(seconds: float) -> float:
     return round(seconds * 1000.0, 3)
+
+
+# The last Draw slice, keyed by its print file's SHA-256, for Export Mesh.
+# One entry: a new slice replaces it, and a restart forgets it (the route
+# then says to slice again).
+_DRAW_COIL_CACHE: dict[str, tuple[Any, str]] = {}
 
 
 def _slice_response_bytes(payload: dict[str, Any]) -> bytes:

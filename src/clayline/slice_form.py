@@ -239,6 +239,9 @@ def slice_mesh_form(
         rotation_deg=form.rotation_deg,
         rotation_x_deg=form.rotation_x_deg,
         rotation_y_deg=form.rotation_y_deg,
+        scale_x=form.scale_x,
+        scale_y=form.scale_y,
+        scale_z=form.scale_z,
         source_layer_start=0,
         source_layer_total=len(layers),
     )

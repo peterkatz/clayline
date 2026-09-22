@@ -9,7 +9,7 @@ You're printing on something above the bare bed. Set **Work surface above Z zero
 The barrel wasn't under pressure when the first line started. Leave **Start charge** blank so the printer's full charge runs, and check that the previous print didn't leave the barrel empty. The PotterBot's normal charge is 3000; a much smaller number starts most jobs dry.
 
 **The blob at the start is huge, or it's in the way.**
-That's the start charge. Type a smaller number under 06 Printer, or 0 to skip it when the barrel is already primed from the last print.
+That's the start charge. Type a smaller number under Printer, the last section of the workflow, or 0 to skip it when the barrel is already primed from the last print.
 
 **The thread tears or breaks between strokes.**
 Every travel is a stop and restart. Fewer travels is the real fix: draw joins as real overlaps, keep gaps under about 0.8 mm, and turn on **Draw touching rings in one stroke**. **Protect the thread** under 04 Path adds clay where the thread starts, ends, and bridges. Check **Travels** in Before you print after each change.
@@ -49,13 +49,13 @@ The model's up axis is wrong. Change **Up axis** under 01 Model. Rhino exports a
 Clayline assumes one unit in the file is one millimetre. Type the real height on the size line under 01 Model and the whole form scales with it.
 
 **Solid or Infill can't be chosen.**
-Vase mode is on. Turn it off under 03 Bottom first.
+Vase mode is on. Turn it off under 04 Vase mode first.
 
 **Download G-code is greyed out.**
 It unlocks after the final path passes every check, and so does **File → Export G-code…**. Look at Warnings in Before you print for what's holding it.
 
 **I want the pattern off a print file I made last month.**
-Use **Restore pattern from G-code…** under 05 Weave pattern, or drop the print file on the box under 01 Model. Only the pattern comes back: the form on the table, its size, the layers and the range stay exactly as you have them. To rebuild a whole job, open the project you saved beside the print file.
+Use **Restore pattern from G-code…** under 06 Weave pattern: only the pattern comes back, and the form on the table, its size, the layers and the range stay exactly as you have them. Drop the print file on the box under 01 Model instead and every setting of that job comes back, placement, layers, range, pattern and printer; it then names the model it was sliced from, and loading that model rebuilds the job. A project you saved beside the print file still opens as one piece.
 
 ## The app
 

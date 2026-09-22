@@ -226,6 +226,9 @@ def load_mesh(
     rotation_deg: float = _defaults.DEFAULT_WEAVE_ROTATION_DEG,
     rotation_x_deg: float = _defaults.DEFAULT_WEAVE_ROTATION_X_DEG,
     rotation_y_deg: float = _defaults.DEFAULT_WEAVE_ROTATION_Y_DEG,
+    scale_x: float = _defaults.DEFAULT_WEAVE_SCALE_X,
+    scale_y: float = _defaults.DEFAULT_WEAVE_SCALE_Y,
+    scale_z: float = _defaults.DEFAULT_WEAVE_SCALE_Z,
     profile: str | Path | Profile = _defaults.DEFAULT_WEAVE_PROFILE,
 ) -> MeshFormFacade:
     """Load and place an STL/OBJ/3MF/PLY mesh as a public Weave form."""
@@ -239,6 +242,9 @@ def load_mesh(
         rotation_deg=rotation_deg,
         rotation_x_deg=rotation_x_deg,
         rotation_y_deg=rotation_y_deg,
+        scale_x=scale_x,
+        scale_y=scale_y,
+        scale_z=scale_z,
         profile=profile,
     )
     return _as_mesh_form_facade(form)
@@ -372,6 +378,9 @@ def _as_mesh_form_facade(form: MeshForm) -> MeshFormFacade:
         rotation_deg=form.rotation_deg,
         rotation_x_deg=form.rotation_x_deg,
         rotation_y_deg=form.rotation_y_deg,
+        scale_x=form.scale_x,
+        scale_y=form.scale_y,
+        scale_z=form.scale_z,
         profile_name=form.profile_name,
         work_bounds=form.work_bounds,
         warnings=form.warnings,
@@ -403,6 +412,9 @@ def _as_sliced_form_facade(sliced: SlicedForm) -> SlicedFormFacade:
         rotation_deg=sliced.rotation_deg,
         rotation_x_deg=sliced.rotation_x_deg,
         rotation_y_deg=sliced.rotation_y_deg,
+        scale_x=sliced.scale_x,
+        scale_y=sliced.scale_y,
+        scale_z=sliced.scale_z,
         source_layer_start=sliced.source_layer_start,
         source_layer_total=sliced.source_layer_total,
     )

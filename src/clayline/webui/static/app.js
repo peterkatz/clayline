@@ -3297,6 +3297,28 @@ function renderSplitDownloads(splits) {
   });
 }
 
+// Export Mesh: the printed coils of the slice on screen, as an OBJ named
+// after the print file with "-coils".
+function downloadMesh() {
+  if (!state.result || state.isSlicing || !state.result.obj_url) return;
+  const stem = suggestedFilename().replace(/\.gcode$/i, "");
+  fetch(state.result.obj_url)
+    .then(async (response) => {
+      if (!response.ok) {
+        console.error("Export Mesh refused", response.status);
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${stem}-coils.obj`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    })
+    .catch((error) => console.error("Export Mesh failed", error));
+}
+
 function downloadGcode() {
   if (!state.result || state.isSlicing) return;
   const blob = new Blob([state.result.gcode], { type: "text/x.gcode;charset=utf-8" });
@@ -3942,6 +3964,10 @@ window.claylineDesktop = Object.freeze({
   exportGcode: () => {
     if (document.body.dataset.claylineMode === "weave") return window.claylineWeaveMode?.exportGcode();
     return downloadGcode();
+  },
+  exportMesh: () => {
+    if (document.body.dataset.claylineMode === "weave") return window.claylineWeaveMode?.exportMesh();
+    return downloadMesh();
   },
   svgSaveResult: (payload) => window.claylineDraw?.svgSaveResult(payload),
   importFiles: (files) => {

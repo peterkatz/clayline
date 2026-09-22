@@ -344,6 +344,10 @@ select:focus-visible,
   display: grid;
   gap: 10px;
   margin-top: 10px;
+  /* A hint that appears inside one field must not stretch the field
+     beside it: Bottom layers grew to 144 px whenever Fill overlap showed
+     its hint (2026-09-21). */
+  align-items: start;
 }
 
 .control-grid.two-up {

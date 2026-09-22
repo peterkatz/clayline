@@ -10,7 +10,7 @@ If it's wider or narrower than the nozzle opening, tell Clayline. In Draw in Cla
 
 ## 2. Clay flow
 
-If the coil looks starved (thin, broken, ragged edges) raise **Clay flow** under 06 Printer above 1.00. If it piles up and smears, lower it. Change it a little at a time, 0.05 or 0.10, and reprint the same test.
+If the coil looks starved (thin, broken, ragged edges) raise **Clay flow** under Printer, the last section of the workflow, above 1.00. If it piles up and smears, lower it. Change it a little at a time, 0.05 or 0.10, and reprint the same test.
 
 Clay flow only changes how much clay is pushed per millimetre of line. It doesn't change the spacing of lines, so a design that was drawn for a 5 mm coil stays laid out for a 5 mm coil.
 

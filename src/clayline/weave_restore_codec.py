@@ -58,7 +58,15 @@ _SOURCE_KEYS = {
 # only for their own non-identity rotation (see encode_restore_capsule):
 # keeping the unrotated capsule byte-identical to capsules encoded before
 # each key existed matters more than a fixed key set.
-_SOURCE_OPTIONAL_KEYS = {"rotation_deg_hex", "rotation_x_deg_hex", "rotation_y_deg_hex"}
+_SOURCE_OPTIONAL_KEYS = {
+    "rotation_deg_hex",
+    "rotation_x_deg_hex",
+    "rotation_y_deg_hex",
+    # Bed-axis stretch, each present only when not 1.0 (same contract).
+    "scale_x_hex",
+    "scale_y_hex",
+    "scale_z_hex",
+}
 _SLICE_KEYS = {
     "layer_height_mm_hex",
     "first_layer_height_mm_hex",
@@ -132,6 +140,10 @@ class DecodedWeaveRestore:
     end_early_mm: float
     reproducible: bool
     job_id: str | None
+    # Bed-axis stretch (width, depth, height); 1.0 = none, omitted in the capsule.
+    scale_x: float = 1.0
+    scale_y: float = 1.0
+    scale_z: float = 1.0
 
 
 def pattern_header_projection(pattern: Pattern) -> str:
@@ -281,6 +293,9 @@ def encode_restore_capsule(
     end_early_mm: float,
     reproducible: bool,
     job_id: str | None,
+    scale_x: float = 1.0,
+    scale_y: float = 1.0,
+    scale_z: float = 1.0,
 ) -> str:
     """Encode one strict canonical capsule ready for bounded framing."""
 
@@ -305,6 +320,15 @@ def encode_restore_capsule(
         source_payload["rotation_x_deg_hex"] = _hex(rotation_x_deg)
     if rotation_y_deg % 360.0 != 0.0:
         source_payload["rotation_y_deg_hex"] = _hex(rotation_y_deg)
+    # Bed-axis stretch: present only when not 1.0, so every capsule written
+    # before the factors existed stays byte-identical.
+    for key, factor in (
+        ("scale_x_hex", scale_x),
+        ("scale_y_hex", scale_y),
+        ("scale_z_hex", scale_z),
+    ):
+        if float(factor) != 1.0:
+            source_payload[key] = _hex(float(factor))
     payload = {
         "schema": _SCHEMA,
         "version": _VERSION,
@@ -425,6 +449,9 @@ def decode_restore_capsule(encoded: str) -> DecodedWeaveRestore:
             if "rotation_y_deg_hex" in source
             else 0.0
         ),
+        scale_x=_optional_stretch(source, "scale_x_hex", "source.scale_x"),
+        scale_y=_optional_stretch(source, "scale_y_hex", "source.scale_y"),
+        scale_z=_optional_stretch(source, "scale_z_hex", "source.scale_z"),
         layer_height=_exact_float(
             sliced["layer_height_mm_hex"], "slice.layer_height_mm", minimum=0.0, exclusive=True
         ),
@@ -489,10 +516,24 @@ def decode_restore_capsule(encoded: str) -> DecodedWeaveRestore:
         end_early_mm=decoded.end_early_mm,
         reproducible=decoded.reproducible,
         job_id=decoded.job_id,
+        scale_x=decoded.scale_x,
+        scale_y=decoded.scale_y,
+        scale_z=decoded.scale_z,
     )
     if canonical != encoded:
         raise ValueError("restore capsule is not in canonical form")
     return decoded
+
+
+def _optional_stretch(source: dict[str, Any], key: str, label: str) -> float:
+    """One bed-axis factor: absent means 1.0; present must not be 1.0 (canonical form)."""
+
+    if key not in source:
+        return 1.0
+    factor = _exact_float(source[key], label, minimum=0.0, exclusive=True)
+    if factor == 1.0:
+        raise ValueError(f"restore capsule {label} must be omitted at 1.0")
+    return factor
 
 
 def _profile_payload(profile: Profile, *, prime_mm: float, end_early_mm: float) -> dict[str, Any]:

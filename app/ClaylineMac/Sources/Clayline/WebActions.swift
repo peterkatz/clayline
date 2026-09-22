@@ -60,6 +60,11 @@ final class WebActions: ObservableObject {
         webView?.evaluateJavaScript("window.claylineDesktop && window.claylineDesktop.exportGcode()")
     }
 
+    func saveMesh() {
+        guard isReady else { return }
+        webView?.evaluateJavaScript("window.claylineDesktop && window.claylineDesktop.exportMesh()")
+    }
+
     func openProject() {
         guard isReady else { return }
         webView?.evaluateJavaScript("window.claylineDesktop && window.claylineDesktop.openProject()")

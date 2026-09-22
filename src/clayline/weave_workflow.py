@@ -366,6 +366,9 @@ def prepare_weave_result(
         rotation_deg=selected.rotation_deg,
         rotation_x_deg=selected.rotation_x_deg,
         rotation_y_deg=selected.rotation_y_deg,
+        scale_x=selected.scale_x,
+        scale_y=selected.scale_y,
+        scale_z=selected.scale_z,
         layer_height=selected.layer_height,
         first_layer_height=selected.first_layer_height,
         sample_spacing=selected.sample_spacing,
@@ -438,6 +441,15 @@ def prepare_weave_result(
         parameters["source_rotation_x_deg"] = selected.rotation_x_deg
     if selected.rotation_y_deg % 360.0 != 0.0:
         parameters["source_rotation_y_deg"] = selected.rotation_y_deg
+    # Bed-axis stretch, each omitted at 1.0 under the same contract, so an
+    # unstretched form's G-code stays byte-identical to output from before
+    # the factors existed.
+    if selected.scale_x != 1.0:
+        parameters["source_scale_x"] = selected.scale_x
+    if selected.scale_y != 1.0:
+        parameters["source_scale_y"] = selected.scale_y
+    if selected.scale_z != 1.0:
+        parameters["source_scale_z"] = selected.scale_z
     if resolved_pattern.settings.top_follow_slope_multiplier != 1.0:
         parameters["top_follow_slope_multiplier"] = (
             resolved_pattern.settings.top_follow_slope_multiplier

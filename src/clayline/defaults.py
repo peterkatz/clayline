@@ -66,6 +66,11 @@ DEFAULT_WEAVE_ROTATION_DEG = 0.0
 # rotation_deg (2026-07-20). Same identity default and the same fixed
 # R = Rz @ Ry @ Rx composed convention documented on load_mesh_form.
 DEFAULT_WEAVE_ROTATION_X_DEG = 0.0
+# Per-axis stretch in the bed's axes, applied after rotation and before
+# the uniform scale / fit height (2026-09-21).  1.0 is no stretch.
+DEFAULT_WEAVE_SCALE_X = 1.0
+DEFAULT_WEAVE_SCALE_Y = 1.0
+DEFAULT_WEAVE_SCALE_Z = 1.0
 DEFAULT_WEAVE_ROTATION_Y_DEG = 0.0
 # Pete 2026-07-18 (H2 close): there is no single tumbler nozzle — the nozzle
 # comes from the profile picker, and layer height follows it at 30 % until the
@@ -225,6 +230,9 @@ def ui_defaults() -> dict[str, Any]:
             "up_axis": DEFAULT_WEAVE_UP_AXIS,
             "scale": DEFAULT_WEAVE_SCALE,
             "fit_height": DEFAULT_WEAVE_FIT_HEIGHT_MM,
+            "scale_x": DEFAULT_WEAVE_SCALE_X,
+            "scale_y": DEFAULT_WEAVE_SCALE_Y,
+            "scale_z": DEFAULT_WEAVE_SCALE_Z,
             "offset_x": DEFAULT_WEAVE_XY_OFFSET_MM[0],
             "offset_y": DEFAULT_WEAVE_XY_OFFSET_MM[1],
             "rotation_deg": DEFAULT_WEAVE_ROTATION_DEG,

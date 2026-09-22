@@ -2,6 +2,48 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.4.0 — 2026-09-21
+
+### New
+- **Stretch a Weave form along one axis.** Under **01 Model › Advanced**,
+  **Width ×**, **Depth ×** and **Height ×** stretch the placed form along the
+  bed's own axes, on top of the Scale factor. If a height is typed on the
+  size line, that height wins outright and Height × resizes the footprint
+  needed to reach it instead. 1 leaves an axis alone. The sliced rings stretch with it, the size line shows the
+  stretched size, and a saved project or print file brings the stretch back.
+  **Reset placement** sets all three back to 1.
+- **Export the printed coils as a mesh.** **File → Export Mesh…** writes an
+  OBJ, a shape file for a render or another program, of exactly what the
+  slice window shows: every printed coil, bead width
+  wide and layer height tall, in millimetres on the bed. Travels, the bed and
+  the ghosted model are left out. It works in Draw in Clay and in Weave once
+  the job is sliced, and the file is named after the print file with
+  "-coils" so it never shadows the model it came from.
+- **A print file opens as a job.** Drop a print file Clayline saved on the
+  Model box, or open it with **File → Open…**, and every setting of that job
+  comes back: placement, layers, range, pattern and printer. It then names
+  the model it was sliced from; load that model and the job is rebuilt. The
+  **Restore pattern from G-code…** button still takes only the pattern.
+- **A print file from another slicer becomes a form.** Drop it on the Model
+  box and Clayline reads its clay-laying moves, keeps each layer's outer
+  wall, and rebuilds the form as a surface you can slice like any model.
+  Its layer height becomes yours, the pattern starts plain because the
+  file's own texture is already in the surface, and fill lines, extra
+  perimeters and a skirt are counted and left out. A spiral file is read
+  one revolution per layer. A file with no E axis is read as G1 lays clay
+  and G0 travels, and says so.
+
+### Changed
+- **Vase mode has its own section.** **Vase mode · spiral rise**, **Z-blend**
+  and **Finish with a level rim** moved out of **03 Bottom** into a new
+  **04 Vase mode**. Interior, Weave pattern and Printer are now 05, 06 and 07.
+  Nothing about how they print changed.
+
+### Fixed
+- **The Bottom layers box no longer balloons.** With Bottom layers at 0 or
+  blank, the Fill overlap note beside it stretched both boxes to three times
+  their height. The note still appears; the boxes keep their size.
+
 ## 0.3.1 — 2026-09-19
 
 ### Fixed

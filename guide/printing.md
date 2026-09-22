@@ -14,7 +14,7 @@ The blob and the lifted finish are part of every file. Plan a spot for the blob,
 
 ## The three first-layer settings
 
-All three live in the workflow. In Draw in Clay they're under 03 Layers and 06 Printer; in Weave under 02 Slice and 06 Printer.
+All three live in the workflow. In Draw in Clay they're under 03 Layers and 06 Printer; in Weave under 02 Slice and 07 Printer.
 
 **Work surface above Z zero.** If you print on a board, a canvas, or a slab rather than the bare bed, tell Clayline how high that surface sits above the printer's zero. Every height in the file is raised by this amount. Leave it at 0 for the bare bed. If your first layer scrapes or ploughs into the surface no matter what else you change, this is usually the setting that was missing.
 

@@ -197,6 +197,10 @@ class MeshForm:
     rotation_y_deg: float = 0.0
     warnings: tuple[FormWarning, ...] = ()
     source_sha256: str = ""
+    # Bed-axis stretch factors (width, depth, height), 1.0 = none.
+    scale_x: float = 1.0
+    scale_y: float = 1.0
+    scale_z: float = 1.0
 
     def __post_init__(self) -> None:
         vertices = _readonly_float_array(self.vertices, columns=3, label="vertices")
@@ -209,6 +213,9 @@ class MeshForm:
             raise ValueError("mesh vertices must be finite")
         if self.scale <= 0 or not np.isfinite(self.scale):
             raise ValueError("mesh scale must be finite and positive")
+        for label, factor in (("x", self.scale_x), ("y", self.scale_y), ("z", self.scale_z)):
+            if factor <= 0 or not np.isfinite(factor):
+                raise ValueError(f"mesh scale_{label} must be finite and positive")
         if not np.isfinite((self.rotation_deg, self.rotation_x_deg, self.rotation_y_deg)).all():
             raise ValueError("mesh rotation must be finite")
         _validate_optional_sha256(self.source_sha256, "mesh source")
@@ -364,6 +371,9 @@ class SlicedForm:
     rotation_y_deg: float = 0.0
     source_layer_start: int = 0
     source_layer_total: int | None = None
+    scale_x: float = 1.0
+    scale_y: float = 1.0
+    scale_z: float = 1.0
 
     def __post_init__(self) -> None:
         if not self.profile_name.strip():
@@ -377,6 +387,9 @@ class SlicedForm:
         _validate_optional_sha256(self.source_sha256, "sliced-form source")
         if self.scale <= 0 or not np.isfinite(self.scale):
             raise ValueError("sliced-form source scale must be finite and positive")
+        for label, factor in (("x", self.scale_x), ("y", self.scale_y), ("z", self.scale_z)):
+            if factor <= 0 or not np.isfinite(factor):
+                raise ValueError(f"sliced-form scale_{label} must be finite and positive")
         if not np.isfinite((self.placement_offset.x, self.placement_offset.y)).all():
             raise ValueError("sliced-form placement offset must be finite")
         if not np.isfinite((self.rotation_deg, self.rotation_x_deg, self.rotation_y_deg)).all():

@@ -20,6 +20,7 @@
     pattern: "/api/weave/pattern",
     restore: "/api/weave/restore",
     gcode: (resultId) => `/api/weave/result/${encodeURIComponent(resultId)}/gcode`,
+    obj: (resultId) => `/api/weave/result/${encodeURIComponent(resultId)}/obj`,
   });
   window.ClaylineWeaveEndpoints = API;
 
@@ -357,6 +358,9 @@
     setControlValue("#weaveUpAxis", root.up_axis ?? root.up);
     setControlValue("#weaveScale", root.scale === null ? 1 : root.scale);
     setControlValue("#weaveFitHeight", root.fit_height);
+    setControlValue("#weaveScaleX", root.scale_x ?? 1);
+    setControlValue("#weaveScaleY", root.scale_y ?? 1);
+    setControlValue("#weaveScaleZ", root.scale_z ?? 1);
     setControlValue("#weaveOffsetX", root.offset_x ?? 0);
     setControlValue("#weaveOffsetY", root.offset_y ?? 0);
     setControlValue("#weaveRotate", root.rotation_deg ?? 0);
@@ -439,6 +443,16 @@
     }
   }
 
+  // A stretch field left blank means "no stretch", so it reads as 1 rather
+  // than numberValue's blank-is-0; anything non-positive is also 1 so the
+  // engine never sees a factor it would refuse.
+  function stretchValue(selector) {
+    const raw = $(selector)?.value;
+    if (raw === undefined || raw === "") return 1;
+    const value = Number(raw);
+    return Number.isFinite(value) && value > 0 ? value : 1;
+  }
+
   function meshQuery() {
     const query = new URLSearchParams({
       filename: S.file?.name || "form.mesh",
@@ -449,6 +463,10 @@
     const scale = numberValue("#weaveScale", 1);
     if (fit !== null && fit > 0) query.set("fit_height", String(fit));
     else query.set("scale", String(scale));
+    // Bed-axis stretch (Width ×, Depth ×, Height ×): a blank field is 1, not 0.
+    query.set("scale_x", String(stretchValue("#weaveScaleX")));
+    query.set("scale_y", String(stretchValue("#weaveScaleY")));
+    query.set("scale_z", String(stretchValue("#weaveScaleZ")));
     query.set("offset_x", String(numberValue("#weaveOffsetX", 0)));
     query.set("offset_y", String(numberValue("#weaveOffsetY", 0)));
     query.set("rotation_deg", String(numberValue("#weaveRotate", 0)));
@@ -763,6 +781,9 @@
         up_axis: $("#weaveUpAxis").value,
         scale: $("#weaveScale").value === "" ? null : numberValue("#weaveScale", 1),
         fit_height: $("#weaveFitHeight").value === "" ? null : numberValue("#weaveFitHeight"),
+        scale_x: stretchValue("#weaveScaleX"),
+        scale_y: stretchValue("#weaveScaleY"),
+        scale_z: stretchValue("#weaveScaleZ"),
         offset_x: numberValue("#weaveOffsetX", 0),
         offset_y: numberValue("#weaveOffsetY", 0),
         rotation_deg: numberValue("#weaveRotate", 0),
@@ -842,6 +863,11 @@
     setControlValue("#weaveUpAxis", placement.up_axis);
     setControlValue("#weaveScale", placement.scale);
     setControlValue("#weaveFitHeight", placement.fit_height);
+    // Projects saved before Width/Depth/Height × existed carry no keys:
+    // they open unstretched rather than keeping whatever was typed last.
+    setControlValue("#weaveScaleX", placement.scale_x ?? 1);
+    setControlValue("#weaveScaleY", placement.scale_y ?? 1);
+    setControlValue("#weaveScaleZ", placement.scale_z ?? 1);
     setControlValue("#weaveOffsetX", placement.offset_x);
     setControlValue("#weaveOffsetY", placement.offset_y);
     setControlValue("#weaveRotate", placement.rotation_deg);
@@ -1405,7 +1431,8 @@
     const scale = numberValue("#weaveScale", 1);
     const fit = numberValue("#weaveFitHeight");
     const maxDimension = Math.max(width, depth, height);
-    const suspicious = maxDimension > 0 && maxDimension < 30 && scale === 1 && (fit === null || fit <= 0);
+    const unstretched = ["#weaveScaleX", "#weaveScaleY", "#weaveScaleZ"].every((selector) => stretchValue(selector) === 1);
+    const suspicious = maxDimension > 0 && maxDimension < 30 && scale === 1 && unstretched && (fit === null || fit <= 0);
     if (!suspicious) return;
     const units = window.claylineUnits;
     $("#weaveInchesBannerText").textContent =
@@ -1427,6 +1454,34 @@
     $("#weavePreviewTitle").textContent = `${S.mesh.filename || S.file?.name || "Mesh"}${dimsLabel} · mesh loaded`;
   }
 
+  // A form rebuilt from another slicer's print file: its layer height and
+  // first layer are the file's own, the pattern starts plain because the
+  // file's texture is already in the surface, and every guess is said.
+  function applyRebuiltPrintFile(rebuilt) {
+    if (!rebuilt) return null;
+    const layer = Number(rebuilt.layer_height_mm);
+    if (Number.isFinite(layer) && layer > 0) {
+      setControlValue("#weaveLayerHeight", layer);
+      setControlValue("#weaveFirstLayer", layer);
+      S.layerHeightFollows = false;
+      S.firstLayerFollows = false;
+    }
+    setControlValue("#weaveAmplitude", 0);
+    const facts = [
+      `rebuilt from ${rebuilt.source_name}`,
+      `${rebuilt.layer_count} layers at ${layer.toFixed(2)} mm`,
+      Number.isFinite(Number(rebuilt.bead_width_mm))
+        ? `its flow suggests ${Number(rebuilt.bead_width_mm).toFixed(1)} mm coils`
+        : null,
+      "pattern set plain",
+    ].filter(Boolean).join(" · ");
+    const notes = Array.isArray(rebuilt.notes) ? rebuilt.notes.join(" ") : "";
+    setWeaveProjectStatus(
+      `Rebuilt the form from ${rebuilt.source_name}: the wall at the coil centreline, ${rebuilt.layer_count} layers of ${layer.toFixed(2)} mm. The pattern starts plain because the file's own texture is in the surface. ${notes}`.trim(),
+    );
+    return facts;
+  }
+
   function renderMeshFacts(payload) {
     const honesty = payload.honesty || {};
     const bounds = payload.bounds_mm || {};
@@ -1437,6 +1492,7 @@
     maybeOfferInchesBanner(width, depth, height);
     $("#weaveFileSummary").textContent = payload.filename || S.file?.name || "Mesh loaded";
     $("#weaveModelFacts").textContent = [
+      applyRebuiltPrintFile(payload.rebuilt_from_print_file),
       `${Number(honesty.triangle_count || 0).toLocaleString()} triangles`,
       honesty.watertight ? "watertight" : `${honesty.hole_count ?? "?"} mesh holes`,
       honesty.assumed_units ? `assumed ${honesty.assumed_units}` : null,
@@ -3576,16 +3632,93 @@
   // and the printer are the artist's current job and are left exactly alone —
   // which is what makes this safe to reach for mid-job. (The command line's
   // `clayline weave --from` still rebuilds a whole job from the same file.)
-  async function restorePatternFromGcode(file) {
+  // A Clayline print file carries every setting of the job it came from,
+  // except the model itself (only its name and fingerprint). Turned into the
+  // same snapshot a project file holds, so one apply path serves both.
+  function settingsSnapshotFromRestore(payload) {
+    const current = weaveSettingsSnapshot();
+    const saved = payload.settings || {};
+    const range = payload.layer_range || {};
+    const total = Number.isInteger(range.total) ? range.total : null;
+    const from = Number.isInteger(range.from) ? range.from : 1;
+    const to = Number.isInteger(range.to) ? range.to : (total ?? 1);
+    const number = (value, fallback) => (Number.isFinite(value) ? value : fallback);
+    return {
+      schema: WEAVE_SETTINGS_SCHEMA,
+      pattern_json: payload.pattern?.canonical_json ?? current.pattern_json,
+      placement: {
+        up_axis: saved.up ?? current.placement.up_axis,
+        scale: number(saved.scale, 1),
+        fit_height: null,
+        scale_x: number(saved.scale_x, 1),
+        scale_y: number(saved.scale_y, 1),
+        scale_z: number(saved.scale_z, 1),
+        offset_x: Array.isArray(saved.offset) ? number(saved.offset[0], 0) : 0,
+        offset_y: Array.isArray(saved.offset) ? number(saved.offset[1], 0) : 0,
+        rotation_deg: number(saved.rotation_deg, 0),
+        rotation_x_deg: number(saved.rotation_x_deg, 0),
+        rotation_y_deg: number(saved.rotation_y_deg, 0),
+      },
+      slice: {
+        ...current.slice,
+        profile: saved.profile ?? current.slice.profile,
+        layer_height: number(saved.layer_height, current.slice.layer_height),
+        first_layer_height: number(saved.first_layer_height, current.slice.first_layer_height),
+        sample_spacing: number(saved.sample_spacing, current.slice.sample_spacing),
+        bead_width: number(saved.bead_width, current.slice.bead_width),
+        range_enabled: total !== null && !(from === 1 && to === total),
+        range_from: from,
+        range_to: to,
+        range_total: total,
+        range_auto_island_stop: false,
+        // The file's numbers are the job's numbers: none of them follow the
+        // nozzle any more.
+        first_layer_follows: false,
+        sample_spacing_auto: false,
+        layer_height_follows_nozzle: false,
+        bead_width_follows_nozzle: false,
+      },
+      export: {
+        ...current.export,
+        flow_multiplier: number(saved.flow_multiplier, current.export.flow_multiplier),
+        start_charge_e: Number.isFinite(saved.start_charge_e) ? saved.start_charge_e : null,
+      },
+    };
+  }
+
+  // `everything` is the Model box and File › Open…: every setting of the job
+  // comes back and the model is asked for by name. Without it, the Restore
+  // pattern button in the Weave pattern section takes only the pattern, as
+  // it says.
+  async function restoreFromGcode(file, { everything = false } = {}) {
     if (!file) return;
     $("#weaveRestoreStatus").textContent = `Reading ${file.name}…`;
     try {
-      const response = await fetch(API.restore, {
+      const meshId = S.mesh?.mesh_id || S.mesh?.id;
+      const query = everything && meshId ? `?mesh_id=${encodeURIComponent(meshId)}` : "";
+      const response = await fetch(`${API.restore}${query}`, {
         method: "POST",
         headers: { "Content-Type": "text/x-gcode" },
         body: file,
       });
       const payload = await jsonResponse(response);
+      if (everything) {
+        const snapshot = settingsSnapshotFromRestore(payload);
+        weaveStateWriter?.suspend(() => applyWeaveSettings(snapshot, { settle: true }));
+        const source = payload.source_mesh || {};
+        const modelName = source.filename || "the model";
+        let sentence;
+        if (payload.needs_mesh) {
+          sentence = `Every setting came back from ${file.name}. Load ${modelName}, the model it was sliced from, to rebuild the job.`;
+        } else if (source.match === false) {
+          sentence = `Every setting came back from ${file.name}, but the loaded model is not ${modelName}, the one it was sliced from.`;
+        } else {
+          sentence = `Every setting came back from ${file.name}, and the loaded model is the one it was sliced from.`;
+        }
+        $("#weaveRestoreStatus").textContent = sentence;
+        setWeaveProjectStatus(sentence);
+        return;
+      }
       applyCanonicalPattern(payload.pattern?.canonical_json, payload.pattern);
       armFlowColorForCurrentPattern();
       beginMetric();
@@ -3804,6 +3937,36 @@
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
+  // Export Mesh: the printed coils as an OBJ, named after the form with
+  // "-coils" so it never shadows the model it came from.
+  function normalizedWeaveMeshName(value) {
+    const raw = String(value || "").replaceAll("\\", "/").split("/").pop().trim();
+    const stem = raw.replace(/\.(gcode|obj|stl|ply|3mf|clayline)$/i, "");
+    const safe = stem
+      .replace(/[^A-Za-z0-9._-]+/g, "-")
+      .replace(/^[-._]+|[-._]+$/g, "")
+      .slice(0, 80) || "clayline-weave";
+    return `${safe}-coils.obj`;
+  }
+
+  async function downloadMesh() {
+    const result = S.exactResult;
+    if (!result?.exportable || !result.result_id) return;
+    const response = await fetch(result.obj_url || API.obj(result.result_id));
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      showWeaveState("error", errorMessage(payload, response), response.status);
+      return;
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = normalizedWeaveMeshName(result.filename || S.file?.name || "clayline-weave");
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
   const DESKTOP_MAX_MESH_BYTES = 1024 * 1024 * 1024;
 
   function desktopMeshFilename(value) {
@@ -3846,8 +4009,8 @@
 
   function setMeshFile(file) {
     if (!file) return;
-    if (!/\.(stl|obj|ply|3mf)$/i.test(file.name)) {
-      showWeaveState("error", "Choose one STL, OBJ, PLY, or 3MF mesh.", 400);
+    if (!/\.(stl|obj|ply|3mf|gcode)$/i.test(file.name)) {
+      showWeaveState("error", "Choose one STL, OBJ, PLY, or 3MF mesh, or a print file.", 400);
       return;
     }
     S.file = file;
@@ -3867,8 +4030,13 @@
       return;
     }
     if (file.name.toLowerCase().endsWith(".gcode")) {
-      // The Model box takes a print file too, and gives back only its pattern.
-      restorePatternFromGcode(file);
+      // A print file Clayline saved brings back every setting of its job and
+      // asks for its model by name. Any other slicer's print file is rebuilt
+      // into a form from its clay-laying moves and loaded like a mesh.
+      file.slice(0, 4096).text().then((head) => {
+        if (head.includes("CLAYLINE_HEADER_BEGIN")) restoreFromGcode(file, { everything: true });
+        else setMeshFile(file);
+      }).catch(() => setMeshFile(file));
       return;
     }
     if (file.name.toLowerCase().endsWith(".json")) {
@@ -3913,7 +4081,7 @@
       beginMetric(); scheduleMesh();
     });
     $("#weaveUpAxis").addEventListener("change", () => { beginMetric(); scheduleMesh(); });
-    ["#weaveOffsetX", "#weaveOffsetY", "#weaveRotate", "#weaveRotateX", "#weaveRotateY"].forEach((selector) => {
+    ["#weaveOffsetX", "#weaveOffsetY", "#weaveRotate", "#weaveRotateX", "#weaveRotateY", "#weaveScaleX", "#weaveScaleY", "#weaveScaleZ"].forEach((selector) => {
       $(selector).addEventListener("input", () => { beginMetric(); scheduleMesh(); });
     });
     $("#weaveResetPlacement")?.addEventListener("click", () => {
@@ -3922,8 +4090,11 @@
       ["#weaveOffsetX", "#weaveOffsetY", "#weaveRotate", "#weaveRotateX", "#weaveRotateY"].forEach((selector) => {
         setControlValue(selector, 0);
       });
+      ["#weaveScaleX", "#weaveScaleY", "#weaveScaleZ"].forEach((selector) => {
+        setControlValue(selector, 1);
+      });
       beginMetric();
-      ["#weaveOffsetX", "#weaveOffsetY", "#weaveRotate", "#weaveRotateX", "#weaveRotateY"].forEach((selector) => {
+      ["#weaveOffsetX", "#weaveOffsetY", "#weaveRotate", "#weaveRotateX", "#weaveRotateY", "#weaveScaleX", "#weaveScaleY", "#weaveScaleZ"].forEach((selector) => {
         $(selector).dispatchEvent(new Event("input", { bubbles: true }));
       });
     });
@@ -4210,7 +4381,7 @@
       document.body.dataset.claylineFileRequest = "gcode";
       $("#weaveRestoreFile").click();
     });
-    $("#weaveRestoreFile").addEventListener("change", (event) => restorePatternFromGcode(event.target.files?.[0]));
+    $("#weaveRestoreFile").addEventListener("change", (event) => restoreFromGcode(event.target.files?.[0]));
     $("#weavePatternExpand").addEventListener("click", openPatternOverlay);
     $("#weavePatternOverlayClose").addEventListener("click", closePatternOverlay);
     $("#weavePatternOverlay").addEventListener("click", (event) => {
@@ -4490,6 +4661,7 @@
     activateTiles: () => activateMode("tiles"),
     open: () => $("#weaveFileInput").click(),
     exportGcode: downloadGcode,
+    exportMesh: downloadMesh,
     importMesh: desktopImportMesh,
     saveProject: saveWeaveProject,
     openProject: openWeaveProject,

@@ -35,7 +35,7 @@ Clayline comes with a gallery of 98 example drawings. In **Draw in Clay**, press
 
 ## Choose your printer
 
-Open **06 Printer** in either mode and pick your machine from the list.
+Open **Printer**, the last section of the workflow in either mode, and pick your machine from the list.
 
 **PotterBot 10 XL · verified** means every fact in that profile, from the size of the bed to the commands that start and end a print, was checked against a real print on that machine.
 
@@ -45,6 +45,6 @@ The printer choice sets the bed size you see in the preview, the print speeds, t
 
 ## Getting a file to the printer
 
-After you slice, **Download G-code** in the right-hand panel saves the print file through the normal Mac save window. **File → Export G-code…** (Shift-Command-E) does the same, and **File → Open…** (Command-O) loads drawings or models. Command-S is the whole job, not the print file: see Saving your project in [Draw in Clay](tiles.md) and [Weave](weave.md). The file is named after your design, and the save window is where you can change that.
+After you slice, **Download G-code** in the right-hand panel saves the print file through the normal Mac save window. **File → Export G-code…** (Shift-Command-E) does the same, **File → Export Mesh…** saves the sliced coils as an OBJ for other programs, and **File → Open…** (Command-O) loads drawings or models. Command-S is the whole job, not the print file: see Saving your project in [Draw in Clay](tiles.md) and [Weave](weave.md). The file is named after your design, and the save window is where you can change that.
 
 Copy the file to your printer the way you already do for any print. Clayline never sends anything to the machine itself.

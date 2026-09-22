@@ -41,6 +41,12 @@ struct ClaylineCommands: Commands {
             }
             .keyboardShortcut("e", modifiers: [.command, .shift])
             .disabled(!actions.isReady)
+
+            // The printed coils as an OBJ: the object the slice window shows.
+            Button("Export Mesh…") {
+                actions.saveMesh()
+            }
+            .disabled(!actions.isReady)
         }
     }
 }

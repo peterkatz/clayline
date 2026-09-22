@@ -503,14 +503,17 @@ struct ClaylineWebView: NSViewRepresentable {
             let lowered = safeName.lowercased()
             let isProject = lowered.hasSuffix(".\(ClaylineFileTypes.projectExtension)")
             let isPattern = lowered.hasSuffix(".json")
+            // Export Mesh: the printed coils as an OBJ.
+            let isMesh = lowered.hasSuffix(".obj")
             let panel = NSSavePanel()
             panel.title = isProject
                 ? "Save Clayline Project"
-                : (isPattern ? "Save Clayline pattern" : "Save Clayline G-code")
+                : (isPattern ? "Save Clayline pattern"
+                    : (isMesh ? "Save Clayline mesh" : "Save Clayline G-code"))
             panel.prompt = "Save"
             panel.allowedContentTypes = isProject
                 ? ClaylineFileTypes.projectTypes
-                : (isPattern ? [.json] : [ClaylineFileTypes.gcode])
+                : (isPattern ? [.json] : (isMesh ? [ClaylineFileTypes.obj] : [ClaylineFileTypes.gcode]))
             panel.allowsOtherFileTypes = false
             panel.canCreateDirectories = true
             panel.isExtensionHidden = false

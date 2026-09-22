@@ -183,6 +183,7 @@ def test_weave_rail_order_and_complete_ui_states_are_explicit() -> None:
         "model",
         "slice",
         "bottom",
+        "vase",
         "interior",
         "oscilloscope",
         "printer",
@@ -191,6 +192,7 @@ def test_weave_rail_order_and_complete_ui_states_are_explicit() -> None:
         "Model",
         "Slice",
         "Bottom",
+        "Vase mode",
         "Interior",
         "Weave pattern",
         "Printer",
@@ -1374,7 +1376,7 @@ def test_weave_takes_a_project_from_the_drop_zone_and_the_browse_dialog() -> Non
         'accept=".stl,.obj,.ply,.3mf,.clayline,.gcode,.json,'
         'model/stl,model/obj,model/3mf,text/x-gcode,application/json"'
     ) in HTML
-    assert "<small>mesh · project · pattern from a print file · saved pattern</small>" in HTML
+    assert "<small>mesh · project · print file · saved pattern</small>" in HTML
 
     dropped = _function("setDroppedFile", "function bindMeshControls")
     # A project is recognised before the mesh/G-code/pattern branches and goes
@@ -1567,7 +1569,7 @@ def test_no_new_project_string_speaks_to_a_developer() -> None:
         "Saving project…",
         "Project file downloaded",
         "Clayline couldn't make a project file from this form.",
-        "mesh · project · pattern from a print file · saved pattern",
+        "mesh · project · print file · saved pattern",
     ]
     for sentence in visible:
         assert sentence in HTML or sentence in WEAVE

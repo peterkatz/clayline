@@ -210,6 +210,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=_defaults.DEFAULT_WEAVE_SCALE,
         help="opt-in uniform multiplier; source units are millimetres by default",
     )
+    for axis, word in (("x", "width"), ("y", "depth"), ("z", "height")):
+        weave.add_argument(
+            f"--scale-{axis}",
+            type=float,
+            default=None,
+            help=f"stretch the placed form's {word} by this factor (bed axis, default 1)",
+        )
     weave.add_argument(
         "--fit-height",
         type=float,
@@ -667,6 +674,9 @@ def _weave_command(args: argparse.Namespace) -> int:
     rotation_deg = 0.0 if recipe is None else recipe.rotation_deg
     rotation_x_deg = 0.0 if recipe is None else recipe.rotation_x_deg
     rotation_y_deg = 0.0 if recipe is None else recipe.rotation_y_deg
+    scale_x = restored("--scale-x", args.scale_x, None if recipe is None else recipe.scale_x)
+    scale_y = restored("--scale-y", args.scale_y, None if recipe is None else recipe.scale_y)
+    scale_z = restored("--scale-z", args.scale_z, None if recipe is None else recipe.scale_z)
     form = load_mesh(
         mesh_path,
         up=up,
@@ -676,6 +686,9 @@ def _weave_command(args: argparse.Namespace) -> int:
         rotation_deg=rotation_deg,
         rotation_x_deg=rotation_x_deg,
         rotation_y_deg=rotation_y_deg,
+        scale_x=1.0 if scale_x is None else scale_x,
+        scale_y=1.0 if scale_y is None else scale_y,
+        scale_z=1.0 if scale_z is None else scale_z,
         profile=profile,
     )
     if recipe is not None:

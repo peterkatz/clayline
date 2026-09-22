@@ -34,7 +34,9 @@ def _helper_under_node(values: list[str]) -> list[float | None]:
         const $ = () => ({{ value: current }});
         {helper}
         const out = [];
-        for (const value of values) {{ current = value; out.push(optionalNumberValue("#weaveStartCharge")); }}
+        for (const value of values) {{
+          current = value; out.push(optionalNumberValue("#weaveStartCharge"));
+        }}
         process.stdout.write(JSON.stringify(out));
     """
     completed = subprocess.run(

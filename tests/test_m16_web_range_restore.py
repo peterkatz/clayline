@@ -150,15 +150,24 @@ def test_the_web_restore_button_lives_with_the_pattern_and_brings_back_only_it()
     assert "Restore pattern from G-code…" in pattern_section
     assert "Only the pattern comes across" in pattern_section
 
-    restore = WEAVE[
-        WEAVE.index("  async function restorePatternFromGcode(file) {") : WEAVE.index(
-            "  function ensureRestoreProfileOption(profileName) {"
-        )
+    whole = WEAVE[
+        WEAVE.index(
+            "  async function restoreFromGcode(file, { everything = false } = {}) {"
+        ) : WEAVE.index("  function ensureRestoreProfileOption(profileName) {")
     ]
-    assert "applyCanonicalPattern(payload.pattern?.canonical_json, payload.pattern);" in restore
-    assert "`Pattern restored from ${file.name}`" in restore
-    assert 'scheduleModulation("settle");' in restore
-    # Nothing else in the file is read back into the studio.
+    everything = whole[
+        whole.index("      if (everything) {") : whole.index("        return;\n      }")
+        + len("        return;\n      }")
+    ]
+    pattern_only = whole[
+        whole.index("        return;\n      }") + len("        return;\n      }") :
+    ]
+    assert (
+        "applyCanonicalPattern(payload.pattern?.canonical_json, payload.pattern);" in pattern_only
+    )
+    assert "`Pattern restored from ${file.name}`" in pattern_only
+    assert 'scheduleModulation("settle");' in pattern_only
+    # The button's branch reads nothing else of the file back into the studio.
     for retired in (
         "#weaveUpAxis",
         "#weaveScale",
@@ -175,12 +184,39 @@ def test_the_web_restore_button_lives_with_the_pattern_and_brings_back_only_it()
         "needs_mesh",
         "source_mesh",
     ):
-        assert retired not in restore
+        assert retired not in pattern_only
+    # The Model box's branch brings every setting back through the same apply
+    # path a project file uses, then asks for the model by name.
+    assert "settingsSnapshotFromRestore(payload)" in everything
+    assert "applyWeaveSettings(snapshot, { settle: true })" in everything
+    assert "payload.needs_mesh" in everything
+    assert "the model it was sliced from" in everything
+    snapshot = WEAVE[
+        WEAVE.index("  function settingsSnapshotFromRestore(payload) {") : WEAVE.index(
+            "  async function restoreFromGcode("
+        )
+    ]
+    for key in (
+        "start_charge_e",
+        "layer_height",
+        "first_layer_height",
+        "sample_spacing",
+        "bead_width",
+        "range_from",
+        "range_to",
+        "range_total",
+        "flow_multiplier",
+        "scale_x",
+        "rotation_deg",
+        "profile",
+    ):
+        assert f"{key}:" in snapshot, key
     # The packaged app's picker is filtered by the marker, not the accept list.
     assert 'document.body.dataset.claylineFileRequest = "gcode";' in WEAVE
-    # A print file on the Model box does the same thing the button does.
-    assert "restorePatternFromGcode(file);" in WEAVE
-    assert "pattern from a print file" in HTML
+    # The button takes the pattern only; the Model box takes everything.
+    assert "restoreFromGcode(event.target.files?.[0])" in WEAVE
+    assert "restoreFromGcode(file, { everything: true });" in WEAVE
+    assert "mesh · project · print file · saved pattern" in HTML
 
 
 def test_web_restore_workers_keep_embedded_custom_profile_through_finalize(

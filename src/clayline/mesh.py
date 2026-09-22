@@ -37,6 +37,9 @@ def load_mesh_form(
     rotation_deg: float = 0.0,
     rotation_x_deg: float = 0.0,
     rotation_y_deg: float = 0.0,
+    scale_x: float = 1.0,
+    scale_y: float = 1.0,
+    scale_z: float = 1.0,
     profile: str | Path | Profile = "potterbot-xl",
 ) -> MeshForm:
     """Load one mesh file, weld duplicate vertices, orient, and place it in mm.
@@ -78,6 +81,7 @@ def load_mesh_form(
     resolved_rotation_x = _coerce_rotation(rotation_x_deg, "rotation_x_deg")
     resolved_rotation_y = _coerce_rotation(rotation_y_deg, "rotation_y_deg")
     resolved_scale = _validate_scale_options(scale=scale, fit_height=fit_height)
+    stretch = _coerce_stretch(scale_x, scale_y, scale_z)
     resolved_profile = load_profile(profile) if not isinstance(profile, Profile) else profile
 
     try:
@@ -137,6 +141,13 @@ def load_mesh_form(
         )
         vertices = (vertices - pivot) @ rotation_matrix.T + pivot
 
+    # Bed-axis stretch (width, depth, height) comes after rotation, so
+    # Height x always changes the placed height the size line shows, and
+    # before the uniform scale / fit height, so a typed height stays the
+    # final height whatever the stretch.  All three at 1.0 is a no-op.
+    if stretch is not None:
+        vertices *= stretch
+
     source_height = float(np.ptp(vertices[:, 2]))
     if fit_height is not None:
         if source_height <= 0:
@@ -173,6 +184,9 @@ def load_mesh_form(
         rotation_deg=resolved_rotation,
         rotation_x_deg=resolved_rotation_x,
         rotation_y_deg=resolved_rotation_y,
+        scale_x=float(scale_x),
+        scale_y=float(scale_y),
+        scale_z=float(scale_z),
         profile_name=resolved_profile.name,
     )
     vertices.setflags(write=False)
@@ -190,6 +204,9 @@ def load_mesh_form(
         rotation_deg=resolved_rotation,
         rotation_x_deg=resolved_rotation_x,
         rotation_y_deg=resolved_rotation_y,
+        scale_x=float(scale_x),
+        scale_y=float(scale_y),
+        scale_z=float(scale_z),
         profile_name=resolved_profile.name,
         work_bounds=resolved_profile.work_bounds,
         warnings=warnings,
@@ -243,6 +260,20 @@ def _rotation_matrix_zyx(rx_deg: float, ry_deg: float, rz_deg: float) -> np.ndar
     rotate_y = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]])
     rotate_z = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]])
     return rotate_z @ rotate_y @ rotate_x
+
+
+def _coerce_stretch(scale_x: float, scale_y: float, scale_z: float) -> np.ndarray | None:
+    """Validate the three bed-axis factors; ``None`` when all are exactly 1."""
+
+    factors = []
+    for label, value in (("scale_x", scale_x), ("scale_y", scale_y), ("scale_z", scale_z)):
+        factor = float(value)
+        if not np.isfinite(factor) or factor <= 0:
+            raise ValueError(f"{label} must be finite and positive")
+        factors.append(factor)
+    if factors == [1.0, 1.0, 1.0]:
+        return None
+    return np.array(factors, dtype=np.float64)
 
 
 def _validate_scale_options(*, scale: float | None, fit_height: float | None) -> float:
@@ -343,6 +374,9 @@ def _form_id(
     rotation_deg: float = 0.0,
     rotation_x_deg: float = 0.0,
     rotation_y_deg: float = 0.0,
+    scale_x: float = 1.0,
+    scale_y: float = 1.0,
+    scale_z: float = 1.0,
     profile_name: str,
 ) -> str:
     # Keep the established form-id byte contract: raw source bytes are hashed
@@ -370,6 +404,12 @@ def _form_id(
         settings["rotation_x"] = format(rotation_x_deg, ".17g")
     if rotation_y_deg % 360.0 != 0.0:
         settings["rotation_y"] = format(rotation_y_deg, ".17g")
+    # The same identity-omission contract for the bed-axis stretch: an
+    # unstretched form keeps the exact id it had before these existed,
+    # and a stretched one can never reuse the unstretched cache entry.
+    for key, factor in (("scale_x", scale_x), ("scale_y", scale_y), ("scale_z", scale_z)):
+        if factor != 1.0:
+            settings[key] = format(factor, ".17g")
     digest.update(json.dumps(settings, sort_keys=True, separators=(",", ":")).encode())
     return f"form-{digest.hexdigest()[:20]}"
 

@@ -441,9 +441,9 @@
                 </div>
               </div>
               <p class="section-copy">Load the base mesh — the form your pattern wraps. Every honest ring and mesh warning is kept.</p>
-              <label class="drop-zone" id="weaveDropZone" for="weaveFileInput" title="Load one STL, OBJ, PLY, or 3MF mesh in millimetres, open a saved project, take the pattern out of a print file Clayline saved, or load a saved pattern.">
+              <label class="drop-zone" id="weaveDropZone" for="weaveFileInput" title="Load one STL, OBJ, PLY, or 3MF mesh in millimetres, open a saved project, bring back every setting from a print file Clayline saved (it then asks for its model by name), rebuild a form from another slicer's print file, or load a saved pattern.">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg>
-                <span><strong>Drop a file here</strong><small>mesh · project · pattern from a print file · saved pattern</small></span>
+                <span><strong>Drop a file here</strong><small>mesh · project · print file · saved pattern</small></span>
                 <input id="weaveFileInput" type="file" accept=".stl,.obj,.ply,.3mf,.clayline,.gcode,.json,model/stl,model/obj,model/3mf,text/x-gcode,application/json">
               </label>
               <div class="draw-project-row weave-project-row">
@@ -465,13 +465,16 @@
                 <summary>Advanced</summary>
                 <div class="control-grid two-up">
                   <label class="field" title="Multiplies the file's own size. To hit an exact height, type it in the size line above."><span>Scale factor</span><input id="weaveScale" type="number" value="1" min="0.0001" step="0.01"></label>
+                  <label class="field" title="Stretches the placed form's width on the bed, on top of Scale factor. 1 leaves it alone."><span>Width ×</span><input id="weaveScaleX" type="number" value="1" min="0.0001" step="0.01"></label>
+                  <label class="field" title="Stretches the placed form's depth on the bed, on top of Scale factor. 1 leaves it alone."><span>Depth ×</span><input id="weaveScaleY" type="number" value="1" min="0.0001" step="0.01"></label>
+                  <label class="field" title="Stretches the placed form's height on top of Scale factor. If a height is typed above, that height wins and this resizes the footprint needed to reach it instead. 1 leaves it alone."><span>Height ×</span><input id="weaveScaleZ" type="number" value="1" min="0.0001" step="0.01"></label>
                   <label class="field" title="Nudge the placed mesh along the printer X axis."><span>X nudge (mm)</span><input id="weaveOffsetX" type="number" value="0" step="1"></label>
                   <label class="field" title="Nudge the placed mesh along the printer Y axis."><span>Y nudge (mm)</span><input id="weaveOffsetY" type="number" value="0" step="1"></label>
                   <label class="field" title="Spin about the printer Z axis, in degrees. Real geometry; the sliced rings rotate, not just the picture."><span>Rotate Z (°)</span><input id="weaveRotate" type="number" value="0" step="1"></label>
                   <label class="field" title="Spin about the printer X axis, in degrees. Applied before Rotate Z."><span>Rotate X (°)</span><input id="weaveRotateX" type="number" value="0" step="1"></label>
                   <label class="field" title="Spin about the printer Y axis, in degrees. Applied before Rotate Z, after Rotate X."><span>Rotate Y (°)</span><input id="weaveRotateY" type="number" value="0" step="1"></label>
                 </div>
-                <button class="secondary-button compact-button" id="weaveResetPlacement" type="button" title="Zero every nudge and rotation — back to the file's own placement.">Reset placement</button>
+                <button class="secondary-button compact-button" id="weaveResetPlacement" type="button" title="Zero every nudge and rotation and set every stretch back to 1 — back to the file's own placement.">Reset placement</button>
                 <input id="weaveFitHeight" type="hidden" data-unit="mm">
               </details>
             </div>
@@ -532,6 +535,14 @@
                 <span><strong>Alternate bottom direction</strong><small id="weaveBottomAlternateHint">Crossing passes bond the base stronger.</small></span>
                 <input id="weaveBottomAlternate" type="checkbox" role="switch" checked aria-describedby="weaveBottomAlternateHint">
               </label>
+            </div>
+          </section>
+
+          <section class="rail-section weave-section" data-weave-section="vase">
+            <div class="section-index">04</div>
+            <div class="section-body">
+              <h2>Vase mode</h2>
+              <p class="section-copy">The wall climbs in one continuous coil instead of stacked layers. Off, the form prints as discrete layers and the Interior can be filled.</p>
               <label class="switch-row" id="weaveZBlendRow">
                 <span><strong>Vase mode · spiral rise</strong><small id="weaveZBlendHint">The wall climbs in one continuous coil — no layer seams.</small></span>
                 <input id="weaveZBlend" type="checkbox" role="switch">
@@ -556,7 +567,7 @@
           </section>
 
           <section class="rail-section weave-section" data-weave-section="interior">
-            <div class="section-index">04</div>
+            <div class="section-index">05</div>
             <div class="section-body">
               <h2>Interior</h2>
               <p class="section-copy">What the nozzle lays inside the wall. You choose it, and nothing here chooses for you: Vase mode has to be off before Solid or Infill can be picked at all. Choosing one does clear what a filled interior cannot print beside — Bottom layers, and profile blend if a loaded pattern carried it. Each says so where it lives.</p>
@@ -600,7 +611,7 @@
           </section>
 
           <section class="rail-section weave-section weave-scope-section" data-weave-section="oscilloscope">
-            <div class="section-index">05</div>
+            <div class="section-index">06</div>
             <div class="section-body">
               <h2>Weave pattern</h2>
               <p class="section-copy">The trace is one wrapped cycle. Drag a point; ghost cycles expose the seam before clay does.</p>
@@ -699,7 +710,7 @@
 
 
           <section class="rail-section weave-section" data-weave-section="printer">
-            <div class="section-index">06</div>
+            <div class="section-index">07</div>
             <div class="section-body">
               <h2>Printer</h2>
               <label class="field"><span>Printer</span><select id="weaveProfile"><option value="potterbot-xl" selected>PotterBot 10 XL · verified reference</option><option value="generic-reprap-paste">Generic RepRap paste · unverified</option><option value="generic-marlin-paste">Generic Marlin paste · unverified</option></select></label>
