@@ -66,4 +66,4 @@ Clayline needs a Mac with Apple silicon running macOS 14 or later. On an Intel M
 The round arrow at the top of the workflow resets settings for that mode. Each mode's reset leaves the other mode alone. **Undo** at the top of the window steps back through settings changes.
 
 **Something else.**
-Report it at [github.com/peterkatz/clayline](https://github.com/peterkatz/clayline) under Issues, with the drawing or model and the settings you used.
+Report it at [github.com/peterkatz/clayline](https://github.com/peterkatz/clayline) under Issues, with the drawing or model and the settings you used. A question rather than a problem goes under [Questions](https://github.com/peterkatz/clayline/discussions/categories/q-a) there, and gets its answer where others can find it.

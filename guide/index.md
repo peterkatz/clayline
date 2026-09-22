@@ -78,6 +78,10 @@ Both modes show you the exact path the printer will follow, in 2D and 3D, and a 
 - [Printing](printing.md): what the printer does with the file, and the three settings that decide how the first layer lands.
 - [Troubleshooting](troubleshooting.md): the first layer scraped, the start blob is huge, the model loads sideways.
 
+## Questions
+
+Stuck, or wondering whether Clayline can do something? Ask under [Questions](https://github.com/peterkatz/clayline/discussions/categories/q-a) on Clayline's GitHub page; you'll get an answer there, and so will the next person who wonders the same thing. A file that won't slice or a print that went wrong goes under [Issues](https://github.com/peterkatz/clayline/issues) instead, with the drawing or model and the settings you used.
+
 ## Built for real printing
 
 Clayline was built around a PotterBot 10 XL and shaped by real prints. Everything runs on your Mac: no account, no cloud, no internet connection needed. Nothing ever prints from the app itself. It writes a file, you look it over, and you take it to the printer.

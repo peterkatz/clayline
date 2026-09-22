@@ -13,6 +13,10 @@ into your Applications folder. The **[user guide](https://peterkatz.github.io/cl
 covers installing, both modes, printing, calibration, and troubleshooting in
 plain language; this README is the developer's view.
 
+**Questions:** ask under [Q&A in Discussions](https://github.com/peterkatz/clayline/discussions/categories/q-a). A file that
+won't slice or a print that went wrong belongs under [Issues](https://github.com/peterkatz/clayline/issues), with the
+drawing or model and the settings you used.
+
 This is release `0.4.0`; [CHANGELOG.md](CHANGELOG.md) lists what each release
 changed. The software pipeline has substantial local verification, and full
 tiles and Weave forms have been printed and accepted on the PotterBot. It is not
