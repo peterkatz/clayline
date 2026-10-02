@@ -672,7 +672,7 @@ def _slice_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Synchronously build one response; the route always calls this in a worker."""
 
     from clayline.preview import PreviewOptions, build_toolpath_figure, render_plan_svg
-    from clayline.stack import LayoutError
+    from clayline.stack import LayoutError, StackError
     from clayline.workflow import PipelineRequest, _same_planned_path, build_pipeline
 
     draw_schema_version = _draw_schema_version(payload)
@@ -805,6 +805,27 @@ def _slice_payload(payload: dict[str, Any]) -> dict[str, Any]:
             # F9.7: turn the pipeline's bed-overflow refusal into an artist
             # sentence with the numbers, computed by the same layout math.
             raise _layout_overflow_error(expanded_sources, nudges, request) from exc
+        except StackError as exc:
+            # The engine names a page with nothing to print by its own id.
+            # Only on a refusal, measure the passes the way the live size
+            # check does, so such a pass is named by its row in the same words.
+            if explicit_passes:
+                try:
+                    _planned_source_sizes(
+                        expanded_sources,
+                        flatten_tol=request.flatten_tol,
+                        nozzle_diameter=request.nozzle_diameter,
+                        bead_width=request.bead_width,
+                        weld_tol=request.weld_tol,
+                        kiss=request.kiss,
+                        kiss_tol=request.kiss_tol,
+                        overlap_fraction=request.overlap_fraction,
+                        layer_height=request.layer_height,
+                        z_mode=request.z_mode,
+                    )
+                except UiRequestError as refusal:
+                    raise refusal from exc
+            raise
 
     options = PreviewOptions(
         width_px=1200,
@@ -2203,9 +2224,29 @@ def _planned_source_sizes(
         width = plan.bounds.max_x - plan.bounds.min_x
         height = plan.bounds.max_y - plan.bounds.min_y
         if not math.isfinite(width) or not math.isfinite(height) or max(width, height) <= 0:
-            raise UiRequestError(f"{source.name!r} contains no measurable planned centerline")
+            # Schema 2 writes every pass row to its own source, so the row is
+            # the source's place in the list.
+            raise _nothing_to_print(
+                expanded_sources.index(source) + 1,
+                has_lines=bool(plan.strokes),
+            )
         sizes_by_path[source] = (width, height)
     return tuple(sizes_by_path[source] for source in expanded_sources)
+
+
+def _nothing_to_print(pass_number: int, *, has_lines: bool) -> UiRequestError:
+    """A Draw pass the planner leaves nothing on, named by its row.
+
+    The live size check stops on it before Slice can run, and a slice that
+    reaches one anyway says the same, never the engine's page id.
+    """
+
+    reason = "its lines are too short to lay a coil" if has_lines else "it has no lines to follow"
+    return UiRequestError(
+        f"Pass {pass_number} has nothing to print: {reason}. Draw on it, or remove the pass.",
+        code="pass_has_nothing_to_print",
+        data={"pass": pass_number},
+    )
 
 
 def _layout_overflow_error(

@@ -193,6 +193,65 @@ def test_failed_backend_measurement_is_blocking_and_never_guesses_from_canvas() 
 
     with pytest.raises(
         webui.UiRequestError,
-        match=r"'empty\.svg' contains no measurable planned centerline",
+        match=r"^Pass 1 has nothing to print: it has no lines to follow\.",
     ):
         webui._layout_check_payload(_schema_two_payload(empty_svg, name="empty.svg"))
+
+
+EMPTY_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100"></svg>'
+DOT_SVG = """\
+<svg xmlns="http://www.w3.org/2000/svg" width="50mm" height="20mm" viewBox="0 0 50 20">
+  <path d="M 5 10 L 5.001 10" fill="none" stroke="black"/>
+</svg>
+"""
+
+
+@pytest.mark.parametrize(
+    ("svg", "reason"),
+    ((EMPTY_SVG, "it has no lines to follow"), (DOT_SVG, "its lines are too short to lay a coil")),
+    ids=("no-lines", "too-short"),
+)
+def test_a_pass_with_nothing_to_print_is_named_by_its_row_in_potter_words(
+    svg: str, reason: str
+) -> None:
+    # What the potter reads under the pass row and in the bed-fit banner: the
+    # pass by its number, never the file name, the engine's page id or a
+    # word like "centerline".
+    files = [
+        _file("line.svg", LINE_SVG),
+        _file("empty.svg", svg, rotation_deg=30.0, scale_factor=1.5),
+        _file("line.svg", LINE_SVG),
+    ]
+    with pytest.raises(webui.UiRequestError) as caught:
+        webui._layout_check_payload(_schema_two_payload(files=files))
+
+    assert str(caught.value) == (
+        f"Pass 2 has nothing to print: {reason}. Draw on it, or remove the pass."
+    )
+    assert caught.value.detail == {
+        "message": str(caught.value),
+        "code": "pass_has_nothing_to_print",
+        "data": {"pass": 2},
+    }
+    for word in ("empty.svg", "page-", "centerline", "stroke", "measurable"):
+        assert word not in str(caught.value)
+
+
+def test_a_slice_that_reaches_a_pass_with_nothing_to_print_names_it_the_same_way() -> None:
+    # Only a caller that skips the live size check gets here; it reads what
+    # the size check would have said, not the engine's stroke id.
+    files = [_file("line.svg", LINE_SVG), _file("dot.svg", DOT_SVG)]
+    with pytest.raises(webui.UiRequestError) as caught:
+        webui._slice_payload(_schema_two_payload(files=files))
+
+    assert str(caught.value) == (
+        "Pass 2 has nothing to print: its lines are too short to lay a coil. "
+        "Draw on it, or remove the pass."
+    )
+
+
+def test_a_slice_refused_for_another_reason_keeps_its_own_words() -> None:
+    with pytest.raises(ValueError, match=r"^Hand ripple · height") as caught:
+        webui._slice_payload(_schema_two_payload(z_modulation=50.0))
+
+    assert not isinstance(caught.value, webui.UiRequestError)

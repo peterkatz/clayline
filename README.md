@@ -17,7 +17,7 @@ plain language; this README is the developer's view.
 won't slice or a print that went wrong belongs under [Issues](https://github.com/peterkatz/clayline/issues), with the
 drawing or model and the settings you used.
 
-This is release `0.5.0`; [CHANGELOG.md](CHANGELOG.md) lists what each release
+This is release `0.5.1`; [CHANGELOG.md](CHANGELOG.md) lists what each release
 changed. The software pipeline has substantial local verification, and full
 tiles and Weave forms have been printed and accepted on the PotterBot. It is not
 on PyPI.

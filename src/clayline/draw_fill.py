@@ -24,8 +24,10 @@ the planner's own object and prints byte for byte as it always has.  With
 fills, the drawn lines keep exactly their order and their start points; fills
 print first on each pass, one stroke per area where the shape allows, each
 aimed so its edge end lands by whatever prints next; and the last fill runs
-straight on into the first line only when that step is one coil width or less
-and proved to stay inside the area.  Anything else is a normal lift.
+straight on into the first line only when that step is a coil and a half or
+less (a Box's line starts on a corner, the square root of two spacings from
+its fill), proved to stay inside the area and to lay its coil beside no
+other on the way.  Anything else is a normal lift.
 
 Nothing here fails a slice.  An area that cannot be filled prints empty and
 says why with a placed warning in potters' words, and a fill the finished
@@ -101,6 +103,12 @@ _LEAVING_SHARE = 0.15
 # of the spacing, and how far that middle may then be straightened.
 _MIDDLE_STEP_SHARE = 0.5
 _MIDDLE_SIMPLIFY_MM = 1e-3
+# The longest step, in coil widths, on which the last fill runs straight on
+# into the first line instead of lifting.  A line drawn round a Box starts on
+# a corner, and a square corner sits the square root of two spacings from the
+# fill's outer ring: 5.66 mm for a 5 mm coil at the default 20% join, past
+# one coil but well inside this.
+_RUN_ON_COILS = 1.5
 # Below this share of the coil width, the spacing a Side-by-side join leaves
 # would pile fill coils on top of each other rather than lay them side by side.
 _MIN_SPACING_SHARE = 0.25
@@ -264,7 +272,11 @@ def fill_pass(
     if not fills:
         return replace(plan, warnings=(*kept, *warnings))
 
-    joined = run_on and first_line is not None and _joins(fills[-1], first_line, bead_width)
+    joined = (
+        run_on
+        and first_line is not None
+        and _joins(fills[-1], first_line, plan.strokes, bead_width=bead_width, spacing=spacing)
+    )
     fill_strokes: list[Stroke] = []
     for fill in fills:
         for piece_index, piece in enumerate(fill.pieces):
@@ -1040,17 +1052,36 @@ def _thin_warnings(
             )
 
 
-def _joins(fill: _Fill, line: Stroke, bead_width: float) -> bool:
+def _joins(
+    fill: _Fill, line: Stroke, lines: Sequence[Stroke], *, bead_width: float, spacing: float
+) -> bool:
     """Whether the last fill may run straight on into the first line.
 
-    Only across one coil width or less, and only on a step proved to stay
-    inside the area — the cup bottom's fill-to-wall weld with a length cap,
-    so no bead is ever dragged across laid clay or open bed.
+    Only across a coil and a half or less (``_RUN_ON_COILS``), and only on a
+    step proved to stay inside the area — the cup bottom's fill-to-wall weld
+    with a length cap — and to lay its coil beside no other, so no bead is
+    ever dragged across laid clay or open bed.  Inside the area is not enough
+    on its own: a line drawn in from a Box's side 1 mm from the corner its
+    line starts on lies inside it too, and a 6.4 mm step would cross it.
+
+    The step meets the fill's last stretch and the line only at its two ends,
+    and keeps a spacing from every other coil, the gap the fill itself keeps
+    from every line.  Missing a coil by a hair is not enough: a 1 mm line in
+    from the Box's side by that corner ends on the step, or a float's width
+    off it, and its coil would lie under the step's.
+
+    The fill prints before its line, so the step lays coil across the bare
+    margin between the fill's outer ring and the line.  On a pass the stack
+    runs backwards (stack.py) the joined stroke is laid end to start, after
+    every other line of the pass: the line, then the same step from the
+    line's start back onto the fill's end, then the fill.  It is the same
+    straight step across the same margin, and none of those lines comes
+    near it.
     """
 
     end = fill.pieces[-1][-1]
     start = line.points[0]
-    if end.distance_to(start) > bead_width + _EPSILON:
+    if end.distance_to(start) > _RUN_ON_COILS * bead_width + _EPSILON:
         return False
     route = contained_connector(
         fill.area.face,
@@ -1058,7 +1089,29 @@ def _joins(fill: _Fill, line: Stroke, bead_width: float) -> bool:
         (start.x, start.y),
         tolerance=CONTAINMENT_TOLERANCE,
     )
-    return route is not None
+    if route is None:
+        return False
+    step = LineString(route)
+    if step.length <= 2.0 * _NOISE_MM:
+        return True
+    between = substring(step, _NOISE_MM, step.length - _NOISE_MM)
+    ends = (fill.pieces[-1], _traced(line))
+    if any(between.intersects(_line_string(points)) for points in ends):
+        return False
+    beside = (*fill.pieces[:-1], *(_traced(other) for other in lines if other is not line))
+    return all(between.distance(_line_string(points)) >= spacing - _NOISE_MM for points in beside)
+
+
+def _traced(stroke: Stroke) -> tuple[Point, ...]:
+    """The points a stroke's coil is laid along, a closed one back to its start."""
+
+    if stroke.closed:
+        return (*stroke.points, stroke.points[0])
+    return stroke.points
+
+
+def _line_string(points: Sequence[Point]) -> LineString:
+    return LineString([(point.x, point.y) for point in points])
 
 
 def _joined_stroke(fill: Stroke, line: Stroke) -> Stroke:

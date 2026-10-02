@@ -323,6 +323,15 @@ function allPassMeasurementsReady() {
   return state.files.length > 0 && state.files.every(passMeasurementReady);
 }
 
+// The note under the first pass that could not be measured, or null. Slice
+// waits on that pass, so its footnote says why instead of "Measuring" once
+// nothing is being measured any more.
+function passMeasurementFailure() {
+  const failed = state.files.find((file) => file.measurementStatus === "error");
+  if (!failed) return null;
+  return failed.measurementError || "Clayline could not measure this pass.";
+}
+
 function sourceMeasurementKey(file) {
   return JSON.stringify([
     file.svg,
@@ -1195,7 +1204,7 @@ function pageRow(index, stacked) {
     const error = document.createElement("p");
     error.className = "page-row-error";
     error.setAttribute("role", "alert");
-    error.textContent = file.measurementError || "Clayline could not measure this planned centerline.";
+    error.textContent = file.measurementError || "Clayline could not measure this pass.";
     fields.append(error);
   }
   row.append(head, fields);
@@ -1373,7 +1382,7 @@ async function runLayoutCheck() {
         const longest = Number(page.source_longest_mm);
         if (![width, height, longest].every(Number.isFinite) || longest <= 0) {
           file.measurementStatus = "error";
-          file.measurementError = "Clayline could not measure this planned centerline.";
+          file.measurementError = "Clayline could not measure this pass.";
           measurementError = true;
           return;
         }
@@ -2108,7 +2117,7 @@ function updateDependencies() {
     : !state.files.length
       ? "Add or draw a design to begin."
       : !allPassMeasurementsReady()
-        ? "Measuring every pass before Slice can run."
+        ? passMeasurementFailure() || "Measuring every pass before Slice can run."
         : rippleTooDeep
           ? `The height ripple is deeper than the ${rippleFloorLabel} — see Character.`
           : canSlice

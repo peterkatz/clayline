@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from clayline.ingest import ingest_svg
-from clayline.plan import plan_design, transform_plan
+from clayline.plan import plan_design, plan_point_transform, transform_plan
+from clayline.webui import app as webui
 
 SVG = Path(__file__).parent / "fixtures" / "svg"
 
@@ -107,3 +108,80 @@ def test_rejects_bad_inputs() -> None:
         transform_plan(plan, scale=0.0)
     with pytest.raises(ValueError):
         transform_plan(plan, scale=-1.0)
+
+
+def test_a_plan_with_no_lines_is_left_as_it_is() -> None:
+    plan = plan_design(ingest_svg(SVG / "empty.svg"), layer_height=1.5)
+    assert not plan.strokes
+    assert transform_plan(plan, rotation_deg=30.0, scale=1.5) is plan
+    assert plan_point_transform(plan, rotation_deg=30.0, scale=1.5) is None
+    with pytest.raises(ValueError):
+        transform_plan(plan, rotation_deg=math.nan)
+    with pytest.raises(ValueError):
+        transform_plan(plan, scale=0.0)
+
+
+# A pass with nothing to print: no shapes at all, only filled shapes that are
+# left out because they have no line to follow, and only an area fill's point
+# with no line round it.
+_NOTHING_TO_PRINT = {
+    "empty.svg": (SVG / "empty.svg").read_text(encoding="utf-8"),
+    "filled-only.svg": (SVG / "filled-only.svg").read_text(encoding="utf-8"),
+    "fill-point-only.svg": (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="80mm" height="80mm" '
+        'viewBox="0 0 80 80" data-clayline-fill="concentric 40 40"/>'
+    ),
+}
+_LINE = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="50mm" height="20mm" viewBox="0 0 50 20">'
+    '<path d="M 5 10 L 45 10" fill="none" stroke="black"/></svg>'
+)
+
+
+def _slice_error(name: str, *, stacked: bool, **arrange: float) -> webui.UiRequestError:
+    empty_pass = {"name": name, "svg": _NOTHING_TO_PRINT[name], **arrange}
+    line_pass = {"name": "line.svg", "svg": _LINE}
+    payload = {
+        "files": [line_pass, empty_pass, line_pass] if stacked else [empty_pass],
+        "draw_schema_version": 2,
+        "scale": None,
+        "page_mode": "stack",
+        "layers": 1,
+        "reproducible": True,
+    }
+    with pytest.raises(webui.UiRequestError) as caught:
+        webui._slice_payload(payload)
+    return caught.value
+
+
+@pytest.mark.parametrize("stacked", (False, True), ids=("single", "stacked"))
+@pytest.mark.parametrize(
+    "arrange",
+    (
+        {"rotation_deg": 30.0},
+        {"scale_factor": 1.5},
+        {"rotation_deg": 30.0, "scale_factor": 1.5},
+    ),
+    ids=("turn", "size", "turn-and-size"),
+)
+@pytest.mark.parametrize("name", tuple(_NOTHING_TO_PRINT))
+def test_a_turned_or_sized_pass_with_nothing_to_print_says_so_plainly(
+    name: str, arrange: dict[str, float], stacked: bool
+) -> None:
+    # The studio's slice says of it exactly what it says of the same pass
+    # unturned and unsized, never a bare error from turning nothing, and
+    # names it by its row as the live size check does, not by the engine's
+    # page id.
+    plain = _slice_error(name, stacked=stacked)
+    arranged = _slice_error(name, stacked=stacked, **arrange)
+
+    assert type(arranged) is type(plain) is webui.UiRequestError
+    assert arranged.detail == plain.detail
+    number = 2 if stacked else 1
+    assert str(arranged) == (
+        f"Pass {number} has nothing to print: it has no lines to follow. "
+        "Draw on it, or remove the pass."
+    )
+    assert arranged.code == "pass_has_nothing_to_print"
+    assert arranged.data == {"pass": number}
+    assert "page-" not in str(arranged)

@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import math
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from itertools import combinations, pairwise
 from pathlib import Path
 from typing import Any
@@ -43,6 +43,7 @@ from clayline.models import (
     PageMode,
     Point,
     Severity,
+    Stroke,
     WarningCode,
     ZMode,
 )
@@ -78,7 +79,7 @@ HEAD_UNVERSIONED_SHA256 = {
 }
 
 
-def _request(name: str, passes: int = 1, **values: Any) -> PipelineRequest:
+def _request(name: str | Path, passes: int = 1, **values: Any) -> PipelineRequest:
     return PipelineRequest(
         sources=(FIXTURES / name,) * passes,
         draw_schema_version=2,
@@ -90,6 +91,98 @@ def _request(name: str, passes: int = 1, **values: Any) -> PipelineRequest:
 
 def _slice(name: str, passes: int = 1, **values: Any) -> PipelineResult:
     return build_pipeline(_request(name, passes, **values))
+
+
+@dataclass(frozen=True)
+class _Pass:
+    """One sliced pass, with a fill run straight on into its line taken back out.
+
+    A fill that runs on prints as the front of the first line's stroke, under
+    the line's id.  ``strokes`` reads as the pass would had that fill lifted:
+    every fill piece under its ``fill-`` id, the run-on one included, then
+    the drawn lines exactly as drawn.  ``step`` is the stretch the run-on
+    fill printed from its end onto the line, and ``plan`` the pass as sliced.
+    """
+
+    plan: Any
+    strokes: tuple[Stroke, ...]
+    step: tuple[Point, Point] | None
+
+    @property
+    def warnings(self) -> Any:
+        return self.plan.warnings
+
+
+def _passes(name: str | Path, passes: int = 1, **values: Any) -> list[_Pass]:
+    """:func:`_slice`, every pass taken apart; see :class:`_Pass`."""
+
+    return _passes_of(_request(name, passes, **values))
+
+
+def _passes_of(request: PipelineRequest) -> list[_Pass]:
+    return _taken_apart(build_pipeline(request), request)
+
+
+def _taken_apart(result: PipelineResult, request: PipelineRequest) -> list[_Pass]:
+    """Each pass of ``result``, sliced from ``request``, taken apart; see :class:`_Pass`.
+
+    The line part of a run-on stroke is the drawn line's own points, read from
+    the same slice with no fill laid, at the stroke's end.
+    """
+
+    seeds = [seed.point for seed in ingest_svg(request.sources[0]).fill_seeds]
+    passes: list[_Pass] = []
+    for plan, drawn in zip(result.plans, _drawn_lines(request), strict=True):
+        fills = [stroke for stroke in plan.strokes if stroke.id.startswith("fill-")]
+        printed = [stroke for stroke in plan.strokes if not stroke.id.startswith("fill-")]
+        # The lines keep their order, their starts and their points, but for a
+        # fill run on in front of the first of them.
+        assert [stroke.id for stroke in printed] == [line.id for line in drawn]
+        step = None
+        for stroke, line in zip(printed, drawn, strict=True):
+            if (stroke.points, stroke.closed) == (line.points, line.closed):
+                continue
+            assert stroke.id == drawn[0].id and not stroke.closed
+            assert stroke.points[-len(line.points) :] == line.points
+            points = stroke.points[: -len(line.points)]
+            seed = _seed_holding(points, drawn, seeds)
+            piece = sum(fill.id.startswith(f"fill-{seed:03d}-") for fill in fills)
+            fills.append(replace(stroke, id=f"fill-{seed:03d}-{piece:03d}", points=points))
+            step = (points[-1], line.points[0])
+        passes.append(_Pass(plan, (*fills, *drawn), step))
+    return passes
+
+
+def _drawn_lines(request: PipelineRequest) -> list[tuple[Stroke, ...]]:
+    """Each pass's drawn lines exactly as the fill step is handed them."""
+
+    def lines_alone(_design: object, _source_plan: object, plan: Any, **_values: object) -> Any:
+        return plan
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(workflow, "fill_pass", lines_alone)
+        return [plan.strokes for plan in build_pipeline(request).plans]
+
+
+def _seed_holding(
+    points: tuple[Point, ...], drawn: Sequence[Stroke], seeds: Sequence[Point]
+) -> int:
+    """Which fill a stretch of fill coil is: the one set in the area holding it.
+
+    A drawing of one fill needs no looking, so a turned or sized pass of it,
+    whose fill point is not in the pass's frame, can be taken apart too.
+    """
+
+    if len(seeds) == 1:
+        return 0
+    path = LineString([(p.x, p.y) for p in points])
+    lines = [LineString([(p.x, p.y) for p in line.points]) for line in drawn]
+    face = next(
+        face for face in polygonize(unary_union(lines)) if face.buffer(GEOMETRY_SLACK).covers(path)
+    )
+    return next(
+        index for index, seed in enumerate(seeds) if face.contains(ShapelyPoint(seed.x, seed.y))
+    )
 
 
 def _unversioned_sha256(gcode: str) -> str:
@@ -469,9 +562,9 @@ def test_concentric_finishes_on_its_outer_ring_nearest_what_prints_next() -> Non
 
 
 def test_a_hole_inside_the_area_stays_bare() -> None:
-    plan = _slice("ring-with-hole.svg").plans[0]
-    (fill,) = _fills(plan)
-    outer, inner = (Polygon([(p.x, p.y) for p in s.points]) for s in _lines(plan))
+    (laid,) = _passes("ring-with-hole.svg")
+    (fill,) = _fills(laid)
+    outer, inner = (Polygon([(p.x, p.y) for p in s.points]) for s in _lines(laid))
     if outer.area < inner.area:
         outer, inner = inner, outer
     for point in fill.points:
@@ -514,14 +607,21 @@ def test_a_fill_never_lays_coil_over_coil_it_already_laid(name: str) -> None:
     """The cup builder proves a fill stays inside its area; Draw also proves it
     never lays a bead over one it laid, to within float noise — across every
     piece of the fill at once, on every pass.  Every fill of these drawings
-    prints, so the check is never passed by a fill that printed empty."""
+    prints, so the check is never passed by a fill that printed empty.  A
+    fill run straight on into its line lays none with the step onto it
+    either."""
 
     seeds = len(ingest_svg(FIXTURES / name).fill_seeds)
-    for plan in _slice(name, 2).plans:
-        pieces = _fill_pieces(plan)
+    for laid in _passes(name, 2):
+        pieces = _fill_pieces(laid)
         assert len(pieces) == seeds, name
         for index, fill in pieces.items():
             assert _coil_on_coil_across(fill) == [], (name, index)
+        if laid.step is not None:
+            ran_on = _fills(laid)[-1]
+            index = int(ran_on.id.split("-")[1])
+            stepped = (*pieces[index][:-1], (*ran_on.points, laid.step[1]))
+            assert _coil_on_coil_across(stepped) == [], (name, index, "step")
 
 
 @pytest.mark.parametrize(
@@ -549,8 +649,10 @@ def test_concentric_lays_no_coil_alongside_its_own_coil(name: str) -> None:
     for as long as a coil is wide.  Where the area is too narrow to trace a
     ring round, one coil runs down its middle instead."""
 
-    for plan in _slice(name).plans:
-        for index, fill in _fill_pieces(plan).items():
+    for laid in _passes(name):
+        pieces = _fill_pieces(laid)
+        assert pieces, name
+        for index, fill in pieces.items():
             assert _longest_side_by_side(fill, near=ON_ITSELF) < BEAD, (name, index)
 
 
@@ -566,16 +668,12 @@ def test_a_box_just_over_a_multiple_of_the_spacing_gets_one_coil_down_its_middle
         .replace("40.02", f"{20.0 + height / 2.0:g}"),
         encoding="utf-8",
     )
-    plan = build_pipeline(
-        PipelineRequest(
-            sources=(source,), draw_schema_version=2, page_mode=PageMode.STACK, reproducible=True
-        )
-    ).plans[0]
-    (fill,) = _fills(plan)
+    (laid,) = _passes(source)
+    (fill,) = _fills(laid)
     assert _longest_side_by_side((fill.points,), near=HALF_A_SPACING) < BEAD
     # Nothing is left bare either: no point of the box a spacing in from its
     # line is further than a spacing from the fill's coil.
-    (box,) = _faces(plan)
+    (box,) = _faces(laid)
     assert _furthest_from_coil(box, (fill.points,)) <= SPACING
 
 
@@ -583,9 +681,9 @@ def test_every_concentric_box_of_a_drawing_prints_in_one_coil() -> None:
     """The review's blocker: only the box filled last printed, and every other
     one was refused as a shape Concentric can't fill — plain squares."""
 
-    for plan in _slice("boxes.svg", 2).plans:
-        assert WarningCode.FILL_REFUSED not in _codes(plan)
-        pieces = _fill_pieces(plan)
+    for laid in _passes("boxes.svg", 2):
+        assert WarningCode.FILL_REFUSED not in _codes(laid)
+        pieces = _fill_pieces(laid)
         assert sorted(pieces) == [0, 1, 2, 3]
         assert all(len(fill) == 1 for fill in pieces.values())
 
@@ -639,11 +737,11 @@ def test_concentric_fills_every_part_where_its_rings_part(name: str) -> None:
     a bridge where one clears, otherwise after a lift; and the fill keeps one
     spacing from every drawn line, the loose ones included."""
 
-    plan = _slice(name).plans[0]
-    assert WarningCode.FILL_REFUSED not in _codes(plan)
-    ((index, pieces),) = _fill_pieces(plan).items()
-    face = _face_holding(_faces(plan), _seed_points(name)[index])
-    drawn = unary_union([LineString([(p.x, p.y) for p in s.points]) for s in _lines(plan)])
+    (laid,) = _passes(name)
+    assert WarningCode.FILL_REFUSED not in _codes(laid)
+    ((index, pieces),) = _fill_pieces(laid).items()
+    face = _face_holding(_faces(laid), _seed_points(name)[index])
+    drawn = unary_union([LineString([(p.x, p.y) for p in s.points]) for s in _lines(laid)])
     for piece in pieces:
         assert face.buffer(GEOMETRY_SLACK).covers(LineString([(p.x, p.y) for p in piece]))
         assert min(drawn.distance(ShapelyPoint(p.x, p.y)) for p in piece) >= SPACING - 1e-6
@@ -652,18 +750,23 @@ def test_concentric_fills_every_part_where_its_rings_part(name: str) -> None:
 
 def test_straight_rows_finish_by_the_line_when_the_angle_allows() -> None:
     """At 135 degrees a square's rows end at its corners on that diagonal, the
-    line's start among them; at 45 they cannot, and no wrap across the rows
-    is laid to pretend otherwise — it is a lift from the far corner."""
+    line's start among them, and run straight on into the line; at 45 they
+    cannot, and no wrap across the rows is laid to pretend otherwise — it is
+    a lift from the far corner."""
 
-    first, second = _slice("closed-square-rows.svg", 2).plans
+    first, second = _passes("closed-square-rows.svg", 2)
     line_start = _lines(first)[0].points[0]
-    # Inside the corner: a spacing in from each side, half a spacing along.
-    assert _fills(second)[0].points[-1].distance_to(line_start) < 2.0 * BEAD
-    assert _fills(first)[0].points[-1].distance_to(line_start) > 90.0
-    for plan in (first, second):
-        (fill,) = _fills(plan)
-        (travel,) = plan.travels
-        assert (travel.start, travel.end) == (fill.points[-1], line_start)
+    (far,) = _fills(first)
+    (near,) = _fills(second)
+    assert far.points[-1].distance_to(line_start) > 90.0
+    (travel,) = first.plan.travels
+    assert (travel.start, travel.end) == (far.points[-1], line_start)
+    assert first.step is None
+    # Inside the corner: a spacing in from each side, half a spacing along,
+    # within a coil and a half of the line's start.
+    assert near.points[-1].distance_to(line_start) <= 1.5 * BEAD
+    assert second.step == (near.points[-1], line_start)
+    assert second.plan.travels == ()
 
 
 def test_rows_split_where_the_shape_allows_no_single_stroke() -> None:
@@ -721,16 +824,118 @@ def test_a_fill_within_one_coil_of_its_line_runs_straight_on_into_it(tmp_path: P
         assert _longest_side_by_side((fill,), near=HALF_A_SPACING) < BEAD
 
 
-def test_a_fill_further_than_one_coil_from_its_line_lifts_instead() -> None:
-    # The square's line starts on its corner, and a 90-degree corner sits
-    # sqrt(2) spacings from the outer ring: 5.66 mm, more than the 5 mm coil.
-    plan = _slice("closed-square.svg").plans[0]
+def test_a_filled_box_runs_straight_on_into_its_line_on_every_pass() -> None:
+    """Pete: "They have to minimize traveling".  A Box's line starts on its
+    corner, and a 90-degree corner sits sqrt(2) spacings from the outer ring:
+    5.66 mm, more than the 5 mm coil, so every filled box lifted once a pass.
+    Within a coil and a half, it runs on, every pass, forwards and back."""
+
+    request = _request("closed-square.svg", 3)
+    result = build_pipeline(request)
+    passes = _taken_apart(result, request)
+    for laid in passes:
+        assert laid.plan.travels == ()
+        (stroke,) = laid.plan.strokes
+        (fill,) = _fills(laid)
+        (line,) = _lines(laid)
+        assert stroke.id == line.id == "stroke-0000"
+        assert laid.step == (fill.points[-1], line.points[0])
+        step = LineString([(p.x, p.y) for p in laid.step])
+        assert step.length == pytest.approx(SPACING * math.sqrt(2.0))
+        assert BEAD < step.length <= 1.5 * BEAD
+        square = Polygon([(p.x, p.y) for p in line.points])
+        assert square.covers(step)
+        # The step lays its coil across the bare margin only: over neither
+        # the fill nor the line.
+        assert _coil_on_coil((*fill.points, line.points[0])) == []
+        assert step.intersection(LineString([(p.x, p.y) for p in line.points])).equals(
+            ShapelyPoint(line.points[0].x, line.points[0].y)
+        )
+    # No lift between fill and line: each pass prints as one run at one
+    # height.  A pass run backwards (stack.py) lays that same run end to
+    # start, the line first and then the same step back onto the fill.
+    moves = result.emission.stream.moves
+    runs = []
+    for page in range(len(passes)):
+        on_page = [m for m in moves if m.page_index == page]
+        printing = [i for i, m in enumerate(on_page) if m.kind is MoveKind.PRINT]
+        run = on_page[printing[0] : printing[-1] + 1]
+        assert all(m.kind is MoveKind.PRINT for m in run), page
+        assert len({m.z for m in run}) == 1, page
+        assert {m.stroke_id for m in run} == {"stroke-0000"}, page
+        runs.append([(m.x, m.y) for m in run])
+    assert runs[1] == runs[0][::-1]
+    assert runs[2] == runs[0]
+    # The forward run lays the step itself, on the bed where the pass sits.
+    (stroke,) = passes[0].plan.strokes
+    shift = (runs[0][0][0] - stroke.points[0].x, runs[0][0][1] - stroke.points[0].y)
+    laid_step = LineString([(p.x + shift[0], p.y + shift[1]) for p in passes[0].step])
+    assert LineString(runs[0]).buffer(GEOMETRY_SLACK).covers(laid_step)
+
+
+def test_a_fill_further_than_a_coil_and_a_half_from_its_line_lifts_instead() -> None:
+    # The triangle's line starts on a corner, and a 60-degree corner sits two
+    # spacings from the outer ring: 8 mm, more than a coil and a half (7.5 mm).
+    plan = _slice("triangle.svg").plans[0]
     fill, line = plan.strokes
     assert fill.id.startswith("fill-") and line.id == "stroke-0000"
     (travel,) = plan.travels
-    assert travel.length == pytest.approx(SPACING * math.sqrt(2.0))
-    assert travel.length > BEAD
+    assert (travel.start, travel.end) == (fill.points[-1], line.points[0])
+    assert travel.length == pytest.approx(2.0 * SPACING, abs=1e-3)
+    assert travel.length > 1.5 * BEAD
     assert travel.lift == 4.0
+
+
+def test_a_run_on_that_would_cross_a_drawn_line_lifts_instead() -> None:
+    """A line drawn in from the square's side 1 mm from the corner its line
+    starts on: the fill's nearest corner is 6.4 mm from the line's start,
+    within a coil and a half, but the step would cross that line's coil."""
+
+    plan = _slice("spur-by-corner.svg").plans[0]
+    fill, line, spur = plan.strokes
+    assert fill.id.startswith("fill-") and line.closed and not spur.closed
+    first, _between_lines = plan.travels
+    assert (first.start, first.end) == (fill.points[-1], line.points[0])
+    assert BEAD < first.length <= 1.5 * BEAD
+    step = LineString([(first.start.x, first.start.y), (first.end.x, first.end.y)])
+    assert Polygon([(p.x, p.y) for p in line.points]).covers(step)
+    assert step.crosses(LineString([(p.x, p.y) for p in spur.points]))
+
+
+@pytest.mark.parametrize(
+    "short",
+    (
+        "M 149 50 L 149 51",  # in from the side 1 mm: it ends on the step
+        "M 148.5 51.2 L 148.5 60",  # loose: it ends 0.09 mm beside the step
+    ),
+)
+def test_a_run_on_that_would_lay_its_coil_on_a_short_line_lifts_instead(
+    tmp_path: Path, short: str
+) -> None:
+    """The review: a short line by the corner the square's line starts on,
+    which the step misses by a hair or touches only at its end, still ran on.
+    On the pass run backwards that line is laid first, and the step dragged
+    its bead through the end of that coil at print height."""
+
+    source = tmp_path / "short-by-corner.svg"
+    source.write_text(
+        (FIXTURES / "spur-by-corner.svg")
+        .read_text(encoding="utf-8")
+        .replace("M 149 50 L 149 90", short),
+        encoding="utf-8",
+    )
+    for laid in _passes(source, 3):
+        assert laid.step is None
+        fill, line, spur = laid.plan.strokes
+        assert fill.id.startswith("fill-") and line.closed and not spur.closed
+        first, _between_lines = laid.plan.travels
+        assert (first.start, first.end) == (fill.points[-1], line.points[0])
+        assert BEAD < first.length <= 1.5 * BEAD
+        step = LineString([(first.start.x, first.start.y), (first.end.x, first.end.y)])
+        assert Polygon([(p.x, p.y) for p in line.points]).covers(step)
+        coil = LineString([(p.x, p.y) for p in spur.points])
+        assert not step.crosses(coil)
+        assert step.distance(coil) < 0.1
 
 
 def test_every_pass_ends_where_the_next_begins_with_a_fill() -> None:
@@ -749,10 +954,10 @@ def test_every_pass_ends_where_the_next_begins_with_a_fill() -> None:
 
 
 def test_straight_rows_cross_at_45_and_135_and_concentric_repeats() -> None:
-    rows = _slice("closed-square-rows.svg", 3).plans
-    angles = [_row_angle(_fills(plan)[0].points) for plan in rows]
+    rows = _passes("closed-square-rows.svg", 3)
+    angles = [_row_angle(_fills(laid)[0].points) for laid in rows]
     assert angles == pytest.approx([45.0, 135.0, 45.0])
-    assert all(len(_fills(plan)) == 1 for plan in rows)
+    assert all(len(_fills(laid)) == 1 for laid in rows)
     concentric = _slice("closed-square.svg", 3).plans
     assert concentric[0].strokes == concentric[1].strokes == concentric[2].strokes
 
@@ -762,27 +967,27 @@ def test_straight_rows_turn_pass_to_pass_whatever_the_layers_setting(layers: int
     """Every layer of a pass prints its one plan, so the rows turn by pass.
     With two layers a pass they counted layers instead, and never turned."""
 
-    plans = build_pipeline(
+    passes = _passes_of(
         PipelineRequest(
             sources=(FIXTURES / "closed-square-rows.svg",) * 4,
             layers=layers,
             page_mode=PageMode.STACK,
             reproducible=True,
         )
-    ).plans
-    angles = [_row_angle(_fills(plan)[0].points) for plan in plans]
+    )
+    angles = [_row_angle(_fills(laid)[0].points) for laid in passes]
     assert angles == pytest.approx([45.0, 135.0, 45.0, 135.0])
 
 
 def test_rows_refused_or_broken_at_their_angle_turn_and_say_so() -> None:
-    first, second = _slice("l-shape.svg", 2).plans
+    first, second = _passes("l-shape.svg", 2)
     assert WarningCode.FILL_ANGLE_CHANGED not in _codes(first)
     (turned,) = [w for w in second.warnings if w.code is WarningCode.FILL_ANGLE_CHANGED]
     assert turned.severity is Severity.INFO
     assert "45°" in turned.message and "135°" in turned.message
     # Both passes lay the L in one stroke, at 45 degrees.
-    for plan in (first, second):
-        (fill,) = _fills(plan)
+    for laid in (first, second):
+        (fill,) = _fills(laid)
         assert _row_angle(fill.points) == pytest.approx(45.0)
 
 
@@ -912,8 +1117,7 @@ def test_drape_leaves_fills_out_and_says_so() -> None:
 
 
 def test_a_turned_and_sized_pass_fills_the_turned_and_sized_area() -> None:
-    result = _slice("closed-square.svg", 2, page_transforms=((30.0, 0.8), (0.0, 1.0)))
-    turned, plain = result.plans
+    turned, plain = _passes("closed-square.svg", 2, page_transforms=((30.0, 0.8), (0.0, 1.0)))
     (fill,) = _fills(turned)
     (line,) = _lines(turned)
     square = Polygon([(p.x, p.y) for p in line.points])
@@ -986,17 +1190,18 @@ def test_a_fill_run_on_into_its_line_is_given_its_own_stroke_before_it_is_taken_
     assert [w.code for w in first.warnings].count(WarningCode.FILL_REFUSED) == 1
 
 
-def test_a_refused_slice_that_names_no_fill_is_raised_as_it_is(
+def test_a_refused_slice_naming_a_line_no_fill_ran_on_into_is_raised_as_it_is(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The square's fill lifts to its line, so a refusal blaming the line is the
-    lines' own, and reaches the caller exactly as it would without a fill."""
+    """The triangle's fill lifts to its line, its corner too far to run on
+    from, so a refusal blaming the line is the lines' own, and reaches the
+    caller exactly as it would without a fill."""
 
     calls = _failing_lint(
         monkeypatch, (LintScope(role="current", page_index=0, stroke_id="stroke-0000"),)
     )
     with pytest.raises(StackError, match="stubbed contact") as refused:
-        _slice("closed-square.svg")
+        _slice("triangle.svg")
     assert len(calls) == 1
     assert refused.value.lint_report is not None
 
@@ -1015,8 +1220,10 @@ def test_a_plan_of_the_lines_alone_says_it_holds_no_fill() -> None:
     stacked = plan.stack(reproducible=True)
     assert [stroke.id for stroke in stacked.plans[0].strokes] == ["stroke-0000"]
     assert WarningCode.FILL_UNLAID in [w.code for w in stacked.warnings]
-    sliced = _slice("closed-square.svg")
-    assert _fills(sliced.plans[0])
+    request = _request("closed-square.svg")
+    sliced = build_pipeline(request)
+    (laid,) = _taken_apart(sliced, request)
+    assert _fills(laid)
     assert WarningCode.FILL_UNLAID not in [w.code for w in sliced.warnings]
     bare = load_svg(FIXTURES / "self-crossing-bare.svg").plan()
     assert WarningCode.FILL_UNLAID not in _codes(bare)

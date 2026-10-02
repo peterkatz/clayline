@@ -44,4 +44,9 @@
   loose line inside (loose-line.svg), the pinched neck in Straight rows
   (pinched-rows.svg), and turned-pass.svg, a self-crossing line the review's
   sweep script drew at random (seed 13), one of whose fills the finished slice
-  cannot print over a pass turned 33 degrees.
+  cannot print over a pass turned 33 degrees. Added when a fill began running
+  on into a line up to a coil and a half away: an equilateral triangle
+  (triangle.svg), whose line starts on a 60-degree corner too far from its
+  fill to run on from, and the square with a line in from its side 1 mm from
+  the corner its line starts on (spur-by-corner.svg), which a run-on would
+  cross.

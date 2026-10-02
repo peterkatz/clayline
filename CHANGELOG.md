@@ -2,6 +2,20 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.5.1 — 2026-10-01
+
+### Fixed
+- **A filled box no longer lifts between its fill and its outline.** The
+  outline starts on a corner, a little over a coil width from where the fill
+  ends, so the nozzle used to lift and come down once on every pass. Now the
+  fill runs straight on into the outline whenever that step stays inside the
+  area and clear of every other line.
+- **A pass with nothing to print says so plainly.** A pass with no lines on
+  it, or lines too short to lay a coil, used to stop Slice job with a
+  technical error once it was turned or resized. Now it reads, for example,
+  "Pass 2 has nothing to print: it has no lines to follow. Draw on it, or
+  remove the pass."
+
 ## 0.5.0 — 2026-10-01
 
 ### New

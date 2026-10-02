@@ -2285,11 +2285,15 @@ def welded_lines(
 def plan_point_transform(
     plan: Plan, *, rotation_deg: float = 0.0, scale: float = 1.0
 ) -> Callable[[Point], Point] | None:
-    """Return the point map :func:`transform_plan` applies, or ``None`` at identity.
+    """Return the point map :func:`transform_plan` applies, or ``None`` when it moves nothing.
 
     Shared rather than restated: :func:`transform_plan` moves the lines with it
     and a Draw area fill finds its area through the very same map, so a fill
     cannot drift from the lines that bound it under the pass's turn and size.
+
+    It moves nothing at identity, and nothing on a plan with no lines: such a
+    pass has nothing to turn or size, so it goes on exactly as it would without
+    them and the slice says what it says of any pass with nothing to print.
     """
 
     if not math.isfinite(rotation_deg):
@@ -2297,6 +2301,8 @@ def plan_point_transform(
     if not math.isfinite(scale) or scale <= 0:
         raise ValueError("scale must be finite and positive")
     if scale == 1.0 and rotation_deg % 360.0 == 0.0:
+        return None
+    if not plan.strokes:
         return None
 
     transform_frame = plan.document_bounds or plan.bounds

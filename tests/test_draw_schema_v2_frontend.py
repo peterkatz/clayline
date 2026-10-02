@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -327,3 +328,35 @@ def test_result_surfaces_use_one_global_pass_axis() -> None:
     assert "<h3>Page sequence</h3>" not in HTML
     assert "<span>Pages</span>" not in HTML
     assert "<span>Pass pitch</span>" in HTML
+
+
+def test_slice_footnote_says_which_pass_failed_instead_of_still_measuring() -> None:
+    dependencies = _block("function updateDependencies", "const DRAW_SETTINGS_SCHEMA")
+    assert 'passMeasurementFailure() || "Measuring every pass before Slice can run."' in (
+        dependencies
+    )
+    assert "measure this planned centerline" not in APP
+
+    # Lift the shipped function and run it: a pass whose size check refused it
+    # supplies the footnote; passes still being measured do not.
+    failure = _block("function passMeasurementFailure", "function sourceMeasurementKey")
+    script = (
+        'const assert = require("node:assert/strict");\n'
+        "const state = { files: [] };\n"
+        f"function passMeasurementFailure{failure}\n"
+        """
+state.files = [{ measurementStatus: "ready" }, { measurementStatus: "pending" }];
+assert.equal(passMeasurementFailure(), null);
+state.files = [
+  { measurementStatus: "pending" },
+  { measurementStatus: "error", measurementError: "Pass 2 has nothing to print." },
+];
+assert.equal(passMeasurementFailure(), "Pass 2 has nothing to print.");
+state.files = [{ measurementStatus: "error", measurementError: null }];
+assert.equal(passMeasurementFailure(), "Clayline could not measure this pass.");
+console.log("ok");
+"""
+    )
+    result = subprocess.run(["node", "-e", script], check=False, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
