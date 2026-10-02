@@ -85,12 +85,35 @@ DRAW_TOOLTIPS = {
         "Replaces the kink with a bend the head can walk, so it stops piling clay where it "
         "used to stop dead and pivot. With Lines out you can also click one corner on the bed."
     ),
+    # Fill (2026-10-01): the visible way to F.  It names the shortcut, because
+    # F alone "won't be intuitive" (Pete).
+    "drawFillButton": (
+        "Fill a closed area with coil, the way a cup bottom is filled: pick Concentric or "
+        "Straight rows, then click inside the area. Shortcut: F with the pointer in the area."
+    ),
+}
+
+# The Fill menu's three choices, each saying what it lays.
+FILL_MENU_TOOLTIPS = {
+    'data-draw-fill="concentric"': (
+        "Rings of coil that follow the area's own edge inward, laid as one connected coil — "
+        "a triangle fills with nested triangles."
+    ),
+    'data-draw-fill="rows"': (
+        "Rows of coil laid side by side, back and forth as one coil where the shape allows. "
+        "The rows cross from one pass to the next."
+    ),
+    'data-draw-fill="clear"': (
+        "Take the fill out of an area. Its lines stay on the bed exactly as they are, "
+        "and undo brings the fill back."
+    ),
 }
 
 # What a control says INSTEAD of going quietly dead, and what the strip says the
 # tool in hand is waiting for.  A disabled button gets no tooltip in a browser,
 # so these are also written in plain sight beside the controls.
 DISABLED_REASONS = (
+    "Draw a closed shape on the bed first — a fill goes inside lines that close round an area.",
     "Draw a line first — there is nothing on the bed to lay a second copy of.",
     "Draw a line first — there is nothing on the bed to lay around a centre.",
     "Pick Polygon first — this is how many sides the shape it drags onto the bed has.",
@@ -148,6 +171,11 @@ READOUT_TOOLTIPS = (
     "The head stops dead and pivots here, and clay piles up. Ease the angle or round the corner.",
     "Clay laid outside the work area never prints. Move the design onto the bed.",
     "Where the pointer is on the bed, in millimetres from the front-left corner of the work area.",
+    # Only while a fill is on the bed: the row that counts them, and what
+    # Strokes and Travels add once a fill will lay clay.
+    "Closed areas Clayline fills with coil for you. A waiting fill's area has a gap, so it "
+    "prints nothing until the lines close round it again.",
+    "Fills add strokes and travels of their own; Slice job counts them exactly.",
 )
 
 # Engine vocabulary.  Every one of these is a real term in the Python, and not
@@ -326,7 +354,7 @@ def test_every_control_the_drawing_added_states_a_physical_consequence() -> None
         assert match is not None, f"{element_id} carries no tooltip"
         assert match.group(1) == expected, element_id
         tooltips[element_id] = expected
-    for attribute, expected in SWITCH_TOOLTIPS.items():
+    for attribute, expected in {**SWITCH_TOOLTIPS, **FILL_MENU_TOOLTIPS}.items():
         tag = _element(attribute)
         match = re.search(r'title="([^"]*)"', tag)
         assert match is not None, f"{attribute} carries no tooltip"
@@ -363,6 +391,8 @@ def test_the_surfaces_own_copy_speaks_the_charters_language() -> None:
     # finding, are as visible as anything in the header.
     tray = _block('id="drawTray"', 'id="drawReadout"')
     header += tray + _block('id="drawFixButton"', "</button>")
+    # The Fill button's menu opens over the bed and is read the same way.
+    header += _block('id="drawFillMenu"', "</div>")
     # The shell explains itself in prose that names the engine freely, as it
     # should; only the strings it hands the artist are in scope.
     code = re.sub(r"//.*", "", SHELL)
@@ -397,10 +427,12 @@ def test_the_tool_set_is_one_segmented_control_of_four() -> None:
 
 
 def test_the_secondary_controls_live_behind_one_quiet_disclosure() -> None:
-    # Measured in the browser at a 1280 px window: the surface switch, the four
-    # tools, Coil, this button and Done need 570 px of the 598 px the toolbar
-    # has.  Nothing else fits on that row, and a control row that can exceed its
-    # container is a charter defect — so the rest opens as a strip below it.
+    # Measured in the browser with the rail and the inspector open (2026-10-01):
+    # the surface switch, the four tools, Coil, Reference, this button, Fill and
+    # Done need about 753 px, which a 1440 px window gives them; below that the row
+    # scrolls (app.css).  Nothing else fits on that row, and a control row that
+    # can exceed its container is a charter defect — so the rest opens as a
+    # strip below it.
     actions = _block('class="preview-actions"', "</div>\n        </div>")
     header_controls = re.findall(r'id="(draw[A-Za-z]+)"', actions)
     assert header_controls == [
@@ -411,6 +443,7 @@ def test_the_secondary_controls_live_behind_one_quiet_disclosure() -> None:
         "drawReferenceButton",
         "drawReferenceInput",
         "drawTrayButton",
+        "drawFillButton",
         "drawDoneButton",
     ]
     tray = _block('id="drawTray"', 'id="drawReadout"')
@@ -728,3 +761,98 @@ def test_the_photo_store_can_hand_a_photo_out_and_take_it_back() -> None:
     assert STORE.count("bitmaps.set(imageId, decoded);") >= 2
     # A pass whose photo is gone keeps its placement; nothing else moves.
     assert 'if (!blob || !/^image\\/(png|jpeg|webp)$/.test(blob.type || "")) continue;' in APP
+
+
+def test_fill_is_a_button_beside_shape_and_repeat_and_not_a_fifth_tool() -> None:
+    # Pete: "we probably also need something in the ui since F won't be
+    # intuitive".  The button sits beside Shape & repeat, opens a menu of the
+    # three choices, and arms the pointer; the four tools are untouched (the
+    # tool-set test above pins them).
+    button = _element('id="drawFillButton"')
+    assert 'aria-haspopup="menu"' in button
+    assert 'aria-controls="drawFillMenu"' in button
+    assert 'aria-pressed="false"' in button
+    assert "F with the pointer in the area" in button
+    menu = _block('id="drawFillMenu"', "</div>")
+    assert re.findall(r'data-draw-fill="([a-z]+)"', menu) == ["concentric", "rows", "clear"]
+    assert [label.strip() for label in re.findall(r"</svg>([^<]+)</button>", menu)] == [
+        "Concentric",
+        "Straight rows",
+        "Clear",
+    ]
+    # The menu hangs inside the bed, not from the header row that can scroll.
+    view = _block('id="drawView"', 'class="draw-hint"')
+    assert 'id="drawFillMenu"' in view
+    # The pattern is never called by a name the app does not use.
+    copy = (button + menu + _block('class="draw-hint"', "</p>")).lower()
+    for term in ("circle", "circles", "spiral", "raster", "polygon fill", "seed"):
+        assert not re.search(rf"\b{term}\b", copy), term
+    # The bed hint keeps every line it had and gains one for F and the button.
+    hint = _block('class="draw-hint"', "</p>")
+    assert "<strong>F</strong> fills the closed area under the pointer" in hint
+    assert "<strong>Fill</strong>" in hint
+    assert hint.count("<br>") == 6
+    # The shell drives the machine through its published surface.
+    machine = (STATIC / "draw-input.js").read_text(encoding="utf-8")
+    for call in ("armFill(", "fillArmed:"):
+        assert call in machine, call
+    assert "input.armFill(arm);" in SHELL
+    assert 'document.querySelectorAll("[data-draw-fill]")' in SHELL
+    assert "onFillState(state) { syncFillButton(state); }," in SHELL
+    # Pressed again while armed, it puts the pointer down; picking a drawing
+    # tool does too (draw-input's setTool).
+    assert "if (input.fillArmed()) {\n        armFill(null);" in SHELL
+    # F is the arrange sheet's to swallow while the photo has the pointer.
+    arrange = SHELL[SHELL.index("function onArrangeKeydown") : SHELL.index("function setArrange")]
+    assert '|| event.key === "f" || event.key === "F"' in arrange
+
+
+def test_without_a_fill_the_readout_says_what_it_always_said() -> None:
+    # The invariant: no fill, no change.  The fill rows and the "+ fills" marks
+    # exist only while a fill is on the bed; a drawing without one reads the
+    # numbers it always read, with the tooltips it always had.  This pins the
+    # wiring; test_draw_shell_fills.py runs the shell and pins the rows
+    # themselves against the ones recorded before fills existed.
+    readout = SHELL[
+        SHELL.index("  function syncReadout()") : SHELL.index("  /* ---------- round this corner")
+    ]
+    assert "const fills = tallyFills(doc, feel);" in readout
+    assert 'const plus = fills && fills.laying ? " + fills" : "";' in readout
+    assert "plus ? `${chain.strokes}${plus}` : chain.strokes," in readout
+    assert "plus ? `${chain.travels}${plus}` : chain.travels," in readout
+    assert "if (fills) {" in readout
+    tally = SHELL[SHELL.index("  function tallyFills(") : SHELL.index("  function readoutRow(")]
+    assert "if (!Array.isArray(doc.fills) || !doc.fills.length) return null;" in tally
+    # Counted off the drawing as last written, so a drag in flight never
+    # remeasures the areas a frame at a time.
+    assert "session.svg" in tally
+    # Straight rows lean the way this pass lays them on the bed.
+    assert "return (index % 2 === 0 ? 45 : 135) - number(file && file.rotation);" in SHELL
+    assert "fillAngle: session && active ? fillAngleOf(active, session.index) : 45," in SHELL
+
+
+def test_seamless_spiral_steps_aside_while_a_pass_has_a_fill() -> None:
+    # A fill's coil starts and stops, so Seamless spiral cannot carry it: the
+    # switch is disabled with the reason, in the rail's own sweep.
+    mark = re.search(r"const FILL_MARK = /(.+)/;", APP)
+    assert mark is not None
+    pattern = re.compile(mark.group(1))
+    filled = (
+        '<svg data-clayline-origin="drawn" xmlns="http://www.w3.org/2000/svg" width="381mm" '
+        'height="381mm" viewBox="0 0 381 381"\n     fill="none" stroke="#000" stroke-width="5" '
+        'stroke-linecap="round" data-clayline-fill="concentric 61.2 40.8">\n'
+        '  <path d="M 0 0 L 1 1"/>'
+    )
+    assert pattern.search(filled)
+    assert not pattern.search(filled.replace(' data-clayline-fill="concentric 61.2 40.8"', ""))
+    # Only the drawing's own root carries a fill.
+    assert not pattern.search('<svg width="1"><path data-clayline-fill="rows 1 2"/></svg>')
+    assert "const filled = anyPassFilled();" in APP
+    assert "const helicalUnavailable = drape || filled || !compatibleRows" in APP
+    reason = (
+        "Unavailable while an area is filled: a fill's coil starts and stops, "
+        "so the nozzle can't climb without a seam."
+    )
+    assert f'? "{reason}"' in APP
+    for term in (*ENGINE_JARGON, "spiral", "raster", "stroke"):
+        assert not re.search(rf"\b{term}\b", reason.lower()), term

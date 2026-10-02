@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from clayline import defaults as _defaults
+from clayline.draw_fill import unlaid_fill_warnings
 from clayline.ingest import ingest_svg
 from clayline.models import (
     Bounds,
@@ -76,6 +78,10 @@ class DesignFacade(Design):
             offset=offset,
             z_mode=z_mode,
         )
+        if self.fill_seeds:
+            # A plan holds the drawn lines; the area fills are laid when the job
+            # is sliced (clayline.workflow), so this plan says it holds none.
+            plan = replace(plan, warnings=(*plan.warnings, *unlaid_fill_warnings(self, plan)))
         return _as_plan_facade(plan)
 
 
@@ -215,6 +221,7 @@ def _as_design_facade(design: Design) -> DesignFacade:
         design.source_units,
         design.scale,
         design.document_bounds,
+        design.fill_seeds,
     )
 
 

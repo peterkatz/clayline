@@ -848,6 +848,9 @@ def _slice_payload(payload: dict[str, Any]) -> dict[str, Any]:
     helical_eligible = (
         planned_stroke_count > 0
         and all(stroke.closed for plan in result.plans for stroke in plan.strokes)
+        # The engine refuses a seamless spiral with any area fill, even one
+        # that is waiting and lays nothing (clayline.workflow).
+        and not any(design.fill_seeds for design in result.designs)
         and (
             not explicit_passes
             or (

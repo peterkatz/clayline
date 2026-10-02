@@ -8,12 +8,14 @@ from math import isfinite
 from pathlib import Path
 from xml.etree import ElementTree
 
-from svgelements import SVG, Shape, Use
+from svgelements import SVG, Matrix, Shape, Use
 
 from clayline.flatten import DEFAULT_FLATTEN_TOL, PointTransform, flatten_path
 from clayline.models import (
     Bounds,
     Design,
+    FillPattern,
+    FillSeed,
     Point,
     Polyline,
     Provenance,
@@ -29,6 +31,9 @@ _SVG_NAMESPACE_PREFIX = "{http://www.w3.org/2000/svg}"
 _SUPPORTED_TAGS = {"path", "line", "polyline", "polygon", "circle", "ellipse", "rect"}
 _SVG_LENGTH = re.compile(r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*([A-Za-z%]*)\s*$")
 _XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
+# Draw's area fills ride on the root element as ``pattern x y`` entries joined
+# by ``;`` — x y in the drawing's own user units, y down like the path data.
+_FILL_ATTRIBUTE = "data-clayline-fill"
 _UNIT_TO_MM = {
     "mm": 1.0,
     "cm": 10.0,
@@ -211,6 +216,49 @@ def _element_point(element: Shape, transform: PointTransform) -> Point | None:
     return transform((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
 
 
+def _fill_seeds(
+    svg: SVG, transform: PointTransform
+) -> tuple[tuple[FillSeed, ...], tuple[Warning, ...]]:
+    """Read Draw's root fill attribute into printer-frame seeds.
+
+    A fill point is a root user-unit coordinate, so it takes the root viewBox
+    mapping the paths already went through and then the same ``transform`` the
+    lines use; a point drawn inside an area stays inside it.  An entry that does
+    not read is skipped with a warning rather than failing the file.
+    """
+
+    raw = svg.values.get(_FILL_ATTRIBUTE)
+    if raw is None:
+        return (), ()
+    viewbox = svg.viewbox_transform
+    user_to_viewport = Matrix(viewbox) if viewbox else Matrix()
+    seeds: list[FillSeed] = []
+    warnings: list[Warning] = []
+    for entry in str(raw).split(";"):
+        if not entry.strip():
+            continue
+        parts = entry.split()
+        try:
+            if len(parts) != 3:
+                raise ValueError(entry)
+            pattern = FillPattern(parts[0].lower())
+            x, y = float(parts[1]), float(parts[2])
+            if not (isfinite(x) and isfinite(y)):
+                raise ValueError(entry)
+        except ValueError:
+            warnings.append(
+                Warning(
+                    code=WarningCode.FILL_UNREADABLE,
+                    severity=Severity.WARNING,
+                    message=f"Skipped an area fill the file could not read: {entry.strip()!r}.",
+                )
+            )
+            continue
+        viewport = user_to_viewport.point_in_matrix_space((x, y))
+        seeds.append(FillSeed(pattern, transform(float(viewport[0]), float(viewport[1]))))
+    return tuple(seeds), tuple(warnings)
+
+
 def _geometry_longest_side(elements: list[tuple[Shape, str | None]]) -> float | None:
     bounds: list[tuple[float, float, float, float]] = []
     for element, _ in elements:
@@ -326,6 +374,9 @@ def ingest_svg(
             continue
         polylines.extend(flattened)
 
+    fill_seeds, fill_warnings = _fill_seeds(svg, to_printer_point)
+    warnings.extend(fill_warnings)
+
     return Design(
         id=source_path.stem,
         source_path=source_path,
@@ -339,6 +390,7 @@ def ingest_svg(
             0.0,
             viewport_height * coordinate_to_mm * total_scale,
         ),
+        fill_seeds=fill_seeds,
     )
 
 

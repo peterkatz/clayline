@@ -104,6 +104,7 @@ function surface(options = {{}}) {{
   const doc = options.doc || core.createDocument({{ width: BED, height: BED }});
   const commits = [];
   const changes = [];
+  const fillStates = [];
   const input = createInput({{
     canvas,
     view: chosen,
@@ -112,6 +113,7 @@ function surface(options = {{}}) {{
     actions: {{
       onCommit: (label) => commits.push(label),
       onDocChanged: () => changes.push(1),
+      onFillState: (state) => fillStates.push(state),
     }},
   }});
 
@@ -122,7 +124,7 @@ function surface(options = {{}}) {{
   let nextPointer = 1;
 
   const api = {{
-    canvas, win, view: chosen, doc, input, commits, changes,
+    canvas, win, view: chosen, doc, input, commits, changes, fillStates,
     down(p, opts = {{}}) {{
       api.pointerId = opts.pointerId === undefined ? nextPointer++ : opts.pointerId;
       const c = client(p);
@@ -169,7 +171,17 @@ function surface(options = {{}}) {{
     key(key, opts = {{}}) {{
       win.dispatch("keydown", {{
         key, code: opts.code || key, metaKey: Boolean(opts.metaKey),
-        ctrlKey: Boolean(opts.ctrlKey), target: opts.target, preventDefault() {{}},
+        ctrlKey: Boolean(opts.ctrlKey), altKey: Boolean(opts.altKey),
+        repeat: Boolean(opts.repeat), target: opts.target, preventDefault() {{}},
+      }});
+      return api;
+    }},
+    // The pointer resting over the bed with no button down: what F and ⌫ act
+    // on, and what the fill pill answers.
+    hover(p) {{
+      const c = client(p);
+      canvas.dispatch("pointermove", {{
+        pointerId: 999, clientX: c.x, clientY: c.y, shiftKey: false, preventDefault() {{}},
       }});
       return api;
     }},
@@ -2138,3 +2150,547 @@ def test_the_gestures_meet_the_real_renderer() -> None:
     assert grab["commits"] == ["Move ring", "Resize ring"]
     # Space released: the frame is not drawn at all.
     assert grab["afterSpace"] == []
+
+
+# ---------- fills: F, the armed pointer, ⌫, and what the pointer says --------
+#
+# A fill is asked for, never drawn: F (or the Fill button's armed click) on an
+# area the lines already close.  The camera here is 1 px per mm, so the line hit
+# radius is 8 mm and a fill's spacing at the default 5 mm coil and 20 % join is
+# 4 mm — an area needs 8 mm across to take one.
+
+FILL_PRELUDE = """
+const box = (doc, x0, y0, x1, y1) => core.addStroke(
+  doc, core.rectStroke({x: x0, y: y0}, {x: x1, y: y1}),
+);
+const fills = (s) => s.doc.fills.map((f) => f.pattern);
+const note = (s) => (s.view.overlay.fillNote ? s.view.overlay.fillNote.text : null);
+"""
+
+
+def test_f_cycles_concentric_then_straight_rows_then_empty_one_undo_step_each() -> None:
+    result = _run_node(
+        FILL_PRELUDE
+        + """
+        const s = surface();
+        box(s.doc, 100, 100, 200, 180);
+        s.hover({x: 150, y: 140});
+        const seen = [];
+        for (let i = 0; i < 3; i++) {
+          s.key("f");
+          seen.push({fills: fills(s), commits: [...s.commits]});
+        }
+        // Shift+F is the same key to the artist.
+        s.key("F", {code: "KeyF"});
+        const shifted = fills(s);
+        // The point a fill keeps is its area's deepest point, inside it.
+        const point = s.doc.fills[0];
+        console.log(JSON.stringify({seen, shifted, point, strokes: s.strokes().length}));
+        """
+    )
+    assert [step["fills"] for step in result["seen"]] == [["concentric"], ["rows"], []]
+    assert result["seen"][2]["commits"] == [
+        "Fill with Concentric",
+        "Change to Straight rows",
+        "Clear fill",
+    ]
+    assert result["shifted"] == ["concentric"]
+    assert abs(result["point"]["x"] - 150) < 0.05 and abs(result["point"]["y"] - 140) < 0.05
+    # A fill lays no line: the drawing still holds exactly the box.
+    assert result["strokes"] == 1
+
+
+def test_f_is_left_alone_with_a_modifier_on_key_repeat_in_a_field_or_off_the_bed() -> None:
+    result = _run_node(
+        FILL_PRELUDE
+        + """
+        const s = surface();
+        box(s.doc, 100, 100, 200, 180);
+        // Off the bed: no cursor yet, so F has nothing to point at.
+        s.key("f");
+        const offBed = fills(s);
+        s.hover({x: 150, y: 140});
+        s.key("f", {metaKey: true});      // ⌘F is Find
+        s.key("f", {ctrlKey: true});
+        s.key("f", {altKey: true});
+        s.key("f", {repeat: true});       // holding F down is one press
+        s.key("f", {target: {tagName: "INPUT"}});
+        s.key("f", {target: {tagName: "BUTTON"}});
+        const guarded = fills(s);
+        s.key("f");
+        console.log(JSON.stringify({offBed, guarded, after: fills(s), commits: s.commits}));
+        """
+    )
+    assert result["offBed"] == []
+    assert result["guarded"] == []
+    assert result["after"] == ["concentric"]
+    assert result["commits"] == ["Fill with Concentric"]
+
+
+def test_a_refused_press_changes_nothing_and_says_why_at_the_cursor() -> None:
+    result = _run_node(
+        FILL_PRELUDE
+        + """
+        const out = {};
+        const ask = (name, s, p) => {
+          const before = {fills: JSON.stringify(s.doc.fills), commits: s.commits.length,
+            strokes: s.strokes().length};
+          s.hover(p).key("f");
+          out[name] = {
+            note: note(s), warn: s.view.overlay.fillNote && s.view.overlay.fillNote.warn,
+            gaps: s.view.overlay.fillGaps ? s.view.overlay.fillGaps.length : 0,
+            same: JSON.stringify(s.doc.fills) === before.fills
+              && s.commits.length === before.commits && s.strokes().length === before.strokes,
+          };
+        };
+        const s = surface();
+        box(s.doc, 100, 100, 200, 180);
+        ask("outside", s, {x: 300, y: 300});
+        ask("onLine", s, {x: 150, y: 103});
+        // A box 6 mm across: closed, but no fill coil fits a 4 mm spacing.  At
+        // this zoom its whole inside is within the line's hit radius, and the
+        // answer is still its width — "not on its line" could not be obeyed.
+        box(s.doc, 20, 20, 26, 80);
+        ask("narrow", s, {x: 23, y: 50});
+        // Zoomed in, the same box says the same.
+        const z = surface();
+        box(z.doc, 20, 20, 26, 80);
+        z.view.camera.zoomAt(23, BED - 50, 8);
+        ask("narrowNear", z, {x: 23, y: 50});
+        // A box whose last side stops 3 mm short of where it began.
+        const gap = surface();
+        core.addStroke(gap.doc, core.createStroke(
+          [{x: 100, y: 100}, {x: 200, y: 100}, {x: 200, y: 180}, {x: 100, y: 180},
+            {x: 100, y: 103}],
+          [0, 0, 0, 0], false,
+        ));
+        ask("open", gap, {x: 150, y: 140});
+        // A line in hand: F waits for it to be finished.
+        const chain = surface();
+        box(chain.doc, 100, 100, 200, 180);
+        chain.tap({x: 120, y: 120}).tap({x: 140, y: 120});
+        ask("chain", chain, {x: 150, y: 150});
+        out.chainKept = chain.input.isChaining() && chain.strokes()[1].pts.length === 2;
+        // The answer stays put until the pointer moves on.
+        s.hover({x: 300, y: 300}).key("f");
+        s.hover({x: 310, y: 300});
+        out.near = note(s);
+        s.hover({x: 340, y: 300});
+        out.gone = note(s);
+        console.log(JSON.stringify(out));
+        """
+    )
+    assert result["outside"] == {
+        "note": "Nothing closed here to fill",
+        "warn": True,
+        "gaps": 0,
+        "same": True,
+    }
+    assert result["onLine"]["note"] == "Point inside the area, not on its line"
+    assert result["onLine"]["same"] is True
+    assert result["narrow"]["note"] == "Too narrow for a fill coil — needs about 8 mm across"
+    assert result["narrow"]["same"] is True
+    assert result["narrowNear"]["note"] == result["narrow"]["note"]
+    assert result["narrowNear"]["same"] is True
+    # "Not closed" rings the two loose ends of the gap.
+    assert result["open"] == {
+        "note": "Not closed — there's a gap here",
+        "warn": True,
+        "gaps": 2,
+        "same": True,
+    }
+    assert result["chain"]["note"] == "Finish this line first — Enter"
+    assert result["chain"]["same"] is True
+    assert result["chainKept"] is True
+    assert result["near"] == "Nothing closed here to fill"
+    assert result["gone"] is None
+
+
+def test_a_small_area_fills_from_its_middle_at_a_fitted_zoom() -> None:
+    # A 381 mm bed fitted into about 600 px (a 1280 px window with the rail and
+    # the inspector open) is 1.57 px/mm, so the 8 px line hit radius is 5.1 mm.
+    # A 10 mm box has room for a fill coil (4 mm spacing), yet every point in
+    # it is within 5.1 mm of a line: F at its very middle must still fill it,
+    # not say "not on its line" — which only zooming in would have cured.
+    result = _run_node(
+        FILL_PRELUDE
+        + """
+        const fitted = () => {
+          const s = surface();
+          s.view.camera.zoomAt(0, BED, 1.57);
+          // The harness's own client mapping is fixed at the identity camera;
+          // after the zoom the pointer is placed through the camera itself.
+          s.rest = (p) => {
+            const c = s.view.camera.toPx(p);
+            s.canvas.dispatch("pointermove", {
+              pointerId: 999, clientX: c.x, clientY: c.y, shiftKey: false, preventDefault() {},
+            });
+            return s;
+          };
+          return s;
+        };
+        const press = (s, p) => {
+          s.rest(p).key("f");
+          return {note: note(s), fills: fills(s)};
+        };
+        const out = {hit: fitted().view.camera.mm(8)};
+        // The 10 mm box, pressed dead centre.
+        const small = fitted();
+        box(small.doc, 100, 100, 110, 160);
+        out.centre = press(small, {x: 105, y: 130});
+        // Armed, the pointer says the click will fill it.
+        const armed = fitted();
+        box(armed.doc, 100, 100, 110, 160);
+        armed.input.armFill("concentric");
+        armed.rest({x: 105, y: 130});
+        out.armed = note(armed);
+        // Pete's case: the little triangle a single line makes where it
+        // crosses itself, 12 by 20 mm, pressed at its deepest point.
+        const cross = fitted();
+        core.addStroke(cross.doc, core.createStroke(
+          [{x: 100, y: 100}, {x: 124, y: 100}, {x: 112, y: 120}, {x: 112, y: 90}],
+          [0, 0, 0], false,
+        ));
+        const area = core.closedAreas(cross.doc).areas[0];
+        const deep = core.deepestPoint(area);
+        out.depth = deep.clearance;
+        out.triangle = press(cross, {x: deep.x, y: deep.y});
+        // A millimetre in from the box's side is still on the line.
+        const edge = fitted();
+        box(edge.doc, 100, 100, 110, 160);
+        out.edge = press(edge, {x: 101, y: 130});
+        console.log(JSON.stringify(out));
+        """
+    )
+    assert 5.0 < result["hit"] < 5.2
+    # Filled.  The pointer still lights the box's line at this zoom, so the
+    # line's own meaning holds the pill back — but nothing refuses.
+    assert result["centre"] == {"note": None, "fills": ["concentric"]}
+    assert result["armed"] == "Click to fill with Concentric"
+    assert 4 < result["depth"] < result["hit"]
+    assert result["triangle"]["fills"] == ["concentric"]
+    assert result["edge"] == {"note": "Point inside the area, not on its line", "fills": []}
+
+
+def test_f_measures_with_the_hosts_fill_numbers_zeros_and_size_included() -> None:
+    # The shell hands over what it measures fills with (settings().fill), and
+    # the machine takes it as given, so F answers for the very areas the bed
+    # shades and the slice fills.  A 0% join and "Join ends within 0" are real
+    # settings, not missing ones; and on a pass printed at 200% the coil is
+    # half as wide in the page's own millimetres.
+    result = _run_node(
+        FILL_PRELUDE
+        + """
+        const physics = {tol: 0.1, weldTol: 0.25, bead: 5, overlap: 0.2};
+        const press = (fill, build, p) => {
+          const s = surface({settings: {...physics, fill: {...physics, ...fill}}});
+          build(s.doc);
+          s.hover(p).key("f");
+          return {note: note(s), fills: fills(s)};
+        };
+        const nine = (doc) => box(doc, 100, 100, 109, 160);
+        const six = (doc) => box(doc, 100, 100, 106, 160);
+        // A box whose last side stops 0.2 mm short of where it began.
+        const short = (doc) => core.addStroke(doc, core.createStroke(
+          [{x: 100, y: 100}, {x: 200, y: 100}, {x: 200, y: 180}, {x: 100, y: 180},
+            {x: 100, y: 100.2}],
+          [0, 0, 0, 0], false,
+        ));
+        console.log(JSON.stringify({
+          joinZero: press({overlap: 0}, nine, {x: 104.5, y: 130}),
+          joinRail: press({}, nine, {x: 104.5, y: 130}),
+          sizeDouble: press({bead: 2.5}, six, {x: 103, y: 130}),
+          sizeOne: press({}, six, {x: 103, y: 130}),
+          weldZero: press({weldTol: 0}, short, {x: 150, y: 140}),
+          weldRail: press({}, short, {x: 150, y: 140}),
+        }));
+        """
+    )
+    # Spacing 5 mm at a 0% join: a 9 mm box has no room, and needs 10.
+    assert result["joinZero"] == {
+        "note": "Too narrow for a fill coil — needs about 10 mm across",
+        "fills": [],
+    }
+    assert result["joinRail"]["fills"] == ["concentric"]
+    assert result["sizeDouble"]["fills"] == ["concentric"]
+    assert result["sizeOne"]["fills"] == []
+    assert result["weldZero"]["fills"] == []
+    assert result["weldZero"]["note"] == "Not closed — there's a gap here"
+    assert result["weldRail"]["fills"] == ["concentric"]
+
+
+def test_f_takes_a_lone_starting_point_with_it_in_the_same_step() -> None:
+    result = _run_node(
+        FILL_PRELUDE
+        + """
+        const s = surface();
+        box(s.doc, 100, 100, 200, 180);
+        // Pete's habit: tap the area, then press the key.  The tap starts a line
+        // of one point, which never prints — F takes it with the fill.
+        s.tap({x: 150, y: 140});
+        const tapped = {strokes: s.strokes().length, chaining: s.input.isChaining()};
+        s.key("f");
+        // A refused press takes nothing, not even that point.
+        const r = surface();
+        box(r.doc, 100, 100, 200, 180);
+        r.tap({x: 300, y: 300});
+        r.key("f");
+        console.log(JSON.stringify({
+          tapped, strokes: s.strokes().length, chaining: s.input.isChaining(),
+          fills: fills(s), commits: s.commits,
+          refused: {strokes: r.strokes().length, chaining: r.input.isChaining(), fills: fills(r)},
+        }));
+        """
+    )
+    assert result["tapped"] == {"strokes": 2, "chaining": True}
+    assert result["strokes"] == 1
+    assert result["chaining"] is False
+    assert result["fills"] == ["concentric"]
+    assert result["commits"] == ["Start a line", "Fill with Concentric"]
+    assert result["refused"] == {"strokes": 2, "chaining": True, "fills": []}
+
+
+def test_backspace_clears_a_fill_only_after_the_point_and_the_line() -> None:
+    result = _run_node(
+        FILL_PRELUDE
+        + """
+        const s = surface();
+        box(s.doc, 100, 100, 200, 180);
+        s.hover({x: 150, y: 140}).key("f");
+        // On the line, ⌫ is still the line's.
+        s.hover({x: 150, y: 100}).key("Backspace");
+        const onLine = {strokes: s.strokes().length, fills: fills(s), last: s.commits.at(-1)};
+        // The fill is now waiting at its mark; ⌫ there clears it.
+        s.hover({x: 151, y: 140}).key("Backspace");
+        const waiting = {fills: fills(s), last: s.commits.at(-1)};
+
+        const t = surface();
+        box(t.doc, 100, 100, 200, 180);
+        t.hover({x: 150, y: 140}).key("f");
+        t.hover({x: 130, y: 120}).key("Delete");
+        const inside = {strokes: t.strokes().length, fills: fills(t), last: t.commits.at(-1)};
+        // Over bare bed with no fill anywhere, ⌫ is the nothing it always was.
+        const u = surface();
+        box(u.doc, 100, 100, 200, 180);
+        u.hover({x: 150, y: 140}).key("Backspace");
+        console.log(JSON.stringify({onLine, waiting, inside, bare: u.commits.length}));
+        """
+    )
+    assert result["onLine"] == {"strokes": 0, "fills": ["concentric"], "last": "Delete line"}
+    assert result["waiting"] == {"fills": [], "last": "Clear fill"}
+    assert result["inside"] == {"strokes": 1, "fills": [], "last": "Clear fill"}
+    assert result["bare"] == 0
+
+
+def test_the_fill_button_arms_one_click_that_never_starts_a_line() -> None:
+    result = _run_node(
+        FILL_PRELUDE
+        + """
+        const s = surface();
+        box(s.doc, 100, 100, 200, 180);
+        s.input.armFill("rows");
+        const armed = {
+          armed: s.input.fillArmed(), cursor: s.canvas.style.cursor,
+          state: s.fillStates.at(-1),
+        };
+        // Armed, the bed under the pointer is aimed at: the area a click would
+        // fill is handed to the canvas, with what the click will do.
+        s.hover({x: 150, y: 140});
+        const aimed = {target: Boolean(s.view.overlay.fillTarget), note: note(s)};
+        // A click on empty bed while armed lays NO line, and stays armed.
+        s.tap({x: 300, y: 300});
+        const missed = {
+          strokes: s.strokes().length, chaining: s.input.isChaining(),
+          armed: s.input.fillArmed(), note: note(s), commits: s.commits.length,
+        };
+        // The next click inside an area fills it, and hands the pointer back.
+        s.tap({x: 150, y: 140});
+        const hit = {
+          fills: fills(s), strokes: s.strokes().length, armed: s.input.fillArmed(),
+          commits: s.commits, cursor: s.canvas.style.cursor, state: s.fillStates.at(-1),
+        };
+        console.log(JSON.stringify({armed, aimed, missed, hit}));
+        """
+    )
+    armed = result["armed"]
+    assert armed["armed"] == "rows"
+    assert armed["cursor"].startswith('url("data:image/svg+xml,') and armed["cursor"].endswith(
+        "6 6, crosshair"
+    )
+    assert armed["state"] == {"armed": "rows", "pattern": None}
+    assert result["aimed"] == {"target": True, "note": "Click to fill with Straight rows"}
+    assert result["missed"] == {
+        "strokes": 1,
+        "chaining": False,
+        "armed": "rows",
+        "note": "Nothing closed here to fill",
+        "commits": 0,
+    }
+    hit = result["hit"]
+    assert hit["fills"] == ["rows"]
+    assert hit["strokes"] == 1
+    assert hit["armed"] is None
+    assert hit["commits"] == ["Fill with Straight rows"]
+    assert "data:image" not in hit["cursor"]
+    # The button hears that the pointer is put down and that the area under
+    # it now holds Straight rows.
+    assert hit["state"] == {"armed": None, "pattern": "rows"}
+
+
+def test_escape_a_tool_or_the_button_again_puts_an_armed_pointer_down() -> None:
+    result = _run_node(
+        FILL_PRELUDE
+        + """
+        const s = surface();
+        box(s.doc, 100, 100, 200, 180);
+        s.hover({x: 150, y: 140});
+        s.input.armFill("concentric");
+        s.key("Escape");
+        const esc = {armed: s.input.fillArmed(), commits: s.commits.length};
+        s.input.armFill("clear");
+        s.input.setTool("draw");          // the tool already out still disarms
+        const tool = s.input.fillArmed();
+        s.input.armFill("rows");
+        s.input.armFill(null);
+        const button = s.input.fillArmed();
+        s.input.armFill("nonsense");
+        const unknown = s.input.fillArmed();
+        // Arming finishes a line in hand: the click that follows is the fill's.
+        s.tap({x: 300, y: 300}).tap({x: 320, y: 300});
+        s.input.armFill("concentric");
+        const chain = {chaining: s.input.isChaining(), strokes: s.strokes().length};
+        // Arming is never an undo step.
+        console.log(JSON.stringify({esc, tool, button, unknown, chain, commits: s.commits}));
+        """
+    )
+    assert result["esc"] == {"armed": None, "commits": 0}
+    assert result["tool"] is None
+    assert result["button"] is None
+    assert result["unknown"] is None
+    assert result["chain"] == {"chaining": False, "strokes": 2}
+    assert result["commits"] == ["Start a line", "Add point"]
+
+
+def test_armed_clear_and_armed_pattern_say_what_the_click_will_do() -> None:
+    result = _run_node(
+        FILL_PRELUDE
+        + """
+        const s = surface();
+        box(s.doc, 100, 100, 200, 180);
+        box(s.doc, 220, 100, 300, 180);
+        s.hover({x: 150, y: 140}).key("f");
+        s.input.armFill("concentric");
+        const same = note(s);
+        s.input.armFill("rows");
+        const change = note(s);
+        s.hover({x: 260, y: 140});
+        const fresh = note(s);
+        s.input.armFill("clear");
+        const nothing = note(s);
+        s.tap({x: 260, y: 140});
+        const refused = {armed: s.input.fillArmed(), note: note(s)};
+        s.hover({x: 150, y: 140});
+        const clearing = note(s);
+        s.tap({x: 150, y: 140});
+        // An armed pattern the area already has: the click changes nothing, says
+        // so, and still hands the pointer back.
+        s.hover({x: 260, y: 140}).key("f");
+        s.input.armFill("concentric");
+        s.tap({x: 260, y: 140});
+        console.log(JSON.stringify({
+          same, change, fresh, nothing, refused, clearing,
+          fills: s.doc.fills.map((f) => f.pattern), armed: s.input.fillArmed(),
+          already: note(s), commits: s.commits,
+        }));
+        """
+    )
+    assert result["same"] == "Already Concentric"
+    assert result["change"] == "Click to change to Straight rows"
+    assert result["fresh"] == "Click to fill with Straight rows"
+    assert result["nothing"] == "No fill here to clear"
+    assert result["refused"] == {"armed": "clear", "note": "No fill here to clear"}
+    assert result["clearing"] == "Click to clear this fill"
+    assert result["fills"] == ["concentric"]
+    assert result["armed"] is None
+    assert result["already"] == "Already Concentric"
+    assert result["commits"] == ["Fill with Concentric", "Clear fill", "Fill with Concentric"]
+
+
+def test_the_pointer_names_a_fill_and_the_next_press_and_is_quiet_otherwise() -> None:
+    result = _run_node(
+        FILL_PRELUDE
+        + """
+        const s = surface();
+        box(s.doc, 100, 100, 200, 180);
+        // No fill anywhere: nothing is said, nothing is outlined.
+        s.hover({x: 150, y: 140});
+        const quiet = {
+          note: note(s), target: s.view.overlay.fillTarget, gaps: s.view.overlay.fillGaps,
+          states: s.fillStates.length,
+        };
+        s.key("f");
+        const concentric = {note: note(s), state: s.fillStates.at(-1)};
+        s.key("f");
+        const rows = note(s);
+        // On the line round it, the line's own meaning wins.
+        s.hover({x: 150, y: 101});
+        const onLine = {note: note(s), hover: Boolean(s.view.overlay.hover)};
+        // Outside the area the button goes back to plain Fill.
+        s.hover({x: 300, y: 300});
+        const away = s.fillStates.at(-1);
+        // A drag in flight hides the pill.
+        s.hover({x: 150, y: 140});
+        s.down({x: 150, y: 140}).move({x: 170, y: 150});
+        const midPress = note(s);
+        s.cancel();
+        // Waiting: its area is gone.
+        s.hover({x: 150, y: 100}).key("Backspace");
+        s.hover({x: 150, y: 140});
+        const waiting = {note: note(s), warn: s.view.overlay.fillNote.warn};
+        console.log(JSON.stringify({quiet, concentric, rows, onLine, away, midPress, waiting}));
+        """
+    )
+    assert result["quiet"] == {"note": None, "target": None, "gaps": None, "states": 0}
+    assert result["concentric"] == {
+        "note": "Concentric — F for Straight rows",
+        "state": {"armed": None, "pattern": "concentric"},
+    }
+    assert result["rows"] == "Straight rows — F to clear"
+    assert result["onLine"] == {"note": None, "hover": True}
+    assert result["away"] == {"armed": None, "pattern": None}
+    assert result["midPress"] is None
+    assert result["waiting"] == {
+        "note": "This fill is waiting: its area isn't closed any more",
+        "warn": True,
+    }
+
+
+def test_the_fill_words_are_a_potters() -> None:
+    # Everything the bed says about a fill, read straight out of the module: the
+    # pills, the hover words and the refusals.  The app calls the patterns
+    # Concentric and Straight rows, and never by the names the slice uses.
+    source = MODULE.read_text(encoding="utf-8")
+    code = re.sub(r"//.*", "", source)
+    start = code.index("const FILL_SAYS")
+    said = re.findall(r'"([^"\n]{6,})"', code[start : code.index("const NOTE_PX")])
+    said += re.findall(r"`([^`\n]{6,})`", code[code.index("function hoverWords") :])
+    assert len(said) >= 8, said
+    for text in said:
+        lowered = text.lower()
+        for term in (
+            "polygon",
+            "face",
+            "seed",
+            "raster",
+            "spiral",
+            "engine",
+            "g-code",
+            "circle",
+            "vertex",
+            "weld",
+            "tolerance",
+            "polyline",
+            "ingest",
+            "planner",
+        ):
+            assert not re.search(rf"\b{term}\b", lowered), f"{text!r} says {term!r}"

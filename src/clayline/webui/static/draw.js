@@ -25,12 +25,16 @@
 // the bed:
 //
 //   header   Draw / Sliced · Lines · Rings · Box · Polygon · Coil (mm) ·
-//            Shape & repeat · Done
+//            Reference · Shape & repeat · Fill · Done
 //   strip    Sides (3-12) · Mirror · Repeat · Copies (2-24) · Corner (mm),
 //            plus the sentence saying what the tool in hand is waiting for
 //   arrange  Fade · Replace · Remove · Done, the Reference button's own strip,
 //            shown while the photo's handles are out and the pen is held
 //   readout  the fix a sharp-corner finding offers, on the finding itself
+//   fill     Concentric · Straight rows · Clear, the Fill button's own menu:
+//            picking one arms the pointer for one click inside an area.  It is
+//            the visible way to F, the shortcut, and not a fifth tool — what
+//            the four tools lay is unchanged by it.
 //
 // Mirror and Repeat are ACTIONS: the gesture machine wears them as tools while
 // the pointer carries one, and this file hands the pointer back the moment the
@@ -73,6 +77,18 @@
     mirror: "Drag the line to mirror across the bed — every line here is laid again on its far side.",
     repeat: "Click the bed where the centre goes; the copies land as lines you can keep drawing on.",
   });
+  // The Fill button and its menu.  A fill is coil Clayline lays inside lines
+  // that close round an area, the way a cup's bottom is laid inside its wall;
+  // the shading on the bed says which pattern, and Slice lays the real coils.
+  const NOTHING_TO_FILL =
+    "Draw a closed shape on the bed first — a fill goes inside lines that close round an area.";
+  const FILL_WORDS = Object.freeze({ concentric: "Concentric", rows: "Straight rows", clear: "Clear" });
+  // The readout's fill rows.  The Strokes and Travels the readout predicts are
+  // the drawn lines' own; a fill adds strokes and travels the slice works out,
+  // so with one on the bed those two numbers say so rather than guess.
+  const FILLS_COUNTED = " Fills add strokes and travels of their own; Slice job counts them exactly.";
+  const FILLED_TIP =
+    "Closed areas Clayline fills with coil for you. A waiting fill's area has a gap, so it prints nothing until the lines close round it again.";
   const FIX_ONE = "Round this corner";
   const fixLabel = (count) => (count > 1 ? `Round these ${count} corners` : FIX_ONE);
   const REFERENCE_UNREADABLE =
@@ -100,7 +116,7 @@
 
   let view = null;
   let input = null;
-  let session = null;              // {index, doc, anchor, svg, created}
+  let session = null;              // {index, doc, anchor, svg, created, fillBase}
   let pagesTimer = 0;
   let readoutFrame = 0;
   let cursor = null;               // last pointer position in bed mm, for the readout
@@ -113,6 +129,9 @@
   let arrangeLabel = "";           // the live size reading while a grip is dragged
   let arrangeCatch = null;         // the sheet that takes the pointer while arranging
   let fadeGesture = false;         // a slider drag being one undo step
+  let fillMenuOpen = false;        // the Fill button's menu is showing
+  let fillShown = { armed: null, pattern: null };   // what the Fill button says
+  let fillTally = null;            // the readout's fill counts, keyed on the file
 
   // The tooltip each control was shipped with, so one that goes disabled can say
   // why and get its own sentence back the moment it can act again.
@@ -146,6 +165,38 @@
       nozzle: positive(Number($("#nozzle")?.value), core.DEFAULT_BEAD),
       kiss: Boolean($("#kiss")?.checked),
     };
+  }
+
+  // What the closed-area finder and the fills are measured with: the same
+  // rail numbers the slice will use — "Follow curves within", "Join ends
+  // within", the coil and the side-by-side join that set a fill's spacing —
+  // and ONE set of them, handed to the pointer and the canvas too, so the
+  // shading, the readout and what F says can never disagree about an area.
+  //
+  // Two things here are the slice's and not the drawing's.  The slice finds a
+  // pass's areas and spaces their coils after the pass's Size has scaled the
+  // page, so in the page's own millimetres the coil is the coil over that
+  // scale: at 200% a 5 mm coil is 2.5 of them wide.  (The ends are welded
+  // before the scaling, so "Join ends within" stays as typed.)  And the rail's
+  // zeros are real settings: a 0% join spaces fill coils a whole coil apart,
+  // and joining ends within 0 joins none — the slice reads both as typed.
+  function fillOptions(feel = settings(), file = session ? host.files()[session.index] : null) {
+    const weld = railMm("#weldTol");
+    return {
+      tol: feel.tol,
+      weldTol: Number.isFinite(weld) && weld >= 0 ? weld : core.DEFAULT_WELD_TOL,
+      bead: feel.bead / (file ? totalScale(file) : 1),
+      overlap: feel.overlap,
+    };
+  }
+
+  // Which way this pass's Straight rows run, in the page's own frame, for the
+  // hatching that names them: 45° on the bed for the first pass and every
+  // other one after it, 135° for the passes between — the crossing a cup's
+  // bottom is laid with — turned back by the pass's own Rotate, because the
+  // page is drawn here unturned.
+  function fillAngleOf(file, index) {
+    return (index % 2 === 0 ? 45 : 135) - number(file && file.rotation);
   }
 
   /* ---------- the numbers the shape tools and the repeats are driven by --- */
@@ -586,7 +637,10 @@
       else setArrange(false);
       return;
     }
-    if (event.key === "Backspace" || event.key === "Delete" || event.key === "Enter") {
+    // F too: the sheet has the pointer, so the bed's own idea of where the
+    // pointer is has gone stale, and a fill must never land where it is not.
+    if (event.key === "Backspace" || event.key === "Delete" || event.key === "Enter"
+      || event.key === "f" || event.key === "F") {
       event.stopPropagation();
     }
   }
@@ -602,8 +656,13 @@
     if (!want) cancelArrangeDrag();
     arranging = want;
     // One strip at a time over the bed: the photo's strip and the shape tray
-    // share the same track.
-    if (arranging) setTray(false);
+    // share the same track.  The photo has the pointer while it is arranged,
+    // so a pointer armed to fill is put down rather than left waiting.
+    if (arranging) {
+      setTray(false);
+      setFillMenu(false);
+      input?.armFill(null);
+    }
     syncArrange();
     syncReference();
   }
@@ -686,6 +745,9 @@
           scheduleReadout();
         },
         onCommit(label) { commit(label); },
+        // What the Fill button shows: the pattern the pointer is armed
+        // with, or else the fill of the area under it.
+        onFillState(state) { syncFillButton(state); },
       },
       settings() {
         const feel = settings();
@@ -700,6 +762,7 @@
           overlap: feel.overlap,
           snap: true,
           placement: session ? placementOf(host.files()[session.index] || {}, session.anchor, box) : ORIGIN,
+          fill: fillOptions(feel),
         };
       },
     });
@@ -751,6 +814,8 @@
       bedHeight: box.height,
       reference: referenceScene(active),
       tol: feel.tol,
+      fill: fillOptions(feel),
+      fillAngle: session && active ? fillAngleOf(active, session.index) : 45,
     });
   }
 
@@ -778,6 +843,29 @@
       }
     }
     return count;
+  }
+
+  // How many fills the drawing holds, how many wait for their area to close,
+  // and how many will lay clay — read off the drawing as it was last WRITTEN:
+  // the file's text is the key, so a drag in flight never remeasures the
+  // areas a frame at a time.  The counts move when the edit lands, which is
+  // when the fills have followed it.  Null when there is no fill at all.
+  function tallyFills(doc, feel) {
+    if (!Array.isArray(doc.fills) || !doc.fills.length) return null;
+    const options = fillOptions(feel);
+    const key = [session.svg, options.tol, options.weldTol, options.bead, options.overlap].join("|");
+    if (fillTally && fillTally.doc === doc && fillTally.key === key) return fillTally.counts;
+    const counts = { filled: 0, waiting: 0, laying: 0 };
+    for (const shade of core.classifyFills(doc, options)) {
+      if (shade.status === "waiting") {
+        counts.waiting += 1;
+      } else if (shade.status === "filled") {
+        counts.filled += 1;
+        if (!shade.narrow) counts.laying += 1;
+      }
+    }
+    fillTally = { doc, key, counts };
+    return counts;
   }
 
   function readoutRow(label, value, title, warn) {
@@ -827,15 +915,26 @@
       corners += found.corners.length;
     }
     const off = offBedCount(doc, placement, box, feel.tol);
+    // A fill that will lay clay adds strokes and travels only the slice works
+    // out, so those two rows say "+ fills" rather than claim a number they
+    // cannot predict.  With no fill on the bed every row is what it was.
+    const fills = tallyFills(doc, feel);
+    const plus = fills && fills.laying ? " + fills" : "";
+    const counted = plus ? FILLS_COUNTED : "";
 
     const rows = [
-      readoutRow("Strokes", chain.strokes,
-        "Continuous strokes this design prints as — 1 means it draws without stopping."),
-      readoutRow("Travels", chain.travels,
-        "Non-printing hops between strokes. Paste printers ooze during travels — fewer is better."),
+      readoutRow("Strokes", plus ? `${chain.strokes}${plus}` : chain.strokes,
+        "Continuous strokes this design prints as — 1 means it draws without stopping." + counted),
+      readoutRow("Travels", plus ? `${chain.travels}${plus}` : chain.travels,
+        "Non-printing hops between strokes. Paste printers ooze during travels — fewer is better." + counted),
       readoutRow("Lines drawn", doc.strokes.length,
         "Separate lines in this drawing. Lines that touch still print as one stroke."),
     ];
+    if (fills) {
+      rows.push(readoutRow("Filled areas",
+        fills.waiting ? `${fills.filled} · ${fills.waiting} waiting` : fills.filled,
+        FILLED_TIP, fills.waiting > 0));
+    }
     if (tight) {
       rows.push(readoutRow("Curves too tight", tight,
         "The bead can't follow a bend this sharp cleanly — soften the curve or fit a smaller nozzle.", true));
@@ -915,6 +1014,14 @@
     if (!file) return;
     const feel = settings();
     const box = bedSize();
+    // Fills follow the edit inside the edit's own commit, so whatever they
+    // do — re-centre, split, merge, wait for a gap to close — is part of this
+    // one undo step.  A drawing with no fills skips this entirely and is
+    // written exactly as it always was.
+    if (session.doc.fills && session.doc.fills.length) {
+      session.doc.fills = core.followFills(session.doc, session.fillBase, fillOptions(feel));
+    }
+    session.fillBase = core.fillSnapshot(session.doc, fillOptions(feel));
     const svg = withOrigin(
       core.toSVG(session.doc, { width: box.width, height: box.height, bead: feel.bead }),
       session.created ? "drawn" : "edited",
@@ -1000,6 +1107,8 @@
       // and the first stroke is drawn straight into bed coordinates.
       anchor: placedAnchor(doc, file, feel)
         || { x: box.width / 2 + number(file.nudgeX), y: box.height / 2 + number(file.nudgeY) },
+      // The areas as they stand, for the first edit's fills to follow from.
+      fillBase: core.fillSnapshot(doc, fillOptions(feel, file)),
     };
     host.selectFile(index);
     host.holdLayoutCheck(true);
@@ -1049,8 +1158,10 @@
     if (!session) return;
     // The photo's handles do not outlive the page they were arranged on.
     setArrange(false);
+    setFillMenu(false);
     if (input) input.destroy();
     input = null;
+    fillTally = null;
     const index = session.index;
     const abandoned = session.fresh && session.doc.strokes.length === 0;
     session = null;
@@ -1109,11 +1220,13 @@
     const coil = $("#drawCoilField");
     const reference = $("#drawReferenceButton");
     const tray = $("#drawTrayButton");
+    const fill = $("#drawFillButton");
     const done = $("#drawDoneButton");
     if (toolSwitch) toolSwitch.hidden = !open;
     if (coil) coil.hidden = !open;
     if (reference) reference.hidden = !open;
     if (tray) tray.hidden = !open;
+    if (fill) fill.hidden = !open;
     if (done) done.hidden = !open;
     // The nominal chip describes which Z geometry the SLICED preview shows; it
     // has nothing to say about a drawing, and the header has no room to spare.
@@ -1135,6 +1248,7 @@
     if (!open) {
       setTray(false);
       setArrange(false);
+      setFillMenu(false);
     }
     syncControls();
     syncCoil();
@@ -1166,6 +1280,16 @@
     // The side count belongs to one tool; with any other in hand it is a number
     // that changes nothing the artist can see.
     ableField($("#drawSidesField"), $("#drawSides"), active === "polygon", SIDES_NEED_POLYGON);
+    // A fill goes inside lines that close round an area: an empty bed has
+    // nothing to fill, and a pointer armed over one is put down — unless a
+    // fill is still waiting on it, which the menu's Clear has to reach.
+    const fillCount = session && Array.isArray(session.doc.fills) ? session.doc.fills.length : 0;
+    const fillable = lines > 0 || fillCount > 0;
+    ableButton($("#drawFillButton"), fillable, NOTHING_TO_FILL);
+    if (!fillable) {
+      if (input && input.fillArmed()) input.armFill(null);
+      if (fillMenuOpen) setFillMenu(false);
+    }
 
     // The corner controls exist only while there is a corner to fix.
     const cornerField = $("#drawCornerField");
@@ -1216,6 +1340,7 @@
   // opens over the top of the bed is what keeps the set from clipping.
   function setTray(open) {
     trayOpen = Boolean(open) && Boolean(session);
+    if (trayOpen) setFillMenu(false);
     const tray = $("#drawTray");
     const button = $("#drawTrayButton");
     const panel = $("#drawView");
@@ -1224,6 +1349,53 @@
     // The readout steps down under the strip instead of hiding beneath it —
     // whichever of the two strips is holding the track.
     if (panel) panel.classList.toggle("has-tray", trayOpen || arranging);
+    syncControls();
+  }
+
+  /* ---------- the Fill button ------------------------------------------- */
+
+  // What the Fill button shows: its swatch takes the pattern the pointer is
+  // armed with, and the button reads pressed while it is; else the swatch
+  // takes the fill of the area under the pointer.  The button never changes
+  // width — the row beside it has none to spare and must never shift as the
+  // pointer crosses the bed — so the pattern's name rides in its label for a
+  // screen reader and in the pill at the pointer for everyone.
+  function syncFillButton(state = fillShown) {
+    fillShown = { armed: state.armed || null, pattern: state.pattern || null };
+    const button = $("#drawFillButton");
+    if (!button) return;
+    const show = fillShown.armed || fillShown.pattern || "none";
+    if (button.dataset.fillShow !== show) button.dataset.fillShow = show;
+    button.setAttribute("aria-pressed", String(Boolean(fillShown.armed)));
+    button.setAttribute("aria-label", show === "none" ? "Fill" : `Fill: ${FILL_WORDS[show]}`);
+  }
+
+  // The menu hangs inside the bed, under the button: the header row can
+  // scroll, and a menu hung from it would be cut off by the very scroll that
+  // keeps the row whole.
+  function setFillMenu(open) {
+    const menu = $("#drawFillMenu");
+    const button = $("#drawFillButton");
+    fillMenuOpen = Boolean(open) && Boolean(session) && Boolean(menu) && !(button && button.disabled);
+    if (button) button.setAttribute("aria-expanded", String(fillMenuOpen));
+    if (!menu) return;
+    menu.hidden = !fillMenuOpen;
+    if (!fillMenuOpen || !button) return;
+    const bed = $("#drawView").getBoundingClientRect();
+    const at = button.getBoundingClientRect();
+    const left = Math.min(at.left - bed.left, bed.width - menu.offsetWidth - 8);
+    menu.style.left = `${Math.max(8, Math.round(left))}px`;
+  }
+
+  // Picking from the menu arms the pointer for ONE click inside an area.  An
+  // action still carried (Mirror, Repeat) goes back to the tool that was out
+  // first: the click is the fill's.
+  function armFill(arm) {
+    setFillMenu(false);
+    if (!input) return;
+    setArrange(false);
+    if (arm && ACTION_TOOLS.has(input.activeTool())) input.setTool(shapeTool);
+    input.armFill(arm);
     syncControls();
   }
 
@@ -1279,6 +1451,9 @@
         session.svg = file.svg;
         session.anchor = placedAnchor(doc, file, feel)
           || { x: box.width / 2 + number(file.nudgeX), y: box.height / 2 + number(file.nudgeY) };
+        // Undo hands back the fills with the file they were saved in; the
+        // next edit follows them from here.
+        session.fillBase = core.fillSnapshot(doc, fillOptions(feel));
       }
     }
     // Undo can take the photo away or hand its fade a different number while
@@ -1454,6 +1629,38 @@
       setArrange(false);
       setTray(!trayOpen);
     });
+    // Fill: one press opens its menu; pressed again while the pointer is
+    // armed, it puts the pointer down.  Neither button keeps the keyboard, so
+    // F reaches the bed the moment the pointer is back over it.
+    $("#drawFillButton")?.addEventListener("click", (event) => {
+      const button = event.currentTarget;
+      button.blur();
+      if (!input || button.disabled) return;
+      if (input.fillArmed()) {
+        armFill(null);
+        return;
+      }
+      setFillMenu(!fillMenuOpen);
+    });
+    document.querySelectorAll("[data-draw-fill]").forEach((item) => {
+      item.addEventListener("click", () => {
+        item.blur();
+        armFill(item.dataset.drawFill);
+      });
+    });
+    // The menu goes when the artist looks elsewhere: a press anywhere outside
+    // it, or Esc — which then does nothing else.
+    document.addEventListener("pointerdown", (event) => {
+      if (!fillMenuOpen) return;
+      const target = event.target;
+      if (target instanceof Element && target.closest("#drawFillMenu, #drawFillButton")) return;
+      setFillMenu(false);
+    }, true);
+    window.addEventListener("keydown", (event) => {
+      if (!fillMenuOpen || event.key !== "Escape") return;
+      event.stopPropagation();
+      setFillMenu(false);
+    }, true);
     // The Reference button, one press with one answer: no photo yet — pick
     // one; a photo placed — its handles come out; handles out — put them away.
     $("#drawReferenceButton")?.addEventListener("click", () => {

@@ -8,7 +8,7 @@ From a line drawing to a printed tile or open lacework. This is the mode Claylin
 
 Every line you give Clayline becomes the centre of a coil of clay. That one idea decides how to draw:
 
-- **Draw with lines, not filled shapes.** A filled circle is not a ring to Clayline; it is reported in the warnings and left out. Draw the ring as a line.
+- **Draw with lines, not filled shapes.** A filled circle is not a ring to Clayline; it is reported in the warnings and left out. Draw the ring as a line. To fill an area with coil, draw its outline and use **Fill** in Draw (below): Clayline lays the fill lines for you.
 - **Line weight doesn't matter.** A hairline and a fat stroke print the same coil. The coil width comes from the nozzle, not the drawing.
 - **Draw in millimetres, at real size.** The gallery tiles are 152.4 mm square. You can resize a design after loading it, but drawing at real size keeps you honest about what the nozzle can do.
 - **Touching shapes join.** Where two lines meet, or two closed rings touch, Clayline prints straight through the joint as one stroke. Draw joins as real overlaps or gaps under about 0.8 mm. A gap of exactly 1 mm sits right on the edge of the join tolerance and may go either way.
@@ -26,6 +26,12 @@ Press **New drawing** under 01 Design, or **Start a drawing** in the empty previ
 - Pull any line and it bends into an arc under your cursor. Drag a point to move it; **Option-click** a line to add a point; **Delete** removes what's under the cursor.
 - **Rings**, **Box**, and **Polygon** drag a shape onto the bed. **Shape & repeat** opens mirroring, repeats, and corner rounding.
 - **Hold Space to move or resize a whole shape.** While you drag a ring, box, or polygon out, hold Space: the shape keeps the size it has and follows your cursor, so you can put it where you want it. Let Space go and you're sizing again, and the whole thing is still one step to undo. Hold Space over anything already on the bed and a frame appears around it with a grip at each corner. Drag inside the frame to move it, drag a corner to resize it. A ring stays a circle and a polygon stays even-sided however you pull; hold shift to keep a box or a line at its proportions. A bend you pulled into a line is still that bend afterwards. Space over empty bed drags the view, as it always has.
+- **Fill** lays coil inside a closed area, the way a cup bottom is filled, so you don't have to draw every line yourself. Pick **Concentric** or **Straight rows** from the **Fill** button and click inside the area, or rest the pointer in it and press **F**: Concentric, then Straight rows, then empty. An area counts as closed whenever lines wall it in, including the pockets where a line crosses itself. If it isn't closed, Clayline says so and rings the open ends.
+    - **Concentric** follows the area's own edge inward as one connected coil: a round area fills with rings, a triangle with nested triangles.
+    - **Straight rows** lay back and forth as one coil where the shape allows. On stacked passes the rows cross, like a cup bottom.
+    - While you draw, a filled area is only shaded: hatching for Straight rows, nested outlines for Concentric. The real coil appears when you slice.
+    - Move or reshape the lines around a fill and it follows. If you open a gap, the fill waits with a dashed ring and doesn't print until the gap is closed again.
+    - **Delete** over a filled area, or **Clear** from the Fill button, takes the fill out. A fill prints just before the lines of its pass and runs straight into them when they start close by; otherwise the nozzle lifts once.
 - **Reference** places a photo under the drawing to trace. Drag it to move, a corner to resize, the handle above to turn it. It never prints.
 
 Nothing plans while you draw. Press **Done**, then **Slice job**.
@@ -78,7 +84,7 @@ Watch this line whenever you change the nozzle, the layer height, or the coil wi
 Three switches shape how passes build on each other:
 
 - **Alternate direction each pass** runs every other pass backwards, so any lopsidedness in the flow doesn't pile up on one side. It turns on by itself when you add a second pass.
-- **Seamless spiral** climbs continuously around each closed loop instead of stepping up pass by pass, so a tall form has no seam where layers meet. Needs Calibrated mode and every stroke closed into a loop.
+- **Seamless spiral** climbs continuously around each closed loop instead of stepping up pass by pass, so a tall form has no seam where layers meet. Needs Calibrated mode and every stroke closed into a loop, and no filled areas.
 - **Settle into valleys** lets the nozzle sink where the design crosses open gaps in earlier passes, laying clay on what is really there instead of bridging air. It only sinks where the nozzle fits.
 
 Under **Advanced**, **Measured coil width** is where a calibration result goes: if a laid test line comes out wider or narrower than the nozzle, choose Measured and enter the real width.
@@ -137,3 +143,7 @@ The **scrubber** under the preview walks through the print move by move. Press p
 | **Line crosses over another** | The clay stacks double height there, and in Calibrated mode the nozzle can strike it on a later pass. In Drape mode the coil simply drapes over, and this is only noted. |
 | **Outside the printable area** | Part of the job falls off the bed. The Bed map shows where. |
 | **Line above open space** | A line sits over a gap in the tier below it. Settle into valleys can help. |
+| **A fill is waiting** | The area this fill was set in isn't closed any more, so it was left out. Close the gap and it comes back. |
+| **Area too narrow to fill** | There isn't room for a fill coil inside the line. It prints empty. |
+| **An area prints empty** | The fill couldn't be laid without running outside its area or over coil already laid. Try the other pattern, or split the area with a line. |
+| **A fill was too short to print** / **A fill will print thin** | A very small area gives a coil too short for the printer to get going. Make the area bigger or leave it empty. |

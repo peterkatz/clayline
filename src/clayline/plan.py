@@ -11,7 +11,7 @@ import heapq
 import math
 from bisect import bisect_right
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from itertools import pairwise
 
@@ -2265,6 +2265,55 @@ __all__ = [
 ]
 
 
+def welded_lines(
+    polylines: tuple[Polyline, ...], weld_tol: float
+) -> tuple[tuple[tuple[Point, ...], Provenance, str], ...]:
+    """Each authored line with its ends welded exactly as the planner welds them.
+
+    Returns ``(points, provenance, edge_id)`` per line, in authored order.  A
+    Draw area fill (:mod:`clayline.draw_fill`) finds its closed areas from
+    these, so an area closes exactly when the planner joins its ends and the
+    two can never disagree about which gap is a gap.
+    """
+
+    edges, _node_points, _weld_points = _build_weld_graph(
+        polylines, _nonnegative_finite(weld_tol, "weld_tol")
+    )
+    return tuple((edge.points, edge.polyline.provenance, edge.edge_id) for edge in edges)
+
+
+def plan_point_transform(
+    plan: Plan, *, rotation_deg: float = 0.0, scale: float = 1.0
+) -> Callable[[Point], Point] | None:
+    """Return the point map :func:`transform_plan` applies, or ``None`` at identity.
+
+    Shared rather than restated: :func:`transform_plan` moves the lines with it
+    and a Draw area fill finds its area through the very same map, so a fill
+    cannot drift from the lines that bound it under the pass's turn and size.
+    """
+
+    if not math.isfinite(rotation_deg):
+        raise ValueError("rotation_deg must be finite")
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError("scale must be finite and positive")
+    if scale == 1.0 and rotation_deg % 360.0 == 0.0:
+        return None
+
+    transform_frame = plan.document_bounds or plan.bounds
+    center_x = (transform_frame.min_x + transform_frame.max_x) / 2.0
+    center_y = (transform_frame.min_y + transform_frame.max_y) / 2.0
+    angle = math.radians(rotation_deg)
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+
+    def moved(point: Point) -> Point:
+        dx = (point.x - center_x) * scale
+        dy = (point.y - center_y) * scale
+        return Point(center_x + dx * cos_a - dy * sin_a, center_y + dx * sin_a + dy * cos_a)
+
+    return moved
+
+
 def transform_plan(plan: Plan, *, rotation_deg: float = 0.0, scale: float = 1.0) -> Plan:
     """Rotate and uniformly scale one page's planned geometry about its center.
 
@@ -2274,27 +2323,11 @@ def transform_plan(plan: Plan, *, rotation_deg: float = 0.0, scale: float = 1.0)
     width is the nozzle's physics and is deliberately NOT scaled.
     """
 
-    import math as _math
     from dataclasses import replace as _replace
 
-    if not _math.isfinite(rotation_deg):
-        raise ValueError("rotation_deg must be finite")
-    if not _math.isfinite(scale) or scale <= 0:
-        raise ValueError("scale must be finite and positive")
-    if scale == 1.0 and rotation_deg % 360.0 == 0.0:
+    moved = plan_point_transform(plan, rotation_deg=rotation_deg, scale=scale)
+    if moved is None:
         return plan
-
-    transform_frame = plan.document_bounds or plan.bounds
-    center_x = (transform_frame.min_x + transform_frame.max_x) / 2.0
-    center_y = (transform_frame.min_y + transform_frame.max_y) / 2.0
-    angle = _math.radians(rotation_deg)
-    cos_a = _math.cos(angle)
-    sin_a = _math.sin(angle)
-
-    def moved(point: Point) -> Point:
-        dx = (point.x - center_x) * scale
-        dy = (point.y - center_y) * scale
-        return Point(center_x + dx * cos_a - dy * sin_a, center_y + dx * sin_a + dy * cos_a)
 
     strokes = tuple(
         _replace(stroke, points=tuple(moved(point) for point in stroke.points))

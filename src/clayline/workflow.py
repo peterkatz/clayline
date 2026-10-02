@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Mapping, Set
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from clayline import defaults as _defaults
 from clayline.api import DesignFacade, PlanFacade, load_svg
+from clayline.draw_fill import FillMemo, FillPassSettings, fill_pass, fill_seed_index
 from clayline.emit import DEFAULT_WET_DENSITY_G_CM3, EmissionError
 from clayline.models import (
     Design,
@@ -32,12 +34,13 @@ from clayline.models import (
 )
 from clayline.plan import transform_plan
 from clayline.preview import PreviewError, PreviewOptions, write_plan_png, write_toolpath_html
-from clayline.profiles import load_profile
+from clayline.profiles import emission_defaults, load_profile
 from clayline.report import JobReport, ReportError, build_report, write_report
 from clayline.stack import (
     PROVISIONAL_FLOW_MULTIPLIER,
     PROVISIONAL_OVERLAP_FRACTION,
     JobEmission,
+    StackError,
     emit_job,
 )
 
@@ -45,6 +48,23 @@ _DEFAULT_PAGE_MODE_ENUM = PageMode(_defaults.DEFAULT_PAGE_MODE)
 _DEFAULT_Z_MODE_ENUM = ZMode(_defaults.DEFAULT_Z_MODE)
 
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
+
+# A seamless spiral climbs one closed loop without stopping; an area fill is
+# coil laid in its own run inside the outline, so the two cannot share a pass.
+SEAMLESS_SPIRAL_FILL_REFUSAL = (
+    "Seamless spiral can't print filled areas: a fill is laid as its own coil inside "
+    "the outline, so the climb would have to stop. Clear the fills, or turn off "
+    "Seamless spiral."
+)
+# What a potter reads at a fill the slice took back (_pipeline_with_area_fills).
+_FILL_PLOWS = (
+    "This fill was left out of this pass: printed here, the nozzle would drag through "
+    "coil already laid. The rest of the pass prints as drawn."
+)
+_FILL_UNPRINTABLE = (
+    "This fill was left out of this pass: the slice couldn't print it safely here. "
+    "The rest of the pass prints as drawn."
+)
 
 
 class WorkflowError(ValueError):
@@ -360,11 +380,32 @@ def build_pipeline(request: PipelineRequest) -> PipelineResult:
         )
     designs = tuple(designs_by_path[source] for source in expanded_sources)
     plans = tuple(plans_by_path[source] for source in expanded_sources)
+    source_plans = plans
     transforms = request.page_transforms or ((0.0, 1.0),) * len(expanded_sources)
     plans = tuple(
         transform_plan(plan, rotation_deg=rotation, scale=page_scale)
         for plan, (rotation, page_scale) in zip(plans, transforms, strict=True)
     )
+    if any(design.fill_seeds for design in designs):
+        # Only a drawing with an area fill takes this branch; every other
+        # drawing keeps the planner's own plan objects, byte for byte.
+        if request.helical:
+            raise WorkflowError(SEAMLESS_SPIRAL_FILL_REFUSAL)
+        return _pipeline_with_area_fills(
+            request, profile, expanded_sources, designs, source_plans, plans, transforms
+        )
+    return _pipeline_from_plans(request, profile, expanded_sources, designs, plans)
+
+
+def _pipeline_from_plans(
+    request: PipelineRequest,
+    profile: Profile,
+    expanded_sources: tuple[Path, ...],
+    designs: tuple[DesignFacade, ...],
+    plans: tuple[PlanFacade, ...],
+) -> PipelineResult:
+    """Lay out, emit, lint and report the pages of already planned passes."""
+
     nudges = request.page_nudges or (Point(0.0, 0.0),) * len(expanded_sources)
     page_sources = expanded_sources
     page_plans = plans
@@ -699,6 +740,141 @@ def _safe_id(value: str) -> str:
 def _default_job_id(sources: tuple[Path, ...]) -> str:
     stem = _safe_id(sources[0].stem)
     return stem if len(sources) == 1 else f"{stem}-job"
+
+
+def _pipeline_with_area_fills(
+    request: PipelineRequest,
+    profile: Profile,
+    expanded_sources: tuple[Path, ...],
+    designs: tuple[DesignFacade, ...],
+    source_plans: tuple[PlanFacade, ...],
+    plans: tuple[PlanFacade, ...],
+    transforms: tuple[tuple[float, float], ...],
+) -> PipelineResult:
+    """Lay the passes' area fills, then slice; take back any fill the slice can't print.
+
+    A fill is laid knowing only its own pass, so the finished slice can still
+    find it unprintable on the pile: over a turned pass whose crossings the
+    nozzle rises over, a fill's next coil can come back down through the one
+    it just lifted.  The independent lint names the strokes, so each fill it
+    names is left out of that pass with a placed warning, and the slice runs
+    again.  A fill named only as part of the first line it ran on into is
+    first given its own stroke, so the next run can name it.  A failure that
+    names no fill is the lines' own, and is raised as it is.
+    """
+
+    memo: FillMemo = {}
+    left_out: dict[int, dict[int, str]] = {}
+    no_run_on: set[int] = set()
+    while True:
+        filled = _with_area_fills(
+            request,
+            profile,
+            designs,
+            source_plans,
+            plans,
+            transforms,
+            memo=memo,
+            left_out=left_out,
+            no_run_on=no_run_on,
+        )
+        try:
+            return _pipeline_from_plans(request, profile, expanded_sources, designs, filled)
+        except StackError as exc:
+            if not _take_back_fills(exc, plans, filled, left_out, no_run_on):
+                raise
+
+
+def _with_area_fills(
+    request: PipelineRequest,
+    profile: Profile,
+    designs: tuple[Design, ...],
+    source_plans: tuple[PlanFacade, ...],
+    plans: tuple[PlanFacade, ...],
+    transforms: tuple[tuple[float, float], ...],
+    *,
+    memo: FillMemo,
+    left_out: Mapping[int, Mapping[int, str]],
+    no_run_on: Set[int],
+) -> tuple[PlanFacade, ...]:
+    """Lay each pass's Draw area fills into its already turned and sized plan.
+
+    Fills are built per expanded page, after the pass's turn and size, because
+    Straight rows cross pass to pass on the pile.  Every layer of a page
+    prints that page's one plan, so it is the page that counts, whatever the
+    Layers setting; a page on the bed starts the count afresh.
+    """
+
+    defaults = emission_defaults(profile)
+    stacked = request.pass_model is PassModel.EXPLICIT_PASSES or request.page_mode is PageMode.STACK
+    return tuple(
+        fill_pass(
+            design,
+            source_plan,
+            plan,
+            rotation_deg=rotation,
+            scale=page_scale,
+            # A repeated pass asks for the very fills the pass before it did.
+            memo=memo,
+            left_out=left_out.get(index),
+            run_on=index not in no_run_on,
+            settings=FillPassSettings(
+                stacked_pass=index if stacked else 0,
+                weld_tol=request.weld_tol,
+                overlap_fraction=request.overlap_fraction,
+                # plan_design's own default lift, which every planned travel carries.
+                travel_lift=2.0 * request.layer_height,
+                prime_mm=defaults.prime_mm if request.prime_mm is None else request.prime_mm,
+                end_early_mm=(
+                    defaults.end_early_mm if request.end_early_mm is None else request.end_early_mm
+                ),
+                z_mode=request.z_mode,
+            ),
+        )
+        for index, (design, source_plan, plan, (rotation, page_scale)) in enumerate(
+            zip(designs, source_plans, plans, transforms, strict=True)
+        )
+    )
+
+
+def _take_back_fills(
+    error: StackError,
+    plans: tuple[PlanFacade, ...],
+    filled: tuple[PlanFacade, ...],
+    left_out: dict[int, dict[int, str]],
+    no_run_on: set[int],
+) -> bool:
+    """Record the fills a refused slice names; whether there was any to take back.
+
+    ``plans`` are the passes before their fills and ``filled`` after: a line
+    whose points differ between the two had a fill run on into it.
+    """
+
+    report = error.lint_report
+    if report is None:
+        return False
+    taken = False
+    for issue in report.errors:
+        message = _FILL_PLOWS if issue.code == "no_plow" else _FILL_UNPRINTABLE
+        for scope in issue.scopes:
+            page = scope.page_index
+            if page is None or scope.stroke_id is None or not 0 <= page < len(filled):
+                continue
+            seed = fill_seed_index(scope.stroke_id)
+            if seed is not None:
+                if seed not in left_out.setdefault(page, {}):
+                    left_out[page][seed] = message
+                    taken = True
+            elif page not in no_run_on and _ran_on(scope.stroke_id, plans[page], filled[page]):
+                no_run_on.add(page)
+                taken = True
+    return taken
+
+
+def _ran_on(stroke_id: str, plan: PlanFacade, filled: PlanFacade) -> bool:
+    before = next((stroke for stroke in plan.strokes if stroke.id == stroke_id), None)
+    after = next((stroke for stroke in filled.strokes if stroke.id == stroke_id), None)
+    return before is not None and after is not None and before.points != after.points
 
 
 def _plan_source(plan: PlanFacade) -> Path:

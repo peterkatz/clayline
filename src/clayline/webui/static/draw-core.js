@@ -237,8 +237,12 @@
 
   /* ---------- document and strokes --------------------------------------- */
 
+  // `fills` are the areas the artist asked Clayline to fill with coil:
+  // [{pattern: "concentric" | "rows", x, y}], each a pattern and ONE point in
+  // the area it fills (see "fills" below).  Bed millimetres, Y up, like the
+  // strokes.  Empty is the drawing as it always was.
   function createDocument({ width = 0, height = 0 } = {}) {
-    return { width: finite(Number(width), 0), height: finite(Number(height), 0), strokes: [] };
+    return { width: finite(Number(width), 0), height: finite(Number(height), 0), strokes: [], fills: [] };
   }
 
   // A stroke can REMEMBER what laid it.  The memory is one small record —
@@ -641,6 +645,16 @@
     y: centre.y + (p.x - centre.x) * sin + (p.y - centre.y) * cos,
   });
 
+  // A copy remembers what it is a copy of, and the move that made it, so a
+  // fill can follow its area onto the copy (followFills).  It rides in the
+  // non-enumerable cache, so the undo snapshot and the file never see it.
+  // The move is an affine {a, b, c, d, e, f}: x' = a x + c y + e,
+  // y' = b x + d y + f.
+  function noteCopy(copy, source, m) {
+    cacheOf(copy).copyOf = { source, m };
+    return copy;
+  }
+
   // `count` is the number of arms INCLUDING the original, so 6 hands back 5 new
   // strokes at 60° steps.  A rotation preserves orientation, so every span keeps
   // its bulge unchanged; negate them and every petal curls the wrong way round.
@@ -653,16 +667,21 @@
       const angle = (k / arms) * TAU;
       const cos = Math.cos(angle);
       const sin = Math.sin(angle);
+      const turn = {
+        a: cos, b: sin, c: -sin, d: cos,
+        e: centre.x - centre.x * cos + centre.y * sin,
+        f: centre.y - centre.x * sin - centre.y * cos,
+      };
       for (const stroke of list) {
         if (!stroke || stroke.pts.length < 1) continue;
         // A turn and a reflection both keep a ring a ring and a polygon
         // regular, so a copy of a shape is a shape of the same kind.
-        out.push(createStroke(
+        out.push(noteCopy(createStroke(
           stroke.pts.map((p) => spinPoint(p, centre, cos, sin)),
           stroke.bulges,
           stroke.closed,
           stroke.shape,
-        ));
+        ), stroke, turn));
       }
     }
     return out;
@@ -688,7 +707,19 @@
       const along = 2 * (vx * ux + vy * uy);
       return { x: axisA.x + along * ux - vx, y: axisA.y + along * uy - vy };
     });
-    return createStroke(pts, stroke.bulges.map((b) => (b ? -b : 0)), stroke.closed, stroke.shape);
+    const a = 2 * ux * ux - 1;
+    const b = 2 * ux * uy;
+    const d = 2 * uy * uy - 1;
+    const flip = {
+      a, b, c: b, d,
+      e: axisA.x - (a * axisA.x + b * axisA.y),
+      f: axisA.y - (b * axisA.x + d * axisA.y),
+    };
+    return noteCopy(
+      createStroke(pts, stroke.bulges.map((bulge) => (bulge ? -bulge : 0)), stroke.closed, stroke.shape),
+      stroke,
+      flip,
+    );
   }
 
   /* ---------- freehand fit: a raw drag becomes lines and arcs ------------- */
@@ -1602,6 +1633,1588 @@
     return out;
   }
 
+  /* ---------- closed areas: what a fill fills ----------------------------- */
+
+  // A fill (docs/plan-draw-area-fill.md) fills whatever the lines wall in, so
+  // an AREA is a face of the arrangement of EVERY drawn line in the pass: the
+  // little triangles where one line crosses itself count, a loop closed on
+  // purpose counts, a loose tail bounds nothing, and a separate drawing inside
+  // an area is a hole that stays bare.  The slice finds the same faces with
+  // shapely — weld the ends, union, polygonize — and tests/test_draw_sections.py
+  // holds the two finders to each other.  What happens here follows that
+  // recipe step for step:
+  //
+  //   1. every line flattened at "Follow curves within", arcs included;
+  //   2. ends within "Join ends within" welded at their centroid, exactly as
+  //      plan.py:_build_weld_graph welds them for the slice;
+  //   3. every segment split wherever it meets another, its own line included
+  //      (a uniform grid keeps that from being every pair against every pair);
+  //   4. loose tails pruned back to where they join, so they bound nothing;
+  //   5. the faces walked, each bounded face kept, and every separate drawing
+  //      that sits inside one assigned to it as a hole.
+  //
+  // The answer is cached on the strokes' revisions, so a pointer moving over
+  // an unchanged drawing never finds the areas twice.
+
+  // Two points closer than this are one point.  Every coordinate a drawing
+  // holds is three decimals of a millimetre in its file, so this is far below
+  // anything an artist made on purpose and far above a crossing's round-off.
+  const VERTEX_EPS = 1e-6;
+  // A face smaller than this (mm²) is round-off from noding, not an area.
+  const AREA_EPS = 1e-6;
+  // How exactly the deepest point is found, in millimetres.
+  const DEEPEST_PRECISION = 0.01;
+  // ...and the most cells that search may open, so a pathological shape can
+  // never stall a frame.
+  const DEEPEST_CELLS = 20000;
+  // How far a loose end looks for the line it was meant to meet, in coils,
+  // when an unclosed area is being explained.
+  const GAP_REACH_COILS = 4;
+
+  // The cup bottom's spacing (weave_bottom.py:196): one coil less the
+  // side-by-side join, so each fill coil overlaps its neighbour by the join.
+  function fillSpacing(options = {}) {
+    const bead = Number(options.bead) > 0 ? Number(options.bead) : DEFAULT_BEAD;
+    const raw = Number(options.overlap);
+    const overlap = Number.isFinite(raw) && raw >= 0 && raw < 1 ? raw : DEFAULT_OVERLAP;
+    return bead * (1 - overlap);
+  }
+
+  function areaSettings(options = {}) {
+    const tol = Number(options.tol) > 0 ? Number(options.tol) : DEFAULT_TOL;
+    const weld = Number(options.weldTol);
+    const weldTol = options.weldTol !== undefined && Number.isFinite(weld) && weld >= 0
+      ? weld
+      : DEFAULT_WELD_TOL;
+    return { tol, weldTol };
+  }
+
+  // A stable small number per stroke OBJECT, for the area signatures below.
+  // Edits change a stroke in place, so its identity is what says "the same
+  // line, moved" across an edit.
+  const strokeIds = new WeakMap();
+  let nextStrokeId = 1;
+  function strokeId(stroke) {
+    let id = strokeIds.get(stroke);
+    if (!id) {
+      id = nextStrokeId;
+      nextStrokeId += 1;
+      strokeIds.set(stroke, id);
+    }
+    return id;
+  }
+
+  // Douglas-Peucker exactly as flatten.py:douglas_peucker runs it: the ends
+  // and every point where the line doubles back are kept, then each run is
+  // split at its farthest point while that is more than `tolerance` off.
+  // Returns the kept INDICES.
+  function peuckerKeep(pts, tolerance) {
+    const n = pts.length;
+    if (n <= 2) return pts.map((_p, i) => i);
+    const keep = new Set([0, n - 1]);
+    for (let i = 1; i < n - 1; i++) {
+      const ix = pts[i].x - pts[i - 1].x;
+      const iy = pts[i].y - pts[i - 1].y;
+      const ox = pts[i + 1].x - pts[i].x;
+      const oy = pts[i + 1].y - pts[i].y;
+      if (ix * ox + iy * oy < 0) keep.add(i);
+    }
+    const anchors = [...keep].sort((left, right) => left - right);
+    const pending = [];
+    for (let k = 0; k < anchors.length - 1; k++) pending.push([anchors[k], anchors[k + 1]]);
+    while (pending.length) {
+      const [start, end] = pending.pop();
+      let far = -1;
+      let farthest = -1;
+      for (let i = start + 1; i < end; i++) {
+        const d = segDist(pts[i], pts[start], pts[end]);
+        if (d > farthest) { farthest = d; far = i; }
+      }
+      if (farthest > tolerance) {
+        keep.add(far);
+        pending.push([start, far]);
+        pending.push([far, end]);
+      }
+    }
+    return [...keep].sort((left, right) => left - right);
+  }
+
+  const fileRound = (v) => Math.round(v * 10 ** PRECISION) / 10 ** PRECISION;
+
+  // Step 1, measured on the line the SLICE will read, not on the one the bed
+  // draws.  A fill only exists once a commit has written the drawing through
+  // toSVG, so the slice always meets this stroke as toSVG wrote it — anchors
+  // and radii at the file's three decimals — and flattens it with
+  // flatten.py: each arc halved evenly until its chord is within tol/2
+  // (_flatten_arc), then the whole run simplified at tol/2 (flatten_path,
+  // flatten.py:302).  That simplification moves a line by up to 0.05 mm, which
+  // is exactly the size of the near-touches that decide whether an area is
+  // closed.  Measured on the gallery: finding areas on the bed's own polyline
+  // disagreed with the slice about which areas exist on 4 of the 98 drawings;
+  // finding them on this line, on none.
+  //
+  // `span` per point is the span the piece ENDING at that point belongs to,
+  // and each kept piece carries every span it now covers.  Cached on the
+  // stroke's revision like the flatten cache.
+  function sliceLine(stroke, tol) {
+    const cache = cacheOf(stroke);
+    const rev = stroke.rev || 0;
+    if (cache.slice && cache.sliceRev === rev && cache.sliceTol === tol) return cache.slice;
+    const n = stroke.pts.length;
+    const anchor = (i) => ({ x: fileRound(stroke.pts[i].x), y: fileRound(stroke.pts[i].y) });
+    const raw = [];
+    const span = [];
+    const count = spanCount(stroke);
+    if (count) {
+      raw.push(anchor(0));
+      span.push(0);
+    }
+    for (let i = 0; i < count; i++) {
+      const a = anchor(i);
+      const b = anchor((i + 1) % n);
+      const arc = arcOf(stroke.pts[i], stroke.pts[(i + 1) % n], stroke.bulges[i] || 0);
+      const chord = dist(a, b);
+      if (arc && chord > 0) {
+        // The arc as written: these two ends, radius num(r), centre on the
+        // side the drawn arc's centre is on (SVG's large/sweep flags say the
+        // same thing), and a radius too short for the chord grown to fit it
+        // (SVG 1.1 F.6.6), as svgelements does.
+        const half = chord / 2;
+        const radius = Math.max(fileRound(arc.r), half);
+        const ux = (b.x - a.x) / chord;
+        const uy = (b.y - a.y) / chord;
+        const [pa, pb] = [stroke.pts[i], stroke.pts[(i + 1) % n]];
+        const side = (arc.c.x - (pa.x + pb.x) / 2) * -uy + (arc.c.y - (pa.y + pb.y) / 2) * ux < 0 ? -1 : 1;
+        const h = Math.sqrt(Math.max(0, radius * radius - half * half)) * side;
+        const c = { x: (a.x + b.x) / 2 - uy * h, y: (a.y + b.y) / 2 + ux * h };
+        const from = Math.atan2(a.y - c.y, a.x - c.x);
+        let sweep = Math.atan2(b.y - c.y, b.x - c.x) - from;
+        if (arc.theta > 0) { while (sweep <= 0) sweep += TAU; } else { while (sweep >= 0) sweep -= TAU; }
+        let pieces = 1;
+        while ((radius * (sweep / pieces) ** 2) / 8 > tol / 2 && pieces < 2 ** 32) pieces *= 2;
+        for (let k = 1; k < pieces; k++) {
+          const t = from + (sweep * k) / pieces;
+          raw.push({ x: c.x + radius * Math.cos(t), y: c.y + radius * Math.sin(t) });
+          span.push(i);
+        }
+      }
+      raw.push(b);
+      span.push(i);
+    }
+    // remove_consecutive_duplicates, then the simplification.
+    const pts = [];
+    const spans = [];
+    raw.forEach((p, k) => {
+      if (pts.length && dist(p, pts[pts.length - 1]) <= 1e-12) return;
+      pts.push(p);
+      spans.push(span[k]);
+    });
+    let line = null;
+    if (pts.length >= 2 && pts.some((p) => dist(p, pts[0]) > 1e-12)) {
+      const kept = peuckerKeep(pts, tol / 2);
+      const pieceSpans = [];
+      for (let k = 1; k < kept.length; k++) {
+        const covered = new Set();
+        for (let j = kept[k - 1] + 1; j <= kept[k]; j++) covered.add(spans[j]);
+        pieceSpans.push([...covered]);
+      }
+      line = { pts: kept.map((k) => pts[k]), spans: pieceSpans };
+    }
+    cache.slice = line;
+    cache.sliceRev = rev;
+    cache.sliceTol = tol;
+    return line;
+  }
+
+  // Step 2.  Mirrors plan.py:_build_weld_graph: a closed line's two ends are
+  // both its seam, ends join in groups within weldTol, and every end in a
+  // group moves to the group's centroid.
+  function weldedLines(strokes, tol, weldTol) {
+    const lines = [];
+    for (const stroke of strokes) {
+      if (!stroke || stroke.pts.length < 2) continue;
+      const read = sliceLine(stroke, tol);
+      if (!read) continue;
+      const pts = read.pts.map((p) => ({ x: p.x, y: p.y }));
+      // A closed line ends where it began (_build_weld_graph appends the start
+      // when it does not).
+      if (stroke.closed && dist(pts[pts.length - 1], pts[0]) > EPSILON) {
+        pts.push({ x: pts[0].x, y: pts[0].y });
+      }
+      const spans = read.spans.slice();
+      while (spans.length < pts.length - 1) spans.push(spans[spans.length - 1] || [0]);
+      lines.push({ stroke, pts, spans, closed: stroke.closed });
+    }
+    const ends = [];
+    for (const line of lines) {
+      ends.push(line.pts[0]);
+      ends.push(line.closed ? line.pts[0] : line.pts[line.pts.length - 1]);
+    }
+    const { find, join } = makeUnion(ends.length);
+    if (weldTol === 0) {
+      const exact = new Map();
+      ends.forEach((p, i) => {
+        const key = `${p.x},${p.y}`;
+        if (exact.has(key)) join(i, exact.get(key));
+        else exact.set(key, i);
+      });
+    } else {
+      const grid = new Map();
+      ends.forEach((p, i) => {
+        const gx = Math.floor(p.x / weldTol);
+        const gy = Math.floor(p.y / weldTol);
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dy = -1; dy <= 1; dy++) {
+            const bucket = grid.get(cellKey(gx + dx, gy + dy));
+            if (!bucket) continue;
+            for (const other of bucket) {
+              if (dist(p, ends[other]) <= weldTol + EPSILON) join(i, other);
+            }
+          }
+        }
+        const key = cellKey(gx, gy);
+        if (!grid.has(key)) grid.set(key, []);
+        grid.get(key).push(i);
+      });
+    }
+    const sums = new Map();
+    ends.forEach((p, i) => {
+      const root = find(i);
+      const sum = sums.get(root) || { x: 0, y: 0, n: 0 };
+      sum.x += p.x;
+      sum.y += p.y;
+      sum.n += 1;
+      sums.set(root, sum);
+    });
+    lines.forEach((line, li) => {
+      const start = sums.get(find(2 * li));
+      const end = sums.get(find(2 * li + 1));
+      line.pts[0] = { x: start.x / start.n, y: start.y / start.n };
+      line.pts[line.pts.length - 1] = { x: end.x / end.n, y: end.y / end.n };
+    });
+    return lines;
+  }
+
+  // Each piece remembers which line and which spans drew it: a span index is
+  // what survives a move or a resize, so it is what says "the same area,
+  // moved" across an edit.
+  function lineSegments(lines) {
+    const segs = [];
+    lines.forEach((line, li) => {
+      for (let i = 0; i < line.pts.length - 1; i++) {
+        const a = line.pts[i];
+        const b = line.pts[i + 1];
+        if (Math.abs(a.x - b.x) <= VERTEX_EPS && Math.abs(a.y - b.y) <= VERTEX_EPS) continue;
+        segs.push({ a, b, li, spans: line.spans[i], tip: null });
+      }
+    });
+    return segs;
+  }
+
+  // An end of one segment that lies along the other.
+  function alongSegment(seg, p, length) {
+    const rx = seg.b.x - seg.a.x;
+    const ry = seg.b.y - seg.a.y;
+    const t = ((p.x - seg.a.x) * rx + (p.y - seg.a.y) * ry) / (length * length);
+    const slack = VERTEX_EPS / length;
+    return t >= -slack && t <= 1 + slack;
+  }
+
+  const samePoint = (l, r) => l === r
+    || (Math.abs(l.x - r.x) <= VERTEX_EPS && Math.abs(l.y - r.y) <= VERTEX_EPS);
+  // A cut AT a segment's own end tells it nothing: the end is a vertex anyway.
+  // Skipping those is what keeps a ring's neighbouring pieces, which all meet
+  // end to end, from costing a sort each.
+  const cutInto = (seg, cuts, k, at) => {
+    if (samePoint(at, seg.a) || samePoint(at, seg.b)) return;
+    if (cuts[k]) cuts[k].push(at); else cuts[k] = [at];
+  };
+
+  // Where two segments meet, if they do, pushed onto both cut lists.  The
+  // straddle tests are signed DISTANCES, so "touching within VERTEX_EPS" means
+  // the same thing at any angle; a meeting at an end is taken AT that end, so a
+  // line that stops on another one joins it exactly.
+  function crossSegments(segs, ip, iq, cuts) {
+    const p = segs[ip];
+    const q = segs[iq];
+    const rx = p.b.x - p.a.x;
+    const ry = p.b.y - p.a.y;
+    const sx = q.b.x - q.a.x;
+    const sy = q.b.y - q.a.y;
+    const lr = Math.hypot(rx, ry);
+    const ls = Math.hypot(sx, sy);
+    const qa = (rx * (q.a.y - p.a.y) - ry * (q.a.x - p.a.x)) / lr;
+    const qb = (rx * (q.b.y - p.a.y) - ry * (q.b.x - p.a.x)) / lr;
+    if (Math.abs(qa) <= VERTEX_EPS && Math.abs(qb) <= VERTEX_EPS) {
+      // One line along the other: each end that lies along the other cuts it.
+      if (alongSegment(p, q.a, lr)) cutInto(p, cuts, ip, q.a);
+      if (alongSegment(p, q.b, lr)) cutInto(p, cuts, ip, q.b);
+      if (alongSegment(q, p.a, ls)) cutInto(q, cuts, iq, p.a);
+      if (alongSegment(q, p.b, ls)) cutInto(q, cuts, iq, p.b);
+      return;
+    }
+    if ((qa > VERTEX_EPS && qb > VERTEX_EPS) || (qa < -VERTEX_EPS && qb < -VERTEX_EPS)) return;
+    const pa = (sx * (p.a.y - q.a.y) - sy * (p.a.x - q.a.x)) / ls;
+    const pb = (sx * (p.b.y - q.a.y) - sy * (p.b.x - q.a.x)) / ls;
+    if ((pa > VERTEX_EPS && pb > VERTEX_EPS) || (pa < -VERTEX_EPS && pb < -VERTEX_EPS)) return;
+    let at;
+    if (Math.abs(qa) <= VERTEX_EPS) at = q.a;
+    else if (Math.abs(qb) <= VERTEX_EPS) at = q.b;
+    else if (Math.abs(pa) <= VERTEX_EPS) at = p.a;
+    else if (Math.abs(pb) <= VERTEX_EPS) at = p.b;
+    else {
+      const u = qa / (qa - qb);
+      at = { x: q.a.x + u * sx, y: q.a.y + u * sy };
+    }
+    cutInto(p, cuts, ip, at);
+    cutInto(q, cuts, iq, at);
+  }
+
+  // Step 3's broad phase: the same sampled grid continuity() uses
+  // (segmentGrid), keyed here by SEGMENT rather than by stroke, because a
+  // line crossing itself is exactly the case a fill has to see.
+  function cutSegments(segs) {
+    const n = segs.length;
+    // Only a segment something crosses gets a list.
+    const cuts = new Array(n);
+    if (n < 2) return { cuts, step: 1 };
+    const lengths = Float64Array.from(segs, (seg) => dist(seg.a, seg.b)).sort();
+    const step = clamp(lengths[n >> 1], 0.5, 25);
+    const cell = 2 * step;
+    const grid = new Map();
+    const cells = [];
+    segs.forEach((seg, si) => {
+      const k = Math.max(1, Math.ceil(dist(seg.a, seg.b) / step));
+      let lastKey = NaN;
+      for (let j = 0; j <= k; j++) {
+        const gx = Math.floor((seg.a.x + ((seg.b.x - seg.a.x) * j) / k) / cell);
+        const gy = Math.floor((seg.a.y + ((seg.b.y - seg.a.y) * j) / k) / cell);
+        const key = cellKey(gx, gy);
+        if (key === lastKey) continue;
+        lastKey = key;
+        let entry = grid.get(key);
+        if (!entry) {
+          entry = { gx, gy, segs: [] };
+          grid.set(key, entry);
+          cells.push(entry);
+        }
+        if (entry.segs[entry.segs.length - 1] !== si) entry.segs.push(si);
+      }
+    });
+    // A pair that shares more than one cell is measured more than once; that
+    // is cheaper than remembering every pair, and the same crossing measured
+    // twice lands on the same vertex.
+    for (const entry of cells) {
+      for (const [dx, dy] of NEIGHBOUR_CELLS) {
+        const other = dx === 0 && dy === 0 ? entry : grid.get(cellKey(entry.gx + dx, entry.gy + dy));
+        if (!other) continue;
+        for (let i = 0; i < entry.segs.length; i++) {
+          const left = entry.segs[i];
+          for (let j = other === entry ? i + 1 : 0; j < other.segs.length; j++) {
+            const right = other.segs[j];
+            if (left === right) continue;
+            if (left < right) crossSegments(segs, left, right, cuts);
+            else crossSegments(segs, right, left, cuts);
+          }
+        }
+      }
+    }
+    return { cuts, step };
+  }
+
+  // Points within VERTEX_EPS of one another are one vertex.  Neighbouring
+  // pieces of a line share their end OBJECTS, so most questions are answered
+  // by identity before any hashing; and a point only looks into the next cell
+  // when it is within VERTEX_EPS of that cell's edge.
+  function vertexTable() {
+    const cell = 1e-3;
+    const edge = VERTEX_EPS / cell;
+    const index = new Map();
+    const pts = [];
+    const known = new Map();
+    const key = (gx, gy) => gx * 67108864 + gy;
+    const probe = (gx, gy, p) => {
+      const bucket = index.get(key(gx, gy));
+      if (!bucket) return -1;
+      for (const v of bucket) if (samePoint(pts[v], p)) return v;
+      return -1;
+    };
+    function id(p) {
+      const seen = known.get(p);
+      if (seen !== undefined) return seen;
+      const fx = p.x / cell;
+      const fy = p.y / cell;
+      const gx = Math.floor(fx);
+      const gy = Math.floor(fy);
+      let v = probe(gx, gy, p);
+      if (v < 0) {
+        const sideX = fx - gx < edge ? -1 : gx + 1 - fx < edge ? 1 : 0;
+        const sideY = fy - gy < edge ? -1 : gy + 1 - fy < edge ? 1 : 0;
+        if (sideX) v = probe(gx + sideX, gy, p);
+        if (v < 0 && sideY) v = probe(gx, gy + sideY, p);
+        if (v < 0 && sideX && sideY) v = probe(gx + sideX, gy + sideY, p);
+      }
+      if (v < 0) {
+        v = pts.length;
+        pts.push({ x: p.x, y: p.y });
+        const k = key(gx, gy);
+        if (!index.has(k)) index.set(k, []);
+        index.get(k).push(v);
+      }
+      known.set(p, v);
+      return v;
+    }
+    return { id, pts };
+  }
+
+  // Compressed adjacency: item k belongs to vertex owners[k], and each
+  // vertex's items are the run of `list` from start[v] to start[v + 1].  Two
+  // typed arrays instead of an array per vertex.
+  function adjacency(nv, owners, items) {
+    const start = new Int32Array(nv + 1);
+    for (let k = 0; k < owners.length; k++) start[owners[k] + 1] += 1;
+    for (let v = 0; v < nv; v++) start[v + 1] += start[v];
+    const list = new Int32Array(start[nv]);
+    const fill = start.slice(0, nv);
+    for (let k = 0; k < owners.length; k++) {
+      list[fill[owners[k]]] = items[k];
+      fill[owners[k]] += 1;
+    }
+    return { start, list };
+  }
+
+  function ringArea(pts) {
+    let twice = 0;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      twice += pts[j].x * pts[i].y - pts[i].x * pts[j].y;
+    }
+    return twice / 2;
+  }
+
+  function insideRing(pts, x, y) {
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const a = pts[i];
+      const b = pts[j];
+      if ((a.y > y) !== (b.y > y) && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+    }
+    return inside;
+  }
+
+  // Steps 3 to 5 on any list of segments: the drawing's own, or the drawing's
+  // plus the bridges an unclosed area is explained with (gapLook).
+  function arrangement(segs) {
+    const { cuts, step } = cutSegments(segs);
+    const table = vertexTable();
+    const edges = [];
+    const edgeAt = new Map();
+    const addEdge = (from, to, si) => {
+      if (from === to) return;
+      const lo = from < to ? from : to;
+      const hi = from < to ? to : from;
+      const key = lo * 67108864 + hi;
+      let e = edgeAt.get(key);
+      if (e === undefined) {
+        e = edges.length;
+        edgeAt.set(key, e);
+        edges.push({ u: lo, v: hi, src: [si], alive: true, comp: -1 });
+      } else if (!edges[e].src.includes(si)) {
+        edges[e].src.push(si);
+      }
+    };
+    segs.forEach((seg, si) => {
+      const between = cuts[si];
+      if (!between) {
+        addEdge(table.id(seg.a), table.id(seg.b), si);
+        return;
+      }
+      const rx = seg.b.x - seg.a.x;
+      const ry = seg.b.y - seg.a.y;
+      const l2 = rx * rx + ry * ry;
+      const along = (p) => ((p.x - seg.a.x) * rx + (p.y - seg.a.y) * ry) / l2;
+      const stops = [seg.a, ...between.slice().sort((l, r) => along(l) - along(r)), seg.b];
+      let prev = table.id(stops[0]);
+      for (let k = 1; k < stops.length; k++) {
+        const v = table.id(stops[k]);
+        addEdge(prev, v, si);
+        prev = v;
+      }
+    });
+    const verts = table.pts;
+    const nv = verts.length;
+    const ne = edges.length;
+
+    // Step 4: loose tails.  A vertex left with one edge is the free end of a
+    // tail; the tail goes back to where it joins something.
+    const ends = new Int32Array(2 * ne);
+    const ids = new Int32Array(2 * ne);
+    edges.forEach((edge, e) => {
+      ends[2 * e] = edge.u;
+      ends[2 * e + 1] = edge.v;
+      ids[2 * e] = e;
+      ids[2 * e + 1] = e;
+    });
+    const around = adjacency(nv, ends, ids);
+    const degree = new Int32Array(nv);
+    for (let v = 0; v < nv; v++) degree[v] = around.start[v + 1] - around.start[v];
+    const tips = [];
+    const queue = [];
+    for (let v = 0; v < nv; v++) {
+      if (degree[v] === 1) { tips.push(v); queue.push(v); }
+    }
+    while (queue.length) {
+      const v = queue.pop();
+      if (degree[v] !== 1) continue;
+      let e = -1;
+      for (let k = around.start[v]; k < around.start[v + 1]; k++) {
+        if (edges[around.list[k]].alive) { e = around.list[k]; break; }
+      }
+      if (e < 0) continue;
+      edges[e].alive = false;
+      degree[v] -= 1;
+      const w = edges[e].u === v ? edges[e].v : edges[e].u;
+      degree[w] -= 1;
+      if (degree[w] === 1) queue.push(w);
+    }
+    // Pruned edges grouped into the tails they made, so an unclosed area's
+    // explanation never bridges a tail back onto itself.
+    const tails = makeUnion(ne);
+    for (let v = 0; v < nv; v++) {
+      let first = -1;
+      for (let k = around.start[v]; k < around.start[v + 1]; k++) {
+        const e = around.list[k];
+        if (edges[e].alive) continue;
+        if (first < 0) first = e; else tails.join(first, e);
+      }
+    }
+    edges.forEach((edge, e) => { if (!edge.alive) edge.comp = tails.find(e); });
+
+    // Step 5: walk the faces.  Half-edge 2e runs u→v, 2e+1 runs v→u; each
+    // vertex's outgoing half-edges are sorted counter-clockwise, and the next
+    // half-edge round a face is the one clockwise of the way back — so every
+    // face keeps its inside on the left, and a bounded face comes out
+    // counter-clockwise (positive area).
+    const origin = (h) => (h & 1 ? edges[h >> 1].v : edges[h >> 1].u);
+    const target = (h) => (h & 1 ? edges[h >> 1].u : edges[h >> 1].v);
+    const liveHalf = [];
+    for (let e = 0; e < ne; e++) if (edges[e].alive) liveHalf.push(2 * e, 2 * e + 1);
+    const owners = Int32Array.from(liveHalf, origin);
+    const out = adjacency(nv, owners, Int32Array.from(liveHalf));
+    const angle = new Float64Array(2 * ne);
+    for (const h of liveHalf) {
+      const a = verts[origin(h)];
+      const b = verts[target(h)];
+      angle[h] = Math.atan2(b.y - a.y, b.x - a.x);
+    }
+    const slot = new Int32Array(2 * ne);
+    for (let v = 0; v < nv; v++) {
+      const from = out.start[v];
+      const run = out.list.subarray(from, out.start[v + 1]);
+      run.sort((l, r) => angle[l] - angle[r]);
+      for (let i = 0; i < run.length; i++) slot[run[i]] = i;
+    }
+    const next = (h) => {
+      const v = target(h);
+      const from = out.start[v];
+      const deg = out.start[v + 1] - from;
+      return out.list[from + ((slot[h ^ 1] - 1 + deg) % deg)];
+    };
+    // Which drawing each vertex belongs to, so a hole is never taken for a
+    // hole in its own drawing.
+    const comps = makeUnion(nv);
+    edges.forEach((edge) => { if (edge.alive) comps.join(edge.u, edge.v); });
+
+    const seen = new Uint8Array(edges.length * 2);
+    const shells = [];
+    const outlines = [];
+    for (let e = 0; e < edges.length; e++) {
+      if (!edges[e].alive) continue;
+      for (const start of [2 * e, 2 * e + 1]) {
+        if (seen[start]) continue;
+        const hs = [];
+        let h = start;
+        let guard = edges.length * 2 + 1;
+        do {
+          seen[h] = 1;
+          hs.push(h);
+          h = next(h);
+          guard -= 1;
+        } while (h !== start && guard > 0);
+        const pts = hs.map((k) => verts[origin(k)]);
+        const area = ringArea(pts);
+        const cycle = { hs, pts, area, bounds: boundsOf(pts), comp: comps.find(origin(start)), holes: [] };
+        if (area > AREA_EPS) shells.push(cycle);
+        else if (area < -AREA_EPS) outlines.push(cycle);
+      }
+    }
+    // Every separate drawing sits inside the smallest face of another drawing
+    // that holds it, or inside nothing.  The faces are filed on a coarse grid
+    // by their boxes, smallest first, so a field of a thousand rings asks each
+    // one about its neighbours rather than about all of them.
+    const bySize = shells.slice().sort((left, right) => left.area - right.area);
+    if (outlines.length && bySize.length) {
+      const all = boundsOf(bySize.map((shell) => shell.bounds).flatMap((b) => [
+        { x: b.minX, y: b.minY }, { x: b.maxX, y: b.maxY },
+      ]));
+      const side = clamp(Math.ceil(Math.sqrt(bySize.length)), 1, 64);
+      const cw = Math.max((all.maxX - all.minX) / side, 1e-9);
+      const ch = Math.max((all.maxY - all.minY) / side, 1e-9);
+      const colOf = (x) => clamp(Math.floor((x - all.minX) / cw), 0, side - 1);
+      const rowOf = (y) => clamp(Math.floor((y - all.minY) / ch), 0, side - 1);
+      const filed = Array.from({ length: side * side }, () => []);
+      for (const shell of bySize) {
+        const b = shell.bounds;
+        for (let r = rowOf(b.minY); r <= rowOf(b.maxY); r++) {
+          for (let c = colOf(b.minX); c <= colOf(b.maxX); c++) filed[r * side + c].push(shell);
+        }
+      }
+      for (const outline of outlines) {
+        const p = outline.pts[0];
+        if (p.x < all.minX || p.x > all.maxX || p.y < all.minY || p.y > all.maxY) continue;
+        for (const shell of filed[rowOf(p.y) * side + colOf(p.x)]) {
+          if (shell.comp === outline.comp) continue;
+          const b = shell.bounds;
+          if (p.x < b.minX || p.x > b.maxX || p.y < b.minY || p.y > b.maxY) continue;
+          if (!insideRing(shell.pts, p.x, p.y)) continue;
+          shell.holes.push(outline);
+          break;
+        }
+      }
+    }
+    return { segs, edges, verts, tips, shells, step };
+  }
+
+  // How much of an area's edge each of its lines makes, in mm — what decides
+  // which line a fill goes with when the lines round it move apart.
+  const edgeShare = new WeakMap();
+
+  // The areas themselves, in a shape the bed's shading and the fill model can use.
+  function areasOf(arr, lines) {
+    const areas = [];
+    for (const shell of arr.shells) {
+      const area = shell.area - shell.holes.reduce((sum, hole) => sum - hole.area, 0);
+      if (!(area > AREA_EPS)) continue;
+      const spans = new Map();
+      const share = new Map();
+      for (const cycle of [shell, ...shell.holes]) {
+        for (const h of cycle.hs) {
+          const edge = arr.edges[h >> 1];
+          const length = dist(arr.verts[edge.u], arr.verts[edge.v]);
+          for (const si of edge.src) {
+            const seg = arr.segs[si];
+            const line = lines[seg.li];
+            if (!line || !line.stroke) continue;
+            share.set(line.stroke, (share.get(line.stroke) || 0) + length);
+            for (const span of seg.spans) {
+              const key = `${strokeId(line.stroke)}:${span}`;
+              if (!spans.has(key)) spans.set(key, [line.stroke, span]);
+            }
+          }
+        }
+      }
+      const found = {
+        rings: [shell.pts, ...shell.holes.map((hole) => hole.pts)],
+        area,
+        bounds: shell.bounds,
+        strokes: [...share.keys()],
+        spans: [...spans.values()],
+        key: [...spans.keys()].sort().join(" "),
+      };
+      edgeShare.set(found, share);
+      areas.push(found);
+    }
+    return areas;
+  }
+
+  const spanKey = (spans) => [...new Set(spans.map(([stroke, span]) => `${strokeId(stroke)}:${span}`))]
+    .sort()
+    .join(" ");
+
+  // Which arrangement an area came from, for the questions asked of it later
+  // (the lines inside it, the deepest point).
+  const areaOwner = new WeakMap();
+  const areaCache = new WeakMap();
+
+  // Every closed area of the drawing, cached on the strokes' revisions.
+  //
+  //   closedAreas(doc, {tol, weldTol}) -> {
+  //     areas:     [{rings, area, bounds, strokes, spans, key}],
+  //                rings[0] the outline (counter-clockwise), the rest holes
+  //                (clockwise), each a list of {x, y} in bed millimetres that
+  //                does not repeat its first point; area in mm² with the holes
+  //                taken out; strokes the lines that wall it in;
+  //     looseEnds: [{x, y}]   the free ends of lines, after welding;
+  //     lines:     [{stroke, pts, closed}]   what was measured: each line
+  //                flattened and welded, a closed one ending on its start.
+  //   }
+  //
+  // The result is never changed once made: an edit makes a new one.
+  function closedAreas(doc, options = {}) {
+    const { tol, weldTol } = areaSettings(options);
+    const strokes = doc && Array.isArray(doc.strokes) ? doc.strokes : [];
+    const cached = doc ? areaCache.get(doc) : null;
+    if (cached && cached.tol === tol && cached.weldTol === weldTol
+      && cached.strokes.length === strokes.length
+      && cached.strokes.every((stroke, i) => stroke === strokes[i] && cached.revs[i] === (stroke.rev || 0))) {
+      return cached.result;
+    }
+    const lines = weldedLines(strokes, tol, weldTol);
+    const arr = arrangement(lineSegments(lines));
+    const result = {
+      areas: areasOf(arr, lines),
+      looseEnds: arr.tips.map((v) => ({ x: arr.verts[v].x, y: arr.verts[v].y })),
+      lines: lines.map((line) => ({ stroke: line.stroke, pts: line.pts, closed: line.closed })),
+    };
+    Object.defineProperty(result, "_arr", { value: arr, enumerable: false });
+    Object.defineProperty(result, "_gap", { value: new Map(), enumerable: false });
+    for (const area of result.areas) areaOwner.set(area, result);
+    if (doc) {
+      areaCache.set(doc, {
+        tol, weldTol, strokes: strokes.slice(), revs: strokes.map((stroke) => stroke.rev || 0), result,
+      });
+    }
+    return result;
+  }
+
+  // Even-odd over every ring, so a hole is outside its area.
+  function pointInArea(area, p) {
+    if (!area || !p) return false;
+    const b = area.bounds;
+    if (p.x < b.minX || p.x > b.maxX || p.y < b.minY || p.y > b.maxY) return false;
+    let inside = false;
+    for (const ring of area.rings) if (insideRing(ring, p.x, p.y)) inside = !inside;
+    return inside;
+  }
+
+  // Faces never overlap, so at most one holds a point; the smallest wins if
+  // round-off ever lets two claim it.
+  function areaContaining(areas, p) {
+    let best = null;
+    for (const area of areas) {
+      if (pointInArea(area, p) && (!best || area.area < best.area)) best = area;
+    }
+    return best;
+  }
+
+  /* ---------- the deepest point of an area -------------------------------- */
+
+  // The point farthest from every line round it — the pole of inaccessibility
+  // — found by the polylabel search: cells over the area, the most promising
+  // split first, until no cell can beat the best by more than the precision.
+  // It is what a fill stores, because it is the one point of an area that an
+  // edit to its edge is least likely to leave outside.
+  //
+  // "Every line" includes a loose tail poking into the area: the fill keeps a
+  // coil away from it too, so the point does.
+  const deepestMemo = new WeakMap();
+
+  function areaObstacles(area) {
+    const owner = areaOwner.get(area);
+    const out = [];
+    if (!owner) return out;
+    const arr = owner._arr;
+    for (const edge of arr.edges) {
+      if (edge.alive) continue;
+      const a = arr.verts[edge.u];
+      const b = arr.verts[edge.v];
+      if (pointInArea(area, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })) out.push(a, b);
+    }
+    return out;
+  }
+
+  // A grid over an area's walls, so each probe of the deepest-point search
+  // asks about the few walls near it — a background round a hundred drawings
+  // has tens of thousands of walls, and asking every one of them every probe
+  // took three seconds on the performance gate's ring field.  `walls` is
+  // pairs of points; the first `ringWalls` pairs are the area's own edges
+  // (what inside-or-out is counted on), the rest lines poking into it.
+  function wallGrid(walls, ringWalls, bounds) {
+    const n = walls.length / 2;
+    const w = Math.max(bounds.maxX - bounds.minX, 1e-6);
+    const h = Math.max(bounds.maxY - bounds.minY, 1e-6);
+    const cell = Math.max(Math.sqrt((w * h) / n) * 2, 1e-3);
+    const cols = Math.max(1, Math.ceil(w / cell));
+    const rows = Math.max(1, Math.ceil(h / cell));
+    const colOf = (x) => clamp(Math.floor((x - bounds.minX) / cell), 0, cols - 1);
+    const rowOf = (y) => clamp(Math.floor((y - bounds.minY) / cell), 0, rows - 1);
+    const cells = new Map();
+    const put = (c, r, k) => {
+      if (c < 0 || r < 0 || c >= cols || r >= rows) return;
+      const key = r * cols + c;
+      let list = cells.get(key);
+      if (!list) { list = []; cells.set(key, list); }
+      if (list[list.length - 1] !== k) list.push(k);
+    };
+    for (let k = 0; k < n; k++) {
+      const a = walls[2 * k];
+      const b = walls[2 * k + 1];
+      const c0 = colOf(Math.min(a.x, b.x));
+      const c1 = colOf(Math.max(a.x, b.x));
+      const r0 = rowOf(Math.min(a.y, b.y));
+      const r1 = rowOf(Math.max(a.y, b.y));
+      if ((c1 - c0 + 1) * (r1 - r0 + 1) <= 16) {
+        for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) put(c, r, k);
+        continue;
+      }
+      // A long slanted wall: every cell within one of a point sampled every
+      // quarter cell along it, which holds every cell it passes through.
+      const steps = Math.ceil(dist(a, b) / (cell / 4));
+      const done = new Set();
+      for (let s = 0; s <= steps; s++) {
+        const c = colOf(a.x + ((b.x - a.x) * s) / steps);
+        const r = rowOf(a.y + ((b.y - a.y) * s) / steps);
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            if (c + dc < 0 || r + dr < 0 || c + dc >= cols || r + dr >= rows) continue;
+            const key = (r + dr) * cols + (c + dc);
+            if (done.has(key)) continue;
+            done.add(key);
+            put(c + dc, r + dr, k);
+          }
+        }
+      }
+    }
+    const stamp = new Int32Array(n);
+    let tick = 0;
+    // Grown a square ring of cells at a time: nothing in ring k is nearer
+    // than k - 1 cells, so the search stops once that is beyond the best.
+    function nearest(x, y) {
+      tick += 1;
+      const p = { x, y };
+      const c = colOf(x);
+      const r = rowOf(y);
+      let best = Infinity;
+      for (let ring = 0; ring <= cols + rows; ring++) {
+        if (ring > 0 && (ring - 1) * cell > best) break;
+        for (let rr = r - ring; rr <= r + ring; rr++) {
+          if (rr < 0 || rr >= rows) continue;
+          const edge = rr === r - ring || rr === r + ring;
+          for (let cc = c - ring; cc <= c + ring; cc += edge ? 1 : 2 * ring || 1) {
+            if (cc < 0 || cc >= cols) continue;
+            const list = cells.get(rr * cols + cc);
+            if (!list) continue;
+            for (const k of list) {
+              if (stamp[k] === tick) continue;
+              stamp[k] = tick;
+              const d = segDist(p, walls[2 * k], walls[2 * k + 1]);
+              if (d < best) best = d;
+            }
+          }
+        }
+      }
+      return best;
+    }
+    // Even-odd along a ray to +x, through this row's cells only.
+    function inside(x, y) {
+      if (y < bounds.minY || y > bounds.maxY || x > bounds.maxX) return false;
+      tick += 1;
+      const r = rowOf(y);
+      let odd = false;
+      for (let c = colOf(x); c < cols; c++) {
+        const list = cells.get(r * cols + c);
+        if (!list) continue;
+        for (const k of list) {
+          if (k >= ringWalls || stamp[k] === tick) continue;
+          stamp[k] = tick;
+          const a = walls[2 * k];
+          const b = walls[2 * k + 1];
+          if ((a.y > y) !== (b.y > y) && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) odd = !odd;
+        }
+      }
+      return odd;
+    }
+    return { nearest, inside };
+  }
+
+  function deepestPoint(area) {
+    if (!area) return null;
+    const memo = deepestMemo.get(area);
+    if (memo) return memo;
+    const walls = [];
+    for (const ring of area.rings) {
+      for (let i = 0; i < ring.length; i++) walls.push(ring[i], ring[(i + 1) % ring.length]);
+    }
+    const ringWalls = walls.length / 2;
+    walls.push(...areaObstacles(area));
+    const index = walls.length > 512 ? wallGrid(walls, ringWalls, area.bounds) : null;
+    const reach = (x, y) => {
+      if (index) {
+        const d = index.nearest(x, y);
+        return index.inside(x, y) ? d : -d;
+      }
+      let best = Infinity;
+      const p = { x, y };
+      for (let i = 0; i < walls.length; i += 2) {
+        const d = segDist(p, walls[i], walls[i + 1]);
+        if (d < best) best = d;
+      }
+      return pointInArea(area, p) ? best : -best;
+    };
+    const cellOf = (x, y, h) => {
+      const d = reach(x, y);
+      return { x, y, h, d, max: d + h * Math.SQRT2 };
+    };
+    const b = area.bounds;
+    const w = b.maxX - b.minX;
+    const ht = b.maxY - b.minY;
+    let size = Math.max(Math.min(w, ht), Math.max(w, ht) / 64);
+    if (!(size > 0)) size = 1;
+    const heap = [];
+    const push = (cell) => {
+      heap.push(cell);
+      let i = heap.length - 1;
+      while (i > 0) {
+        const up = (i - 1) >> 1;
+        if (heap[up].max >= heap[i].max) break;
+        [heap[up], heap[i]] = [heap[i], heap[up]];
+        i = up;
+      }
+    };
+    const pop = () => {
+      const top = heap[0];
+      const last = heap.pop();
+      if (heap.length) {
+        heap[0] = last;
+        let i = 0;
+        for (;;) {
+          const l = 2 * i + 1;
+          const r = l + 1;
+          let m = i;
+          if (l < heap.length && heap[l].max > heap[m].max) m = l;
+          if (r < heap.length && heap[r].max > heap[m].max) m = r;
+          if (m === i) break;
+          [heap[m], heap[i]] = [heap[i], heap[m]];
+          i = m;
+        }
+      }
+      return top;
+    };
+    const half = size / 2;
+    for (let x = b.minX; x < b.maxX; x += size) {
+      for (let y = b.minY; y < b.maxY; y += size) push(cellOf(x + half, y + half, half));
+    }
+    let best = cellOf(b.center.x, b.center.y, 0);
+    let opened = heap.length;
+    while (heap.length) {
+      const cell = pop();
+      if (cell.d > best.d) best = cell;
+      if (cell.max - best.d <= DEEPEST_PRECISION || opened >= DEEPEST_CELLS) continue;
+      const h = cell.h / 2;
+      push(cellOf(cell.x - h, cell.y - h, h));
+      push(cellOf(cell.x + h, cell.y - h, h));
+      push(cellOf(cell.x - h, cell.y + h, h));
+      push(cellOf(cell.x + h, cell.y + h, h));
+      opened += 4;
+    }
+    if (!(best.d > 0)) {
+      // A sliver thinner than the search's precision can hand back a point
+      // just outside it.  Every edge round a face has the face on its LEFT
+      // (that is how the faces were walked), so a short step left from an
+      // edge's middle is inside; the deepest such step is the answer.
+      for (const ring of area.rings) {
+        for (let i = 0; i < ring.length; i++) {
+          const a = ring[i];
+          const c = ring[(i + 1) % ring.length];
+          const len = dist(a, c);
+          if (!(len > VERTEX_EPS)) continue;
+          for (const step of [len / 4, 1e-3, 1e-5]) {
+            const x = (a.x + c.x) / 2 - ((c.y - a.y) / len) * step;
+            const y = (a.y + c.y) / 2 + ((c.x - a.x) / len) * step;
+            const d = reach(x, y);
+            if (d > best.d) best = { x, y, d };
+          }
+        }
+      }
+    }
+    const result = Object.freeze({ x: best.x, y: best.y, clearance: Math.max(0, best.d) });
+    deepestMemo.set(area, result);
+    return result;
+  }
+
+  /* ---------- asking about one point -------------------------------------- */
+
+  // Why a point is not in a closed area, when lines nearly wall it in: each
+  // free end is bridged to the nearest other free end, and to the nearest line
+  // that is not its own tail, within reach.  If the point is then inside a
+  // face, the free ends on that face's bridges are the gap.
+  function gapLook(result, reach) {
+    const memo = result._gap.get(reach);
+    if (memo) return memo;
+    const arr = result._arr;
+    const tipAt = new Map(arr.tips.map((v) => [v, arr.verts[v]]));
+    const bridges = [];
+    const seenPair = new Set();
+    const tailOf = new Map();
+    arr.edges.forEach((edge) => {
+      if (edge.alive) return;
+      for (const v of [edge.u, edge.v]) if (tipAt.has(v) && !tailOf.has(v)) tailOf.set(v, edge.comp);
+    });
+    for (const [v, p] of tipAt) {
+      let nearTip = null;
+      for (const [w, q] of tipAt) {
+        if (w === v) continue;
+        const d = dist(p, q);
+        if (d <= reach && (!nearTip || d < nearTip.d)) nearTip = { w, q, d };
+      }
+      if (nearTip) {
+        const pair = v < nearTip.w ? `${v}:${nearTip.w}` : `${nearTip.w}:${v}`;
+        if (!seenPair.has(pair)) {
+          seenPair.add(pair);
+          bridges.push({ a: p, b: nearTip.q, li: -1, spans: [], tip: [p, nearTip.q] });
+        }
+      }
+      let nearLine = null;
+      const own = tailOf.get(v);
+      for (const edge of arr.edges) {
+        if (!edge.alive && edge.comp === own) continue;
+        const a = arr.verts[edge.u];
+        const b = arr.verts[edge.v];
+        if (edge.u === v || edge.v === v) continue;
+        const d = segDist(p, a, b);
+        if (d > reach || (nearLine && d >= nearLine.d)) continue;
+        const rx = b.x - a.x;
+        const ry = b.y - a.y;
+        const t = clamp(((p.x - a.x) * rx + (p.y - a.y) * ry) / (rx * rx + ry * ry), 0, 1);
+        nearLine = { q: { x: a.x + t * rx, y: a.y + t * ry }, d };
+      }
+      if (nearLine && nearLine.d > VERTEX_EPS) {
+        bridges.push({ a: p, b: nearLine.q, li: -1, spans: [], tip: [p] });
+      }
+    }
+    const look = bridges.length ? arrangement([...arr.segs, ...bridges]) : null;
+    result._gap.set(reach, look);
+    return look;
+  }
+
+  // The free ends that, bridged, would close an area round p — or null.
+  function gapEndsAt(result, p, reach) {
+    const look = gapLook(result, reach);
+    if (!look) return null;
+    let home = null;
+    for (const shell of look.shells) {
+      const area = { rings: [shell.pts, ...shell.holes.map((hole) => hole.pts)], bounds: shell.bounds };
+      if (pointInArea(area, p) && (!home || shell.area < home.area)) home = shell;
+    }
+    if (!home) return null;
+    const ends = [];
+    for (const cycle of [home, ...home.holes]) {
+      for (const h of cycle.hs) {
+        for (const si of look.edges[h >> 1].src) {
+          const tip = look.segs[si].tip;
+          if (!tip) continue;
+          for (const q of tip) {
+            if (result.looseEnds.some((end) => dist(end, q) <= VERTEX_EPS)
+              && !ends.some((end) => dist(end, q) <= VERTEX_EPS)) ends.push({ x: q.x, y: q.y });
+          }
+        }
+      }
+    }
+    return ends.length ? ends : null;
+  }
+
+  // What a fill at this point would meet:
+  //
+  //   areaAt(doc, p, {tol, weldTol, bead, overlap, hit, gapReach}) -> {
+  //     status: "closed"      a closed area a fill coil fits in   (area)
+  //           | "too-narrow"  closed, but no coil fits            (area, need)
+  //           | "on-line"     on a drawn line (below)              (area or null)
+  //           | "open"        nearly walled in; the gap is at      (gapEnds)
+  //           | "outside"     nothing closed here
+  //     area, need, gapEnds
+  //   }
+  //
+  // `need` is how wide the area must be, in mm: the first ring sits one
+  // spacing in from the drawn line on every side.  `hit` is the line hit
+  // radius in mm (the input module's HIT_PX through the view scale);
+  // `gapReach` how far a loose end looks for its partner, four coils by
+  // default.
+  //
+  // "On a line" is within `hit` of one — but inside an area, never more than
+  // half the area's depth.  The hit radius is screen pixels, so zoomed out it
+  // can be wider than a small area is deep: at a fitted 381 mm bed it is about
+  // 5 mm, and every point of a 10 mm box, its middle included, is that close
+  // to a line.  An area's middle is always its own, at any zoom.
+  function areaAt(doc, p, options = {}) {
+    if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return { status: "outside", area: null };
+    const { tol } = areaSettings(options);
+    const result = closedAreas(doc, options);
+    const home = areaContaining(result.areas, p);
+    const hit = Number(options.hit) > 0 ? Number(options.hit) : 0;
+    const onLine = home ? Math.min(hit, deepestPoint(home).clearance / 2) : hit;
+    if (onLine > 0 && hitSpan(doc, p, onLine, tol)) return { status: "on-line", area: home };
+    if (home) {
+      const spacing = fillSpacing(options);
+      if (!(deepestPoint(home).clearance > spacing)) {
+        return { status: "too-narrow", area: home, need: 2 * spacing };
+      }
+      return { status: "closed", area: home };
+    }
+    const reach = Number(options.gapReach) > 0
+      ? Number(options.gapReach)
+      : GAP_REACH_COILS * (Number(options.bead) > 0 ? Number(options.bead) : DEFAULT_BEAD);
+    const gapEnds = gapEndsAt(result, p, reach);
+    if (gapEnds) return { status: "open", area: null, gapEnds };
+    return { status: "outside", area: null };
+  }
+
+  /* ---------- fills ------------------------------------------------------- */
+
+  // A fill is a pattern and ONE point: "fill the closed area that holds this
+  // point" (the shared contract with the slice).  It is not a shape, so it
+  // always fills whatever the lines enclose NOW; the point is kept at its
+  // area's deepest point, re-centred whenever an edit changes the area.  A
+  // fill whose point is not inside a closed area is WAITING: it stays in the
+  // file, prints nothing, and fills again the moment its area closes.
+  //
+  //   "concentric"  Concentric — nested copies of the area's own edge, one
+  //                 connected coil (the slice's "spiral")
+  //   "rows"        Straight rows — side-by-side rows, one zigzag coil where
+  //                 the shape allows (the slice's "raster")
+  const FILL_PATTERNS = Object.freeze(["concentric", "rows"]);
+  const FILL_NAMES = Object.freeze({ concentric: "Concentric", rows: "Straight rows" });
+  const FILL_PATTERN_SET = new Set(FILL_PATTERNS);
+
+  const fillsOf = (doc) => (doc && Array.isArray(doc.fills) ? doc.fills : []);
+
+  // Each fill, said plainly:
+  //
+  //   classifyFills(doc, opts) -> [{index, pattern, x, y, status, area, narrow}]
+  //     status  "filled"  its point is inside a closed area (area is that area)
+  //             "waiting" it is not (area null)
+  //             "repeat"  a second fill in an area that already has one —
+  //                       only a hand-edited or foreign file says that.  The
+  //                       slice lays the first one written and nothing for
+  //                       this, so the bed shades and counts it as nothing;
+  //                       the next edit folds it away (area is that area).
+  //     narrow  true when the area is closed but too narrow for a fill coil —
+  //             the slice will say so and print it empty.
+  function classifyFills(doc, options = {}) {
+    const fills = fillsOf(doc);
+    if (!fills.length) return [];
+    const { areas } = closedAreas(doc, options);
+    const spacing = fillSpacing(options);
+    const taken = new Set();
+    return fills.map((fill, index) => {
+      const area = areaContaining(areas, fill);
+      const repeat = Boolean(area) && taken.has(area);
+      if (area) taken.add(area);
+      return {
+        index,
+        pattern: fill.pattern,
+        x: fill.x,
+        y: fill.y,
+        status: repeat ? "repeat" : area ? "filled" : "waiting",
+        area,
+        narrow: area ? !(deepestPoint(area).clearance > spacing) : false,
+      };
+    });
+  }
+
+  // The fill the artist is pointing at: the one filling the area under the
+  // point, or else a waiting fill whose mark is within `reach` mm (a coil's
+  // spacing when not given) — a waiting fill has no area to point inside.
+  //   fillAt(doc, p, opts) -> {index, fill, status, area} | null
+  function fillAt(doc, p, options = {}) {
+    const fills = fillsOf(doc);
+    if (!fills.length || !p) return null;
+    const { areas } = closedAreas(doc, options);
+    const home = areaContaining(areas, p);
+    if (home) {
+      const index = fills.findIndex((fill) => areaContaining(areas, fill) === home);
+      if (index >= 0) return { index, fill: fills[index], status: "filled", area: home };
+    }
+    const reach = Number(options.reach) > 0 ? Number(options.reach) : fillSpacing(options);
+    let best = null;
+    fills.forEach((fill, index) => {
+      if (areaContaining(areas, fill)) return;
+      const d = dist(p, fill);
+      if (d <= reach && (!best || d < best.d)) best = { index, d };
+    });
+    return best ? { index: best.index, fill: fills[best.index], status: "waiting", area: null } : null;
+  }
+
+  const fillLabel = (action, pattern) => {
+    if (action === "fill") return `Fill with ${FILL_NAMES[pattern]}`;
+    if (action === "change") return `Change to ${FILL_NAMES[pattern]}`;
+    if (action === "clear") return "Clear fill";
+    return "";
+  };
+
+  // The three fill edits.  Each is PURE: it hands back the fills the drawing
+  // should have and changes nothing it was given, so the caller sets
+  // doc.fills = result.fills inside its own gesture and the edit is one undo
+  // step like any other.  Every one answers
+  //
+  //   {ok, changed, fills, action, pattern, index, label, status, area, ...}
+  //
+  // where `action` is "fill" | "change" | "clear" | "none", `label` the undo
+  // step's name, and a refusal (ok false) carries areaAt's status — with
+  // `need` or `gapEnds` — and the fills untouched.
+
+  // Fill the area under p with `pattern`; an area that already has a fill
+  // changes pattern and keeps its point.
+  function setFill(doc, p, pattern, options = {}) {
+    const fills = fillsOf(doc);
+    if (!FILL_PATTERN_SET.has(pattern)) {
+      return { ok: false, changed: false, fills, action: "none", status: "unknown-pattern", area: null };
+    }
+    const hit = areaAt(doc, p, options);
+    if (hit.status !== "closed") return { ok: false, changed: false, fills, action: "none", ...hit };
+    const { areas } = closedAreas(doc, options);
+    const next = [];
+    let index = -1;
+    let previous = null;
+    for (const fill of fills) {
+      if (areaContaining(areas, fill) !== hit.area) { next.push(fill); continue; }
+      // A second fill in the same area is folded into the first: one area,
+      // one fill, whatever a hand-edited file said.
+      if (index >= 0) continue;
+      index = next.length;
+      previous = fill.pattern;
+      next.push(fill.pattern === pattern ? fill : { pattern, x: fill.x, y: fill.y });
+    }
+    if (index < 0) {
+      const deep = deepestPoint(hit.area);
+      index = next.length;
+      next.push({ pattern, x: deep.x, y: deep.y });
+    }
+    const action = previous === null ? "fill" : previous === pattern ? "none" : "change";
+    const changed = action !== "none" || next.length !== fills.length;
+    return {
+      ok: true, changed, fills: changed ? next : fills, action, pattern, index,
+      label: fillLabel(action, pattern), status: "closed", area: hit.area,
+    };
+  }
+
+  function withoutFill(fills, index) {
+    return fills.filter((_fill, i) => i !== index);
+  }
+
+  // Remove the fill under p, or the waiting fill whose mark p is on.  An area
+  // a hand-edited file gave two fills loses both: the second would otherwise
+  // step into the first one's place, and the area cleared would stay filled.
+  function clearFill(doc, p, options = {}) {
+    const fills = fillsOf(doc);
+    const at = fillAt(doc, p, options);
+    if (!at) return { ok: false, changed: false, fills, action: "none", status: "no-fill", area: null };
+    let next = withoutFill(fills, at.index);
+    if (at.area) {
+      const { areas } = closedAreas(doc, options);
+      next = next.filter((fill) => areaContaining(areas, fill) !== at.area);
+    }
+    return {
+      ok: true, changed: true, fills: next, action: "clear", pattern: null,
+      index: at.index, label: fillLabel("clear"), status: at.status, area: at.area,
+    };
+  }
+
+  // F: Concentric, then Straight rows, then empty.  A waiting fill goes in
+  // one press.  On a line it refuses rather than guess which side was meant.
+  const NEXT_PATTERN = Object.freeze({ concentric: "rows", rows: null });
+
+  function cycleFill(doc, p, options = {}) {
+    const fills = fillsOf(doc);
+    const hit = areaAt(doc, p, options);
+    const at = fillAt(doc, p, options);
+    if (at && at.status === "waiting") return clearFill(doc, p, options);
+    if (hit.status === "on-line") return { ok: false, changed: false, fills, action: "none", ...hit };
+    if (at) {
+      const pattern = NEXT_PATTERN[at.fill.pattern];
+      if (!pattern) return clearFill(doc, p, options);
+      const next = fills.slice();
+      next[at.index] = { pattern, x: at.fill.x, y: at.fill.y };
+      return {
+        ok: true, changed: true, fills: next, action: "change", pattern, index: at.index,
+        label: fillLabel("change", pattern), status: "closed", area: at.area,
+      };
+    }
+    return setFill(doc, p, FILL_PATTERNS[0], options);
+  }
+
+  /* ---------- fills follow the edit --------------------------------------- */
+
+  // What the drawing's areas were when the last edit landed, for followFills
+  // to compare the next one against.  Null when there are no fills, because
+  // then there is nothing to follow and nothing is measured.
+  function fillSnapshot(doc, options = {}) {
+    if (!fillsOf(doc).length) return null;
+    return {
+      result: closedAreas(doc, options),
+      strokes: new Map(doc.strokes.map((stroke) => [stroke, stroke.pts.map((p) => ({ x: p.x, y: p.y }))])),
+    };
+  }
+
+  // How a line moved between two snapshots of its points, when the move was
+  // the grab's: one scale on each axis and a shift (reshapeStroke), the
+  // identity included.  Null for anything else — a dragged point, a bend.
+  function strokeMotion(before, after) {
+    if (!before || before.length !== after.length || !before.length) return null;
+    const axis = (key) => {
+      let lo = 0;
+      let hi = 0;
+      for (let i = 1; i < before.length; i++) {
+        if (before[i][key] < before[lo][key]) lo = i;
+        if (before[i][key] > before[hi][key]) hi = i;
+      }
+      const spread = before[hi][key] - before[lo][key];
+      const scale = spread > 1e-9 ? (after[hi][key] - after[lo][key]) / spread : 1;
+      return { scale, shift: after[lo][key] - scale * before[lo][key] };
+    };
+    const x = axis("x");
+    const y = axis("y");
+    for (let i = 0; i < before.length; i++) {
+      if (Math.abs(x.scale * before[i].x + x.shift - after[i].x) > 1e-6) return null;
+      if (Math.abs(y.scale * before[i].y + y.shift - after[i].y) > 1e-6) return null;
+    }
+    return { a: x.scale, b: 0, c: 0, d: y.scale, e: x.shift, f: y.shift };
+  }
+
+  const matrixKey = (m) => [m.a, m.b, m.c, m.d, m.e, m.f].map((v) => Math.round(v * 1e9)).join(",");
+
+  function invertAffine(m) {
+    const det = m.a * m.d - m.b * m.c;
+    if (!(Math.abs(det) > 1e-12)) return null;
+    return {
+      a: m.d / det, b: -m.b / det, c: -m.c / det, d: m.a / det,
+      e: (m.c * m.f - m.d * m.e) / det, f: (m.b * m.e - m.a * m.f) / det,
+    };
+  }
+
+  function mappedBounds(b, m) {
+    const corners = [
+      matApply(m, { x: b.minX, y: b.minY }), matApply(m, { x: b.maxX, y: b.minY }),
+      matApply(m, { x: b.maxX, y: b.maxY }), matApply(m, { x: b.minX, y: b.maxY }),
+    ];
+    return boundsOf(corners);
+  }
+
+  const boundsMeet = (l, r) => l.minX <= r.maxX && r.minX <= l.maxX && l.minY <= r.maxY && r.minY <= l.maxY;
+
+  const near = (l, r) => Math.abs(l - r) <= 1e-9 * Math.max(1, Math.abs(l), Math.abs(r));
+  const sameShape = (l, r) => near(l.area, r.area) && near(l.bounds.minX, r.bounds.minX)
+    && near(l.bounds.minY, r.bounds.minY) && near(l.bounds.maxX, r.bounds.maxX)
+    && near(l.bounds.maxY, r.bounds.maxY);
+
+  // The fills the drawing should have after an edit, given what its areas
+  // were before it (fillSnapshot).  Run inside the edit's own commit, so
+  // whatever it changes is part of that one undo step.
+  //
+  //   · An area that is still the same area — walled by the same spans of the
+  //     same lines, however they were dragged, bent, moved or resized — keeps
+  //     its fill (or stays empty), re-centred if its shape changed and left
+  //     exactly where it was if it did not.
+  //   · An area whose lines were all grabbed and moved or resized together
+  //     goes with them, even when it lands across other lines.
+  //   · Mirror and Repeat: a copy of an area whose lines were ALL copied is
+  //     filled like the original.
+  //   · Anything else is a new area, and it takes after the area it came out
+  //     of: every old area that overlaps it (its deepest point inside the old
+  //     one, or the old one's inside it) is a candidate, empty ones included,
+  //     and the LARGEST wins.  So an area cut in two keeps both halves filled,
+  //     and areas that merged keep the larger one's pattern — or its emptiness.
+  //   · A sliver no coil fits is never filled by a cut: the fill stays with
+  //     the pieces that can take one.
+  //   · A HOLE drawn inside a filled area — a ring laid inside it, a hanging
+  //     hole in a tile — stays bare, as a hole always does (the contract with
+  //     the slice).  What tells a hole from a cut is the walls: every piece of
+  //     a cut is walled in part by the old area's own lines, and a hole by
+  //     none of them.  Only when each piece left round a hole is too narrow
+  //     for a coil does the largest of them keep the fill (and print empty,
+  //     saying so) rather than the fill moving into the hole.
+  //   · A fill whose area opened up is left where it was, WAITING, and comes
+  //     back when its point is walled in again.
+  //
+  // Returns the new fills; the caller assigns doc.fills.
+  function followFills(doc, before, options = {}) {
+    const fills = fillsOf(doc);
+    if (!fills.length) return [];
+    const after = closedAreas(doc, options);
+    const prev = before && before.result ? before.result : after;
+    const known = before && before.strokes ? before.strokes : null;
+    const spacing = fillSpacing(options);
+
+    const homes = fills.map((fill) => areaContaining(prev.areas, fill));
+    const owner = new Map();
+    homes.forEach((home, i) => { if (home && !owner.has(home)) owner.set(home, i); });
+    const byKey = new Map();
+    for (const area of after.areas) if (!byKey.has(area.key)) byKey.set(area.key, area);
+
+    const won = new Map();        // new area -> {i, from}
+    const settled = new Set();    // new areas decided, filled or left empty
+    const placed = new Set();     // fills that have found where they go
+    const lost = [];              // old areas not here as themselves: {area, i, m}
+    const moved = fills.slice();  // each fill's point, carried by a grab
+
+    // An area goes with the line that makes most of its edge, when the grab
+    // moved or resized that line whole: a box's fill goes with the box, not
+    // with the ring the box happened to be lying across.
+    const present = new Set(doc.strokes);
+    const still = matrixKey({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 });
+    const motionOf = (old) => {
+      if (!known) return null;
+      let main = null;
+      for (const [stroke, length] of edgeShare.get(old) || []) {
+        if (!main || length > main.length) main = { stroke, length };
+      }
+      if (!main || !present.has(main.stroke)) return null;
+      const m = strokeMotion(known.get(main.stroke), main.stroke.pts);
+      return m && matrixKey(m) !== still ? m : null;
+    };
+
+    // The same area, edited.
+    for (const old of prev.areas) {
+      const i = owner.has(old) ? owner.get(old) : -1;
+      const now = byKey.get(old.key);
+      if (!now) {
+        const m = motionOf(old);
+        if (m && i >= 0) moved[i] = matApply(m, fills[i]);
+        lost.push({ area: old, i, m });
+        continue;
+      }
+      settled.add(now);
+      if (i >= 0) {
+        won.set(now, { i, from: old });
+        placed.add(i);
+      }
+    }
+
+    // Copies laid by Mirror or Repeat.
+    if (known) {
+      const groups = new Map();
+      for (const stroke of doc.strokes) {
+        if (known.has(stroke) || !stroke._cache || !stroke._cache.copyOf) continue;
+        const { source, m } = stroke._cache.copyOf;
+        if (!known.has(source)) continue;
+        const key = matrixKey(m);
+        if (!groups.has(key)) groups.set(key, { m, map: new Map() });
+        const group = groups.get(key);
+        if (!group.map.has(source)) group.map.set(source, stroke);
+      }
+      for (const [old, i] of owner) {
+        for (const group of groups.values()) {
+          if (!old.strokes.every((stroke) => group.map.has(stroke))) continue;
+          const now = byKey.get(spanKey(old.spans.map(([stroke, span]) => [group.map.get(stroke), span])));
+          if (now && !settled.has(now)) {
+            settled.add(now);
+            won.set(now, { i, from: null });
+          } else if (!now) {
+            lost.push({ area: old, i, m: group.m });
+          }
+        }
+      }
+    }
+
+    const weight = (i) => (homes[i] ? homes[i].area : 0);
+    // The largest claim wins; on a tie a fill beats empty, then the earlier
+    // fill.  Every fill that claimed is spent: it lives on in the winner or
+    // was merged away.
+    const settle = (area, claims) => {
+      if (!claims.length) return;
+      let best = claims[0];
+      for (const claim of claims) {
+        const better = claim.w > best.w
+          || (claim.w === best.w && (best.i < 0 ? claim.i >= 0 : claim.i >= 0 && claim.i < best.i));
+        if (better) best = claim;
+      }
+      settled.add(area);
+      if (best.i >= 0) won.set(area, { i: best.i, from: null });
+      for (const claim of claims) if (claim.i >= 0) placed.add(claim.i);
+    };
+    const homed = new Set(placed);
+    const cut = new Set(lost.filter((region) => region.i >= 0).map((region) => region.i));
+
+    // A new area that touches none of an old area's walls is not a piece of
+    // it, so it never takes that area's fill: inside it, it is a hole.  Read
+    // off the LINES walling each, not their spans: an edit changes a line in
+    // place, but Smooth or a removed point renumbers its spans, and a loop
+    // where a line crosses itself can be walled by spans that all get new
+    // numbers — read by span, that loop would be a hole in itself and its
+    // fill would be thrown away.  A carried fill (a grab, a copy) is measured
+    // where it was carried to and is exempt: its lines are the walls.
+    const wallSets = new Map();
+    const holeIn = (area, old) => {
+      let walls = wallSets.get(old);
+      if (!walls) {
+        walls = new Set(old.strokes);
+        wallSets.set(old, walls);
+      }
+      return !area.strokes.some((stroke) => walls.has(stroke));
+    };
+    const holeFor = (area, i) => moved[i] === fills[i] && cut.has(i) && holeIn(area, homes[i]);
+
+    for (const area of after.areas) {
+      if (settled.has(area)) continue;
+      const claims = [];
+      // Measured only when something could claim it.
+      let deep = null;
+      const narrow = () => !((deep = deep || deepestPoint(area)).clearance > spacing);
+      for (const region of lost) {
+        const where = region.m ? mappedBounds(region.area.bounds, region.m) : region.area.bounds;
+        if (!boundsMeet(where, area.bounds)) continue;
+        // A sliver no coil fits is never one of a filled area's halves, and
+        // a hole drawn inside one is never one of its pieces.
+        if (region.i >= 0 && (narrow() || (!region.m && holeIn(area, region.area)))) continue;
+        deep = deep || deepestPoint(area);
+        const inverse = region.m ? invertAffine(region.m) : null;
+        if (region.m && !inverse) continue;
+        const theirs = deepestPoint(region.area);
+        const overlaps = pointInArea(region.area, inverse ? matApply(inverse, deep) : deep)
+          || pointInArea(area, region.m ? matApply(region.m, theirs) : theirs);
+        if (overlaps) claims.push({ i: region.i, w: region.area.area });
+      }
+      moved.forEach((at, i) => {
+        if (homed.has(i) || !pointInArea(area, at)) return;
+        if (cut.has(i) && (narrow() || holeFor(area, i))) return;
+        claims.push({ i, w: weight(i) });
+      });
+      settle(area, claims);
+    }
+    // Whatever area a fill that has found nowhere still points into takes it
+    // — a sliver its area shrank to, or an area that was here and empty —
+    // because that is the area the slice will fill.
+    for (const area of after.areas) {
+      if (won.has(area)) continue;
+      const claims = [];
+      moved.forEach((at, i) => {
+        if (!placed.has(i) && pointInArea(area, at) && !holeFor(area, i)) claims.push({ i, w: weight(i) });
+      });
+      if (claims.length) settle(area, claims);
+    }
+    // A fill whose point a new hole now covers, every piece round the hole
+    // being too narrow to claim it: the largest piece of its old area keeps
+    // it, so the slice says that piece is too narrow instead of laying clay
+    // in the hole.
+    moved.forEach((at, i) => {
+      if (placed.has(i) || !after.areas.some((area) => pointInArea(area, at) && holeFor(area, i))) return;
+      let best = null;
+      for (const area of after.areas) {
+        if (won.has(area) || holeIn(area, homes[i])) continue;
+        if (!pointInArea(homes[i], deepestPoint(area)) && !pointInArea(area, deepestPoint(homes[i]))) continue;
+        if (!best || area.area > best.area) best = area;
+      }
+      if (best) settle(best, [{ i, w: weight(i) }]);
+    });
+
+    const out = [];
+    after.areas.forEach((area, k) => {
+      const hit = won.get(area);
+      if (!hit) return;
+      const fill = fills[hit.i];
+      const keep = hit.from && sameShape(hit.from, area) && pointInArea(area, fill);
+      const at = keep ? fill : deepestPoint(area);
+      out.push({ i: hit.i, k, fill: keep ? fill : { pattern: fill.pattern, x: at.x, y: at.y } });
+    });
+    moved.forEach((at, i) => {
+      if (placed.has(i)) return;
+      // Inside an area that is decided already: merged into it.
+      if (after.areas.some((area) => pointInArea(area, at))) return;
+      const fill = fills[i];
+      out.push({ i, k: -1, fill: at === fill ? fill : { pattern: fill.pattern, x: at.x, y: at.y } });
+    });
+    out.sort((left, right) => left.i - right.i || left.k - right.k);
+    return out.map((entry) => entry.fill);
+  }
+
   /* ---------- the document is an SVG -------------------------------------- */
 
   // How the memory rides in the file: ONE attribute on the path itself, written
@@ -1625,6 +3238,48 @@
     const rounded = Math.round(v * 10 ** PRECISION) / 10 ** PRECISION;
     return (rounded === 0 ? 0 : rounded).toString();
   };
+
+  // How the fills ride in the file: ONE attribute on the root <svg>, written
+  //   data-clayline-fill="concentric 61.2 40.8;rows 30 72.5"
+  // — entries separated by ";", each "<pattern> <x> <y>" in the drawing's own
+  // user units, y down like the path data, numbers written as the paths are.
+  // It is the contract the slice reads (ingest), so it changes in step with
+  // the engine or not at all.  No fills, no attribute: a drawing without one
+  // is the same file, byte for byte, that it always was.
+  const FILL_ATTR = "data-clayline-fill";
+
+  function encodeFills(fills, flipY) {
+    return fills
+      .filter((fill) => fill && FILL_PATTERN_SET.has(fill.pattern)
+        && Number.isFinite(fill.x) && Number.isFinite(fill.y))
+      .map((fill) => `${fill.pattern} ${num(fill.x)} ${num(flipY(fill.y))}`)
+      .join(";");
+  }
+
+  // An entry this build cannot read is left out rather than guessed at — and
+  // it reads exactly the entries the slice reads (ingest's fill reader), or
+  // the bed would shade one area and the slice fill another: fields split on
+  // whitespace only, the pattern in any case, and the numbers as Python's
+  // float() takes them (digits, a point, an exponent, underscores between
+  // digits; no hex, no commas).
+  const FILL_NUMBER_RE = /^[+-]?(?:\d+(?:_\d+)*(?:\.(?:\d+(?:_\d+)*)?)?|\.\d+(?:_\d+)*)(?:[eE][+-]?\d+(?:_\d+)*)?$/;
+  const fillNumber = (text) => (FILL_NUMBER_RE.test(text) ? Number(text.replace(/_/g, "")) : NaN);
+
+  function decodeFills(text, matrix) {
+    const out = [];
+    if (!text) return out;
+    for (const entry of String(text).split(";")) {
+      const parts = entry.trim().split(/\s+/);
+      const pattern = parts[0].toLowerCase();
+      if (parts.length !== 3 || !FILL_PATTERN_SET.has(pattern)) continue;
+      const x = fillNumber(parts[1]);
+      const y = fillNumber(parts[2]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const p = matApply(matrix, { x, y });
+      out.push({ pattern, x: p.x, y: p.y });
+    }
+    return out;
+  }
 
   // width="Wmm" height="Hmm" viewBox="0 0 W H" is 1 user unit = 1 mm, so what
   // is drawn at 200 mm arrives at 200 mm (ingest.py:144-165).  The visible
@@ -1660,8 +3315,10 @@
       const memory = encodeShape(stroke.shape);
       body.push(`  <path d="${d}"${memory ? ` ${SHAPE_ATTR}="${memory}"` : ""}/>`);
     }
+    const fills = encodeFills(fillsOf(doc), flipY);
+    const filled = fills ? ` ${FILL_ATTR}="${fills}"` : "";
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${num(width)}mm" height="${num(height)}mm" viewBox="0 0 ${num(width)} ${num(height)}"
-     fill="none" stroke="#000" stroke-width="${num(bead)}" stroke-linecap="round">
+     fill="none" stroke="#000" stroke-width="${num(bead)}" stroke-linecap="round"${filled}>
 ${body.join("\n")}
 </svg>`;
   }
@@ -2288,6 +3945,11 @@ ${body.join("\n")}
     const beadUnits = inheritedNumber([{ tag: "svg", attrs: rootAttrs }], "stroke-width");
     if (beadUnits !== undefined) doc.bead = beadUnits * frame.unitScale;
     doc.assumedUnits = frame.assumedUnits;
+    // The fill points are root user units, so they cross the same frame the
+    // root's own paths do.  Character references are undone first, as the
+    // slice's XML reader undoes them before it splits the entries.
+    const fillText = rootAttrs[FILL_ATTR];
+    doc.fills = decodeFills(fillText ? decode(fillText) : "", frame.matrix);
     return doc;
   }
 
@@ -2366,6 +4028,21 @@ ${body.join("\n")}
     maxCornerRadius,
     roundCorner,
     outOfBed,
+    // closed areas and fills
+    FILL_PATTERNS,
+    FILL_NAMES,
+    fillSpacing,
+    closedAreas,
+    pointInArea,
+    deepestPoint,
+    areaAt,
+    classifyFills,
+    fillAt,
+    setFill,
+    cycleFill,
+    clearFill,
+    fillSnapshot,
+    followFills,
     // svg
     toSVG,
     fromSVG,

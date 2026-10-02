@@ -2,6 +2,29 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.5.0 — 2026-10-01
+
+### New
+- **Fill an area in Draw.** Draw the outline, then pick **Concentric** or
+  **Straight rows** from the new **Fill** button and click inside the area,
+  or rest the pointer in it and press **F** (Concentric, then Straight rows,
+  then empty). Clayline lays the fill coil for you, the way a cup bottom is
+  filled. Any area walled in by lines counts, including the pockets where a
+  line crosses itself; if it isn't closed, Clayline says so and rings the
+  open ends.
+  - **Concentric** follows the area's own edge inward as one connected coil,
+    so a triangle fills with nested triangles. **Straight rows** lay back and
+    forth as one coil where the shape allows, and cross from pass to pass.
+  - On the bed a filled area is only shaded, hatched for Straight rows and
+    with nested outlines for Concentric. The real coil appears when you slice.
+  - A fill follows the lines around it when you move or reshape them. If you
+    open a gap it waits, with a dashed ring, and comes back when the gap is
+    closed. Undo, saved projects and **Save SVG…** all keep fills.
+  - A fill prints just before the lines of its pass and runs straight into
+    them when they start close by; otherwise the nozzle lifts once.
+  - Seamless spiral is unavailable while an area is filled, and Drape mode
+    leaves fills out.
+
 ## 0.4.0 — 2026-09-21
 
 ### New

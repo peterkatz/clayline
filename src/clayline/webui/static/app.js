@@ -161,6 +161,42 @@ const WARNING_COPY = {
     title: "Valley settling was kept at the safe height",
     hint: "Clayline rejected the optional descent but kept the printable toolpath. The slice itself is still usable.",
   },
+  fill_waiting: {
+    title: "A fill is waiting",
+    hint: "The area this fill was set in isn't closed any more, so it was left out. Close the gap and it comes back.",
+  },
+  fill_too_narrow: {
+    title: "Area too narrow to fill",
+    hint: "There isn't room for a fill coil inside this area's line, so it prints empty.",
+  },
+  fill_refused: {
+    title: "An area prints empty",
+    hint: "This fill couldn't be laid without running outside its area or over coil already laid. Try the other pattern, or split the area with a line.",
+  },
+  fill_too_short: {
+    title: "A fill was too short to print",
+    hint: "The coil would end before the printer gets going, so it was left out.",
+  },
+  fill_thin: {
+    title: "A fill will print thin",
+    hint: "This fill is short, so the printer is still building pressure when it ends.",
+  },
+  fill_angle_changed: {
+    title: "Straight rows turned",
+    hint: "The rows run at the other angle in this area on this pass, so they lay as one coil.",
+  },
+  fill_drape: {
+    title: "Fills left out in Drape",
+    hint: "Drape mode doesn't lay fills. Switch to Calibrated to print them.",
+  },
+  fill_unreadable: {
+    title: "A fill in the file didn't read",
+    hint: "One fill in this drawing couldn't be read, so it was skipped. Set it again in Draw.",
+  },
+  fill_unlaid: {
+    title: "Fills are laid when you slice",
+    hint: "This view holds the drawn lines only. Slicing the job lays the fills.",
+  },
 };
 
 // Mirror of the server's document-unit rule (ingest, F1.3): a width/height
@@ -326,6 +362,15 @@ function passesCompatibleForHelix() {
     && file.nudgeY === first.nudgeY
     && file.rotation === first.rotation
   ));
+}
+
+// A pass whose drawing carries a fill (Draw's Fill, written on the drawing's
+// root as data-clayline-fill). A fill's coil starts and stops inside its area,
+// so a job with one can never climb as one unbroken spiral.
+const FILL_MARK = /<svg\b[^>]*\sdata-clayline-fill="/;
+
+function anyPassFilled() {
+  return state.files.some((file) => FILL_MARK.test(String(file.svg || "")));
 }
 
 function plannerSignature() {
@@ -1950,11 +1995,15 @@ function updateDependencies() {
 
   const capabilitiesValid = state.capabilities !== null && state.capabilitySignature === plannerSignature();
   const compatibleRows = passesCompatibleForHelix();
-  const helicalUnavailable = drape || !compatibleRows || !capabilitiesValid || !state.capabilities.helical_eligible;
+  const filled = anyPassFilled();
+  const helicalUnavailable = drape || filled || !compatibleRows || !capabilitiesValid
+    || !state.capabilities.helical_eligible;
   $("#helical").disabled = helicalUnavailable;
   if (helicalUnavailable) $("#helical").checked = false;
   $("#helicalHint").textContent = drape
     ? "Unavailable in Drape mode: switch to Calibrated so nozzle height matches the clay."
+    : filled
+      ? "Unavailable while an area is filled: a fill's coil starts and stops, so the nozzle can't climb without a seam."
     : !compatibleRows
       ? "A seamless spiral needs uninterrupted repeated passes of the same closed path."
       : !capabilitiesValid

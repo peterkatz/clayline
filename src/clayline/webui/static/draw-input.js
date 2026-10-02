@@ -32,9 +32,17 @@
 //                  A ring and a polygon always resize uniformly; a box may
 //                  stretch; a plain line scales with its bulges untouched, so
 //                  its bends survive.  Over empty bed it still pans.
+//   F              fills the closed area under the pointer: Concentric, then
+//                  Straight rows, then empty — one undo step a press.  A press
+//                  the area cannot take changes nothing and says why at the
+//                  cursor; that answer IS the "is it really closed?" check.
+//   armed pointer  the Fill button arms the pointer with a pattern (or with
+//                  Clear): the next click inside an area applies it and hands
+//                  the pointer back, and never starts a line; Esc disarms
 //   keys           Enter, Escape and a double-click finish an open chain;
 //                  ⌫ removes the point under the cursor, or the whole line when
-//                  the cursor is not on a point; middle-drag pans;
+//                  the cursor is not on a point, or else the fill of the area
+//                  under it; middle-drag pans;
 //                  the wheel zooms at the cursor; cmd/ctrl+0 frames the bed
 //
 // An anchor within ANCHOR_PX always beats a line within HIT_PX.  That
@@ -59,23 +67,32 @@
 //                               four nozzles
 //   input.setSelection(strokes) what a repeat or a mirror acts on; null (the
 //                               default) means the whole drawing
+//   input.armFill(pattern)      "concentric", "rows" or "clear" arms the pointer
+//                               for one click inside an area; null disarms
 //   input.activeTool() / input.isChaining()    what the surface can say aloud
 //   input.shapeSides() / input.repeatCount() / input.cornerRadius()
+//   input.fillArmed()           what the pointer is armed with, or null
 //   input.destroy()
 //
 //   doc       the draw-core document being edited, or a function returning it
 //             (a host that can switch pages passes the getter, so a gesture can
 //             never edit the page the artist just left).
-//   actions   {onCommit(label), onDocChanged()}.  onDocChanged fires on every
-//             mutation, many times per drag — the host coalesces it.  onCommit
-//             fires ONCE per gesture and only when the document really changed.
-//   settings  optional {tol, weldTol, bead, overlap, snap, placement}, or a
-//             function returning them; the engine's own defaults when omitted.
+//   actions   {onCommit(label), onDocChanged(), onFillState(state)}.
+//             onDocChanged fires on every mutation, many times per drag — the
+//             host coalesces it.  onCommit fires ONCE per gesture and only when
+//             the document really changed.  onFillState, optional, fires when
+//             what the Fill button should show changes: {armed, pattern},
+//             armed being what the pointer carries and pattern the fill of the
+//             area under it (both null when there is none).
+//   settings  optional {tol, weldTol, bead, overlap, snap, placement, fill}, or
+//             a function returning them; the engine's own defaults when omitted.
 //             bead and overlap are read at gesture time because ring contact is
 //             bead × overlap and must never be a hardcoded millimetre.
 //             `placement` is the active page's millimetre offset onto the bed —
 //             the same number handed to view.setScene — and it is what turns a
-//             pointer position into DOCUMENT millimetres.
+//             pointer position into DOCUMENT millimetres.  `fill`, optional,
+//             is {tol, weldTol, bead, overlap} as the host measures fills,
+//             taken as given, zeros included.
 //
 // The view is draw-canvas.js, and this uses exactly its published surface:
 //
@@ -179,6 +196,58 @@
 
   const dist = (a, b) => Math.hypot(b.x - a.x, b.y - a.y);
 
+  // What the pointer says about a fill, at the cursor.  The press itself is
+  // the answer to "is it really closed?": the area shades at once, or one of
+  // these says why it did not, and a refused press changes nothing.  They are
+  // read on the bed while the artist's eyes are on the clay, so they are short
+  // and say what to do about it.
+  const FILL_SAYS = Object.freeze({
+    open: "Not closed — there's a gap here",
+    outside: "Nothing closed here to fill",
+    "on-line": "Point inside the area, not on its line",
+    chain: "Finish this line first — Enter",
+    "no-fill": "No fill here to clear",
+    waiting: "This fill is waiting: its area isn't closed any more",
+  });
+
+  // The width a fill needs, to a tenth of a millimetre and no finer: "about
+  // 8 mm" is a number to draw to, "8.000 mm" is a number to argue with.
+  const tooNarrow = (need) => (
+    `Too narrow for a fill coil — needs about ${Math.round(need * 10) / 10} mm across`
+  );
+
+  // A refusal stays at the cursor until the pointer moves this far on, so it
+  // can be read without chasing it and is gone once the artist has moved on.
+  const NOTE_PX = 24;
+
+  // The pointer, armed: a crosshair whose centre is the spot that will fill,
+  // carrying a swatch of what it will lay — nested edges for Concentric, rows
+  // for Straight rows, a slash for Clear.  The page's colours, written in
+  // because a cursor is drawn by the system, not the canvas.
+  const FILL_GLYPHS = Object.freeze({
+    concentric: "<rect x='13.5' y='13.5' width='6' height='6'/><rect x='15.5' y='15.5' width='2' height='2'/>",
+    rows: "<path d='M11 17l6-6M11 22l11-11M16 22l6-6'/>",
+    clear: "<path d='M11 22l11-11'/>",
+  });
+
+  function fillCursor(arm) {
+    const ink = arm === "clear" ? "#a14c23" : "#7f3421";
+    const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' fill='none' stroke-linecap='round'>"
+      + "<path d='M6 1v10M1 6h10' stroke='#fbfaf6' stroke-width='3'/>"
+      + "<path d='M6 1v10M1 6h10' stroke='#1f211f' stroke-width='1.2'/>"
+      + "<rect x='10.5' y='10.5' width='12' height='12' rx='1' fill='#fbfaf6' stroke='#7f3421' stroke-width='1.2'/>"
+      + `<g stroke='${ink}' stroke-width='1.2'>${FILL_GLYPHS[arm]}</g></svg>`;
+    return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 6 6, crosshair`;
+  }
+
+  // What F lays next after a pattern, or null when the next press empties it.
+  function nextPattern(pattern) {
+    const at = core.FILL_PATTERNS.indexOf(pattern);
+    return at >= 0 && at + 1 < core.FILL_PATTERNS.length ? core.FILL_PATTERNS[at + 1] : null;
+  }
+
+  const ARMS = new Set([...core.FILL_PATTERNS, "clear"]);
+
   function createInput({ canvas, view, doc, actions = {}, settings } = {}) {
     // The window is reached through the canvas rather than the global, so the
     // machine can be driven headless with a stub element.
@@ -197,9 +266,14 @@
       sides: 6,         // the polygon tool's side count, until the shell says
       copies: 6,        // arms in a repeat, the original included
       radius: null,     // the corner fix's radius in mm, or null for the offer
+      fillArm: null,    // what the Fill button armed the pointer with, or null
+      fillHint: null,   // what the pointer says about the fill under it
+      fillNote: null,   // a refused press's answer, held at the cursor
       space: false,
       destroyed: false,
     };
+    // What the Fill button was last told, so it hears only of a change.
+    let reported = { armed: null, pattern: null };
 
     const docOf = () => (typeof doc === "function" ? doc() : doc);
 
@@ -229,6 +303,21 @@
     // scale on every use, so the target does not shrink when the artist zooms
     // out (PRD §7).
     const mmOf = (px) => view.camera.mm(px);
+
+    // What a fill is measured with, and the line hit radius, so a press ON a
+    // line is refused rather than guessing which side of it was meant.  A host
+    // that measures fills itself hands its numbers over as settings().fill,
+    // and they are taken as given — the shell's are the rail's own, the ones
+    // the slice reads, zeros and the pass's Size included — so the pointer
+    // answers for the very areas the bed shades.  Without one, the gesture
+    // physics stand in.
+    function fillOptions() {
+      const given = (typeof settings === "function" ? settings() : settings) || {};
+      const own = given.fill && typeof given.fill === "object" ? given.fill : physics();
+      return {
+        tol: own.tol, weldTol: own.weldTol, bead: own.bead, overlap: own.overlap, hit: mmOf(HIT_PX),
+      };
+    }
 
     // Canvas-local CSS pixels: clientX/clientY minus the element rect, and
     // nothing else, at any page zoom or device pixel ratio.
@@ -289,6 +378,11 @@
       const framed = held ? held.stroke : (state.grab ? state.grab.stroke : null);
       const frame = framed ? core.strokeFrame(framed, physics().tol) : null;
 
+      // A refused press's answer wins over what the pointer says in passing,
+      // and neither speaks over a drag.
+      const hint = state.fillHint;
+      const note = g ? null : (state.fillNote || (hint && hint.note));
+
       return {
         tool: state.tool,
         gesture: g ? g.kind : null,
@@ -332,12 +426,29 @@
           }
           : null,
         snap: state.snap,
+        // The fill layer.  The pill at the cursor; the loose ends a "not
+        // closed" answer rings; and, while the pointer is armed, the area the
+        // click would fill.  All in the active document's frame.
+        fillNote: note ? { text: note.text, at: note.at, warn: note.warn } : null,
+        fillGaps: note && note.gaps ? note.gaps : null,
+        fillTarget: !g && hint && hint.target ? hint.target : null,
+        fillArm: state.fillArm,
       };
+    }
+
+    // The Fill button shows what the pointer is armed with, or the fill of the
+    // area under it; it hears of a change, never of every pointer move.
+    function reportFill() {
+      const pattern = state.fillHint ? state.fillHint.pattern : null;
+      if (reported.armed === state.fillArm && reported.pattern === pattern) return;
+      reported = { armed: state.fillArm, pattern };
+      if (actions.onFillState) actions.onFillState({ ...reported });
     }
 
     function publish() {
       view.setOverlay(overlay());
       view.requestDraw();
+      reportFill();
     }
 
     /* ---------- gestures, and the one place an undo step is made -------- */
@@ -665,6 +776,167 @@
       return scale ? core.reshapeStroke(g.stroke, g.base, scale) : false;
     }
 
+    /* ---------- fills: F, the armed pointer, and what the pointer says ---- */
+
+    // A fill is not drawn — it is asked for, on an area the lines already
+    // close.  So nothing here lays a stroke: each edit is draw-core's (setFill,
+    // cycleFill, clearFill), pure, answering with the fills the drawing should
+    // have, and this machine writes them inside ONE gesture so the press is
+    // one undo step.  Following the lines as they are edited later is the
+    // shell's commit, not this file's.
+
+    const noteAt = (text, p, warn, gaps) => ({
+      text, at: { x: p.x, y: p.y }, warn: Boolean(warn), gaps: gaps && gaps.length ? gaps : null,
+    });
+
+    // An area narrower than the line's own hit radius has no inside that is
+    // not "on its line", so for that one the honest answer is its width.
+    function refusal(answer, opts) {
+      if (answer.status === "too-narrow") return tooNarrow(answer.need);
+      if (answer.status === "on-line" && answer.area) {
+        const spacing = core.fillSpacing(opts);
+        if (!(core.deepestPoint(answer.area).clearance > spacing)) return tooNarrow(2 * spacing);
+      }
+      return FILL_SAYS[answer.status] || FILL_SAYS.outside;
+    }
+
+    // What each fill is doing, measured once per edit rather than once per
+    // pointer move: draw-core keeps the areas cached on the lines' revisions,
+    // and this keeps the fills' answer beside them for as long as the areas,
+    // the fills and the coil spacing all stand.
+    let shadeMemo = null;
+    function shadesOf(active, opts) {
+      const areas = core.closedAreas(active, opts);
+      const spacing = core.fillSpacing(opts);
+      if (shadeMemo && shadeMemo.areas === areas && shadeMemo.fills === active.fills
+        && shadeMemo.spacing === spacing) {
+        return shadeMemo;
+      }
+      const shades = core.classifyFills(active, opts);
+      const byArea = new Map();
+      for (const shade of shades) if (shade.area && !byArea.has(shade.area)) byArea.set(shade.area, shade);
+      shadeMemo = { areas, fills: active.fills, spacing, shades, byArea };
+      return shadeMemo;
+    }
+
+    // The fill under the pointer, by draw-core's own rule (fillAt): the fill
+    // of the smallest area holding p, else a waiting fill whose mark is within
+    // a coil's spacing.  Answered from the measured fills, so a pointer move
+    // over a big drawing walks its areas once instead of once per fill.
+    function fillUnder(active, p, opts) {
+      const memo = shadesOf(active, opts);
+      let home = null;
+      for (const area of memo.areas.areas) {
+        if (core.pointInArea(area, p) && (!home || area.area < home.area)) home = area;
+      }
+      const shade = home ? memo.byArea.get(home) : null;
+      if (shade) return { index: shade.index, fill: active.fills[shade.index], status: "filled", area: home };
+      let best = null;
+      for (const waiting of memo.shades) {
+        if (waiting.status !== "waiting") continue;
+        const d = dist(p, waiting);
+        if (d <= memo.spacing && (!best || d < best.d)) best = { shade: waiting, d };
+      }
+      return best
+        ? { index: best.shade.index, fill: active.fills[best.shade.index], status: "waiting", area: null }
+        : null;
+    }
+
+    // The pill over a fill: its pattern, and what the next F does to it.
+    function hoverWords(at, opts) {
+      if (at.status === "waiting") return FILL_SAYS.waiting;
+      const name = core.FILL_NAMES[at.fill.pattern];
+      if (!(core.deepestPoint(at.area).clearance > core.fillSpacing(opts))) {
+        return `${name} — too narrow for a fill coil`;
+      }
+      const next = nextPattern(at.fill.pattern);
+      return next ? `${name} — F for ${core.FILL_NAMES[next]}` : `${name} — F to clear`;
+    }
+
+    // What the pointer says about fills at p, and what the Fill button should
+    // show: {note, target, pattern}, or null when there is nothing to say.
+    // Unarmed, it speaks only over a fill and only on open clay — unfilled
+    // areas are never outlined, so the bed stays quiet while drawing.  Armed,
+    // it says what the click will do and outlines the area it will do it to.
+    function fillHover(p) {
+      const active = docOf();
+      const arm = state.fillArm;
+      const any = Array.isArray(active.fills) && active.fills.length > 0;
+      // No fill and nothing armed: nothing is measured.  A drawing without a
+      // fill pays nothing for this feature on a pointer move.
+      if (!arm && !any) return null;
+      const opts = fillOptions();
+      const at = any ? fillUnder(active, p, opts) : null;
+      const pattern = at && at.status === "filled" ? at.fill.pattern : null;
+      if (!arm) {
+        // A line, a point or a line in hand under the pointer has a meaning of
+        // its own, and says it.
+        if (!at || state.hover || state.chain) return { note: null, target: null, pattern };
+        return { note: noteAt(hoverWords(at, opts), p, at.status === "waiting"), target: null, pattern };
+      }
+      if (arm === "clear") {
+        return at
+          ? { note: noteAt("Click to clear this fill", p, false), target: at.area, pattern }
+          : { note: noteAt(FILL_SAYS["no-fill"], p, true), target: null, pattern };
+      }
+      const hit = core.areaAt(active, p, opts);
+      if (hit.status !== "closed") {
+        return { note: noteAt(refusal(hit, opts), p, true, hit.gapEnds), target: null, pattern };
+      }
+      const name = core.FILL_NAMES[arm];
+      const has = at && at.status === "filled" && at.area === hit.area ? at.fill.pattern : null;
+      const text = has === arm
+        ? `Already ${name}`
+        : (has ? `Click to change to ${name}` : `Click to fill with ${name}`);
+      return { note: noteAt(text, p, false), target: hit.area, pattern };
+    }
+
+    // One fill edit at p, inside the gesture already running: "cycle" is F,
+    // a pattern or "clear" is the armed click.  True when the area took it.
+    //
+    // A line in hand with two or more points comes first: F on a half-drawn
+    // outline would fill the area it is about to close, or refuse one it is
+    // about to make.  A LONE starting point is different — it is what a tap to
+    // aim at the area leaves behind — so it goes in the same step as the fill,
+    // exactly as finishing the chain would take it.  A refused press takes
+    // nothing, not even that point.
+    function fillEdit(kind, p) {
+      const active = docOf();
+      const chain = liveChain();
+      if (chain && chain.pts.length > 1) {
+        state.fillNote = noteAt(FILL_SAYS.chain, p, true);
+        return false;
+      }
+      const opts = fillOptions();
+      let answer;
+      if (kind === "cycle") answer = core.cycleFill(active, p, opts);
+      else if (kind === "clear") answer = core.clearFill(active, p, opts);
+      else answer = core.setFill(active, p, kind, opts);
+      if (!answer.ok) {
+        state.fillNote = noteAt(refusal(answer, opts), p, true, answer.gapEnds);
+        return false;
+      }
+      state.fillNote = null;
+      if (chain) {
+        if (core.removeStroke(active, chain)) noteChange();
+        state.chain = null;
+        state.snap = null;
+      }
+      if (answer.changed) {
+        active.fills = answer.fills;
+        noteChange(answer.label);
+      } else {
+        state.fillNote = noteAt(`Already ${core.FILL_NAMES[answer.pattern]}`, p, false);
+      }
+      return true;
+    }
+
+    // Arming is never an undo step: it changes what the next click does, not
+    // the drawing.
+    function setArm(arm) {
+      state.fillArm = ARMS.has(arm) ? arm : null;
+    }
+
     /* ---------- hover ---------------------------------------------------- */
 
     function cursorFor() {
@@ -678,6 +950,8 @@
         }
         return "grab";
       }
+      // Armed, the pointer says what it carries, whatever tool is out.
+      if (state.fillArm) return fillCursor(state.fillArm);
       // Every tool but Lines lays its own shape wherever the drag starts, so
       // nothing under the pointer changes what the cursor is about to do.
       if (state.tool !== "draw") return "crosshair";
@@ -701,10 +975,22 @@
         state.hover = null;
         state.corner = null;
         state.snap = null;
+        state.fillHint = null;
         canvas.style.cursor = cursorFor();
         return;
       }
       state.grab = null;
+
+      // Armed, the pointer aims at areas and nothing else: a line or a point
+      // under it is not what the click will act on, so neither lights up.
+      if (state.fillArm) {
+        state.hover = null;
+        state.corner = null;
+        state.snap = null;
+        state.fillHint = fillHover(p);
+        canvas.style.cursor = cursorFor();
+        return;
+      }
 
       const anchor = core.hitAnchor(active, p, mmOf(ANCHOR_PX));
       const span = anchor ? null : core.hitSpan(active, p, mmOf(HIT_PX), feel.tol);
@@ -727,6 +1013,7 @@
           )
         : null;
 
+      state.fillHint = fillHover(p);
       canvas.style.cursor = cursorFor();
     }
 
@@ -754,6 +1041,8 @@
       if (event.button !== 0 && event.button !== 1) return;      // right button is not ours
       const p = bedOf(event);
       state.cursor = p;
+      // A refusal answers the pointer at rest; a press is the artist moving on.
+      state.fillNote = null;
 
       const capture = () => {
         try { canvas.setPointerCapture(event.pointerId); } catch { /* synthetic pointer */ }
@@ -806,6 +1095,18 @@
       if (event.button !== 0) return;
 
       capture();
+      // Armed by the Fill button: this click is aimed at an area, so it fills
+      // and never starts a line — whatever tool is out, and whatever is under
+      // the pointer.
+      if (state.fillArm) {
+        startGesture({
+          kind: "fill", pointerId: event.pointerId, changed: false, label: null,
+          moved: false, downX: event.clientX, downY: event.clientY,
+        });
+        publish();
+        return;
+      }
+
       const active = docOf();
       const chain = liveChain();
       const feel = physics();
@@ -917,6 +1218,7 @@
       if (!g) {
         const p = bedOf(event);
         state.cursor = p;
+        if (state.fillNote && dist(state.fillNote.at, p) > mmOf(NOTE_PX)) state.fillNote = null;
         updateHover(p);
         publish();
         return;
@@ -1010,6 +1312,10 @@
         return;
       }
 
+      // An armed click lands where it is let go, like a repeat's centre; the
+      // drag in between draws nothing.
+      if (g.kind === "fill") return;
+
       if (g.kind === "anchor") {
         if (!past) return;
         g.moved = true;
@@ -1090,6 +1396,11 @@
           for (const stroke of made) core.addStroke(docOf(), stroke);
           if (made.length) noteChange("Mirror");
         }
+      } else if (g.kind === "fill") {
+        // One click, one answer: the area takes the fill and the pointer is
+        // handed back, or the pill says why not and the pointer stays armed
+        // for the click that was meant.
+        if (fillEdit(state.fillArm, p)) setArm(null);
       } else if (g.kind === "repeat") {
         g.centre = p;
         const made = copiesAbout(g.centre);
@@ -1161,6 +1472,8 @@
       state.snap = null;
       state.corner = null;
       state.grab = null;
+      state.fillHint = null;
+      state.fillNote = null;
       canvas.style.cursor = cursorFor();
       publish();
     }
@@ -1214,7 +1527,31 @@
       if (event.key === "Escape") {
         // Mid-drag, Escape abandons the drag rather than the chain.
         if (state.gesture) { cancelGesture(); return; }
+        // An armed pointer is put down, and that is all this Escape does.
+        if (state.fillArm) {
+          setArm(null);
+          state.fillNote = null;
+          if (state.cursor) updateHover(state.cursor);
+          canvas.style.cursor = cursorFor();
+          publish();
+          return;
+        }
         keyEdit("Finish line", finishChain);
+        publish();
+        return;
+      }
+
+      // F fills the closed area under the pointer: Concentric, then Straight
+      // rows, then empty.  Never with ⌘, Ctrl or ⌥ held (⌘F is Find), and
+      // never on key repeat, so holding F down is one press.  Shift is let
+      // through: F and f are the same key to the artist.
+      if ((event.key === "f" || event.key === "F")
+        && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        if (event.repeat || state.gesture || !state.cursor) return;
+        event.preventDefault();
+        const p = state.cursor;
+        keyEdit(null, () => fillEdit("cycle", p));
+        updateHover(p);
         publish();
         return;
       }
@@ -1261,7 +1598,23 @@
         const target = anchor
           ? { stroke: anchor.stroke }
           : core.hitSpan(active, p, mmOf(HIT_PX), physics().tol);
-        if (!target) return;
+        if (!target) {
+          // No point and no line under the cursor: the fill under it is what
+          // goes — its area's, or a waiting fill's mark.  Over bare bed with no
+          // fill anywhere this is exactly the nothing it always was.
+          if (!Array.isArray(active.fills) || !active.fills.length) return;
+          if (!fillUnder(active, p, fillOptions())) return;
+          keyEdit("Clear fill", () => {
+            const answer = core.clearFill(active, p, fillOptions());
+            if (!answer.ok || !answer.changed) return;
+            active.fills = answer.fills;
+            state.fillNote = null;
+            noteChange(answer.label);
+          });
+          updateHover(p);
+          publish();
+          return;
+        }
         keyEdit("Delete line", () => {
           if (!core.removeStroke(active, target.stroke)) return;
           if (state.chain === target.stroke) { state.chain = null; state.snap = null; }
@@ -1322,6 +1675,14 @@
     return Object.freeze({
       setTool(tool) {
         if (!TOOLS.has(tool)) return;
+        // Picking a tool, even the one already out, puts an armed pointer
+        // down: the next click belongs to the tool the artist just chose.
+        if (state.fillArm) {
+          setArm(null);
+          state.fillNote = null;
+          canvas.style.cursor = cursorFor();
+          publish();
+        }
         if (tool === state.tool) return;
         if (state.gesture) cancelGesture();   // the tool changed under the drag
         state.tool = tool;
@@ -1380,8 +1741,25 @@
         publish();
       },
 
+      // Arms the pointer for ONE click inside an area — "concentric", "rows"
+      // or "clear" — or puts it down with null.  A line in hand is finished
+      // first, exactly as picking a tool finishes it: the click that follows
+      // is the fill's, and a chain left open would take it as a point.
+      armFill(pattern) {
+        const want = ARMS.has(pattern) ? pattern : null;
+        if (want === state.fillArm) return;
+        if (state.gesture) cancelGesture();
+        if (want) keyEdit("Finish line", finishChain);
+        setArm(want);
+        state.fillNote = null;
+        if (state.cursor) updateHover(state.cursor);
+        canvas.style.cursor = cursorFor();
+        publish();
+      },
+
       // What the host needs to label the surface honestly without reaching in.
       activeTool: () => state.tool,
+      fillArmed: () => state.fillArm,
       isChaining: () => Boolean(state.chain),
       shapeSides: () => state.sides,
       repeatCount: () => state.copies,
@@ -1414,6 +1792,9 @@
         state.corner = null;
         state.grab = null;
         state.selection = null;
+        state.fillArm = null;
+        state.fillHint = null;
+        state.fillNote = null;
         publish();
       },
     });

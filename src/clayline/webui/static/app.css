@@ -3247,11 +3247,13 @@ input[type="range"] {
 }
 
 /* Below the width the whole set fits at, the row scrolls instead of spilling
-   past the toolbar. Measured at a 1280 px window it fits with room to spare;
+   past the toolbar. Measured with the rail and the inspector both open
+   (2026-10-01): the switch, the four tools, Coil, Reference, Shape & repeat,
+   Fill and Done need about 753 px, which a 1440 px window gives them;
    narrower than that a control row that can exceed its container must scroll
    or condense visibly, because cutting one off without an affordance is a
    charter defect. */
-@media (max-width: 1240px) {
+@media (max-width: 1440px) {
   .preview-actions {
     overflow-x: auto;
     overflow-y: hidden;
@@ -3382,6 +3384,103 @@ input[type="range"] {
 .draw-tray-button[aria-pressed="true"] {
   color: var(--paper);
   background: var(--ink);
+}
+
+/* Fill (2026-10-01): the button beside Shape & repeat, and the menu it opens
+   inside the bed. The header row has no width to spare, so the button never
+   changes width: it says "Fill" and its swatch shows the pattern — the one the
+   pointer is armed with, or the fill of the area under the pointer — the same
+   swatch the menu shows beside each name. The words are on the bed, in the
+   pill at the pointer. */
+.draw-fill-button {
+  gap: 6px;
+}
+
+/* The swatch is the bed's shading in miniature: rows leaning the way the
+   first pass lays them, nested edges, or the slash Clear wears. One drawing
+   holds all three and shows the one asked for. */
+.draw-fill-button .draw-fill-swatch,
+.draw-fill-menu .draw-fill-swatch {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: var(--clay-dark);
+  stroke-width: 1;
+  stroke-linecap: round;
+}
+
+.draw-fill-swatch .swatch-edge {
+  fill: var(--canvas);
+}
+
+.draw-fill-swatch > g {
+  display: none;
+}
+
+.draw-fill-button[data-fill-show="concentric"] .swatch-concentric,
+.draw-fill-button[data-fill-show="rows"] .swatch-rows,
+.draw-fill-button[data-fill-show="clear"] .swatch-clear,
+.draw-fill-swatch[data-pattern="concentric"] .swatch-concentric,
+.draw-fill-swatch[data-pattern="rows"] .swatch-rows,
+.draw-fill-swatch[data-pattern="clear"] .swatch-clear {
+  display: inline;
+}
+
+.draw-fill-button[data-fill-show="concentric"] .swatch-edge,
+.draw-fill-button[data-fill-show="rows"] .swatch-edge,
+.draw-fill-swatch[data-pattern="concentric"] .swatch-edge,
+.draw-fill-swatch[data-pattern="rows"] .swatch-edge {
+  fill: var(--clay-soft);
+}
+
+.draw-fill-swatch .swatch-clear {
+  stroke: var(--warning);
+}
+
+.draw-fill-menu {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 210px;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--canvas);
+  box-shadow: var(--shadow);
+}
+
+.draw-fill-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 2px;
+  color: var(--ink);
+  background: transparent;
+  font-size: 11px;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.draw-fill-menu button:hover,
+.draw-fill-menu button:focus-visible {
+  color: var(--clay-dark);
+  background: var(--clay-soft);
+}
+
+.draw-fill-menu-hint {
+  margin: 4px 8px 3px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
 }
 
 /* Entry point 1: the empty bed offers the two ways to start instead of being a

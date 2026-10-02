@@ -29,3 +29,19 @@
 - The >500,000-triangle Weave refusal case is deliberately not committed. The same
   generator writes a 500,001-face binary PLY into pytest's temporary directory so
   the true budget boundary is exercised without permanent repository waste.
+- draw-fill/ holds small hand-written Draw drawings for area fills (added
+  2026-10-01), written the way the Draw editor writes a pass: millimetre
+  viewBox, y down, one root data-clayline-fill attribute. self-crossing.svg is
+  one line crossing itself into a star with a loose tail, like Pete's drawing;
+  self-crossing-bare.svg is the same line without the attribute, pinned against
+  the G-code HEAD wrote before fills existed. The rest are one shape each
+  (square, L, ring with a hole, round tile, dumbbell, pinched neck, an open
+  shape, three small triangles) chosen for the rule its test pins. Added after
+  the engine review the same day, each reproducing one of its findings: four
+  Box squares (boxes.svg), a 100 x 40.04 mm box (near-multiple-box.svg), a
+  box with a 24.24 mm arm (arm.svg), a tile with a ring off its middle
+  (hole-off-centre.svg), a square with a line in from one side (spur.svg) or a
+  loose line inside (loose-line.svg), the pinched neck in Straight rows
+  (pinched-rows.svg), and turned-pass.svg, a self-crossing line the review's
+  sweep script drew at random (seed 13), one of whose fills the finished slice
+  cannot print over a pass turned 33 degrees.

@@ -32,23 +32,40 @@
 //   view.camera.scale             CSS pixels per millimetre, live
 //
 //   view.setScene({doc, ghosts, placement, bead, nozzle, bedWidth, bedHeight,
-//                  reference, tol}) MERGES: scene fields are settings, and
-//        setScene({doc}) must not wipe the bed.  ghosts are the other pages,
-//        each {doc, placement}; placement is a millimetre translation from the
-//        page's own frame onto the bed.  reference is the active pass's photo,
+//                  reference, tol, fill, fillAngle}) MERGES:
+//        scene fields are settings, and setScene({doc}) must not wipe the
+//        bed.  ghosts are the other pages, each {doc, placement}; placement is
+//        a millimetre translation from the page's own frame onto the bed.
+//        reference is the active pass's photo,
 //        {bitmap, x, y, widthMm, rotationDeg, opacity} in bed millimetres —
 //        a drawing aid drawn under everything, never printed.  While it is
 //        being arranged it also carries {handles, label}: handles asks for the
 //        move/scale/rotate grips, label is the live size reading the shell has
-//        already formatted through the unit toggle.
+//        already formatted through the unit toggle.  fill is {tol, weldTol,
+//        bead, overlap}, what the shell measures a fill's area with — the
+//        rail's "Join ends within" and side-by-side join, and the coil in the
+//        page's own millimetres — taken as given, so the shading answers for
+//        the very areas the readout counts; fillAngle is the degrees, in the
+//        page's own frame, that this pass's Straight rows run at on the bed,
+//        so the hatching leans the way the clay will.
 //   view.setOverlay(overlay)      REPLACES: gesture state is transient, and a
 //        stale rubber band is a lie about what the next click will do.  Its
 //        coordinates are the ACTIVE DOCUMENT's frame, the one the gesture
 //        machine hit-tests in.  `grab` is the frame Space is holding round a
 //        stroke — a rectangle and its four corner grips, already measured by
-//        the gesture machine off the stroke as it moves.
+//        the gesture machine off the stroke as it moves.  `fillNote` is the
+//        pill at the cursor, `fillGaps` the loose ends a "not closed" answer
+//        rings, `fillTarget` the area an armed click would fill.
 //   view.requestDraw()            rAF-coalesced; safe to call per event
 //   view.destroy()
+//
+// A FILL is shaded, never drawn as clay: the slice lays the real coils, and the
+// Sliced view shows them exactly as they print.  Here a filled area gets a soft
+// tint under the coil and the line, and thin hairlines a fixed 7 screen pixels
+// apart whatever the zoom — shading, not coils — that say which pattern it is:
+// parallel rows leaning the way this pass's rows will run, or nested copies of
+// the area's own edge for Concentric.  Holes stay bare.  A fill waiting for its
+// area to close again is a dashed ring and no tint.
 //
 // Performance is a gate, not a preference (PRD §7), and the draw loop is built
 // around two facts: a Path2D in millimetres is camera-independent, and canvas
@@ -103,6 +120,10 @@
   const CORNER_FRACTION = 0.42;       // of the coil width
   const LABEL_PX = 11.5;
   const LABEL_LIFT_PX = 10;
+  const HATCH_GAP_PX = 7;             // a fill's hairlines, always this far apart
+  const HATCH_PX = 0.75;
+  const WAIT_R_PX = 9;                // the dashed ring a waiting fill wears
+  const NOTE_LIFT_PX = 18;            // the fill pill clears the pointer it is under
 
   const BEAD_ALPHA = 0.26;            // the clay, translucent so lines read through it
   const GLOW_ALPHA = 0.34;
@@ -113,6 +134,10 @@
   const TRACE_ALPHA = 0.5;
   const MINOR_GRID_ALPHA = 0.55;
   const LABEL_BACK_ALPHA = 0.9;
+  const TINT_ALPHA = 0.75;            // a filled area: clay, soft, under the coil
+  const GHOST_TINT_ALPHA = 0.3;
+  const TARGET_ALPHA = 0.45;          // the area an armed click would fill
+  const HATCH_ALPHA = 0.5;
 
   const LABEL_FONT = `${LABEL_PX}px Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
 
@@ -128,6 +153,7 @@
     ["muted", "--muted", "#5e605b"],
     ["clay", "--clay", "#a94f32"],
     ["clayDark", "--clay-dark", "#7f3421"],
+    ["claySoft", "--clay-soft", "#ead2c5"],
     ["sage", "--sage", "#50685b"],
     ["warning", "--warning", "#a14c23"],
   ];
@@ -193,7 +219,13 @@
       bedHeight: 0,
       reference: null,
       tol: positive(Number(options.tol), core.DEFAULT_TOL),
+      fill: null,
+      fillAngle: 45,
       // overlay
+      gesture: null,
+      fillNote: null,
+      fillGaps: null,
+      fillTarget: null,
       hover: null,
       hoverAnchor: -1,
       chain: null,
@@ -218,6 +250,13 @@
     // shared cache would thrash between them.
     const strokePaths = new WeakMap();
     const chunkCache = new WeakMap();
+    // A fill's area outline, per area object: draw-core never changes an area
+    // once made, so an edit simply makes new ones.
+    const ringPaths = new WeakMap();
+    // Per page: its fills as last measured, and the shading laid out from them.
+    const shadeCache = new WeakMap();
+    const tintCache = new WeakMap();
+    const hatchCache = new WeakMap();
     let gridCache = null;
 
     // Labels are the only thing drawn in screen space, so they are collected
@@ -488,6 +527,217 @@
       return path;
     }
 
+    /* ---------- fills ------------------------------------------------------ */
+
+    // What a fill's area is measured with: the numbers the shell measures it
+    // with too, so both read the one area cache draw-core keeps.  Without
+    // them, this scene's own line settings and the engine's defaults.
+    const fillOptions = () => ({
+      tol: S.tol, weldTol: core.DEFAULT_WELD_TOL, bead: S.bead, overlap: core.DEFAULT_OVERLAP, ...S.fill,
+    });
+
+    // A page's fills, said plainly (draw-core's classifyFills), or null when it
+    // has none — and a page without a fill costs this one length check.  The
+    // answer is kept for as long as the areas (draw-core caches them on the
+    // lines' revisions), the fills and the coil spacing all stand, so a still
+    // drawing is measured once, not once a frame.
+    //
+    // While a gesture is in flight the lines are moving under the fills, and
+    // the fills only follow them when the edit lands (the shell's commit).  So
+    // the shading holds what it was when the gesture began, and the areas are
+    // never remeasured per pointer move.
+    function shadesOf(doc) {
+      if (!doc || !Array.isArray(doc.fills) || !doc.fills.length) return null;
+      const held = shadeCache.get(doc);
+      if (held && S.gesture) return held.shades;
+      const options = fillOptions();
+      const areas = core.closedAreas(doc, options);
+      const spacing = core.fillSpacing(options);
+      if (held && held.areas === areas && held.fills === doc.fills && held.spacing === spacing) {
+        return held.shades;
+      }
+      const shades = core.classifyFills(doc, options);
+      shadeCache.set(doc, { shades, areas, fills: doc.fills, spacing });
+      return shades;
+    }
+
+    // Every ring of an area in one path, filled and clipped even-odd: a hole is
+    // outside its area, and a face run out to its hole along a bridge is one
+    // ring that even-odd still reads right.
+    function ringPath(area) {
+      let path = ringPaths.get(area);
+      if (path) return path;
+      path = new Path2D();
+      for (const ring of area.rings) {
+        if (!ring.length) continue;
+        path.moveTo(ring[0].x, ring[0].y);
+        for (let i = 1; i < ring.length; i++) path.lineTo(ring[i].x, ring[i].y);
+        path.closePath();
+      }
+      ringPaths.set(area, path);
+      return path;
+    }
+
+    // What the canvas shows of the active page, in that page's own frame,
+    // grown by a screen on every side: hairlines are laid over this much and
+    // no more, so a big area at a close zoom costs a screenful of them, and a
+    // pan rebuilds them only once it runs off the edge of what was laid.
+    function viewCover(grow) {
+      const a = camera.toMM(-S.width * grow, S.height * (1 + grow));
+      const b = camera.toMM(S.width * (1 + grow), -S.height * grow);
+      const at = S.placement;
+      return { minX: a.x - at.x, minY: a.y - at.y, maxX: b.x - at.x, maxY: b.y - at.y };
+    }
+
+    const meets = (l, r) => l.minX <= r.maxX && r.minX <= l.maxX && l.minY <= r.maxY && r.minY <= l.maxY;
+    const holds = (outer, inner) => outer.minX <= inner.minX && outer.minY <= inner.minY
+      && outer.maxX >= inner.maxX && outer.maxY >= inner.maxY;
+
+    // Straight rows: parallel lines at this pass's angle, counted from the
+    // page's origin so they stand still while the view pans.
+    function rowLines(path, cover, step) {
+      const turn = (S.fillAngle * Math.PI) / 180;
+      const dx = Math.cos(turn);
+      const dy = Math.sin(turn);
+      let nLo = Infinity;
+      let nHi = -Infinity;
+      let dLo = Infinity;
+      let dHi = -Infinity;
+      for (const [x, y] of [
+        [cover.minX, cover.minY], [cover.maxX, cover.minY],
+        [cover.maxX, cover.maxY], [cover.minX, cover.maxY],
+      ]) {
+        const across = -x * dy + y * dx;
+        const along = x * dx + y * dy;
+        nLo = Math.min(nLo, across);
+        nHi = Math.max(nHi, across);
+        dLo = Math.min(dLo, along);
+        dHi = Math.max(dHi, along);
+      }
+      for (let k = Math.ceil(nLo / step); k * step <= nHi; k++) {
+        const o = k * step;
+        path.moveTo(-o * dy + dLo * dx, o * dx + dLo * dy);
+        path.lineTo(-o * dy + dHi * dx, o * dx + dHi * dy);
+      }
+    }
+
+    // Concentric: the area's own outline, shrunk toward its deepest point a
+    // step at a time.  Measured so the copies are a step apart where the
+    // outline comes nearest that point and wider everywhere else, never
+    // closer.  A round area shows rings and a triangle nested triangles, which
+    // is the shape the slice lays.
+    //
+    // Only the copies that can cross what is laid are laid.  A copy whose box
+    // misses it is out; and every point of the outline is at least the
+    // clearance from the deepest point, so the copy at scale s keeps at least
+    // s × clearance away — when the far corner of what is laid is nearer than
+    // that, the copy runs round the outside of it.  Zoomed into a big area,
+    // that is most of them.
+    function nestedLines(path, area, cover, step) {
+      const deep = core.deepestPoint(area);
+      const outline = area.rings[0];
+      if (!deep || !outline || outline.length < 3 || !(deep.clearance > step)) return;
+      const b = area.bounds;
+      const far = Math.max(
+        Math.hypot(cover.minX - deep.x, cover.minY - deep.y),
+        Math.hypot(cover.maxX - deep.x, cover.minY - deep.y),
+        Math.hypot(cover.maxX - deep.x, cover.maxY - deep.y),
+        Math.hypot(cover.minX - deep.x, cover.maxY - deep.y),
+      );
+      for (let k = 1; k * step < deep.clearance; k++) {
+        const s = 1 - (k * step) / deep.clearance;
+        if (s * deep.clearance > far) continue;
+        const box = {
+          minX: deep.x + (b.minX - deep.x) * s, minY: deep.y + (b.minY - deep.y) * s,
+          maxX: deep.x + (b.maxX - deep.x) * s, maxY: deep.y + (b.maxY - deep.y) * s,
+        };
+        if (!meets(box, cover)) continue;
+        path.moveTo(deep.x + (outline[0].x - deep.x) * s, deep.y + (outline[0].y - deep.y) * s);
+        for (let i = 1; i < outline.length; i++) {
+          path.lineTo(deep.x + (outline[i].x - deep.x) * s, deep.y + (outline[i].y - deep.y) * s);
+        }
+        path.closePath();
+      }
+    }
+
+    // Every filled area's rings in ONE path.  Areas never overlap, so even-odd
+    // over all of their rings at once is exactly their union: one fill call
+    // tints them all, and one clip holds a pattern to all the areas wearing it.
+    function unionPath(areas) {
+      const path = new Path2D();
+      for (const area of areas) {
+        for (const ring of area.rings) {
+          if (!ring.length) continue;
+          path.moveTo(ring[0].x, ring[0].y);
+          for (let i = 1; i < ring.length; i++) path.lineTo(ring[i].x, ring[i].y);
+          path.closePath();
+        }
+      }
+      return path;
+    }
+
+    const filledAreas = (shades) => shades.filter((shade) => shade.status === "filled" && shade.area);
+
+    function tintOf(doc, shades) {
+      const held = tintCache.get(doc);
+      if (held && held.shades === shades) return held.path;
+      const path = unionPath(filledAreas(shades).map((shade) => shade.area));
+      tintCache.set(doc, { shades, path });
+      return path;
+    }
+
+    // The hairlines, in at most four groups — each pattern, plain or in the
+    // warning colour for an area too narrow to print — each one path clipped
+    // to its areas.  Laid out again when the fills, the zoom or this pass's
+    // angle change, or when the view pans past what was laid; never per frame.
+    function hatchOf(doc, shades) {
+      const step = HATCH_GAP_PX / S.scale;
+      const view = viewCover(0);
+      const held = hatchCache.get(doc);
+      if (held && held.shades === shades && held.step === step && held.angle === S.fillAngle
+        && holds(held.cover, view)) {
+        return held.groups;
+      }
+      const grown = viewCover(1);
+      const groups = [];
+      const byKind = new Map();
+      for (const shade of filledAreas(shades)) {
+        const kind = `${shade.pattern}${shade.narrow ? " narrow" : ""}`;
+        if (!byKind.has(kind)) byKind.set(kind, { pattern: shade.pattern, warn: shade.narrow, areas: [] });
+        byKind.get(kind).areas.push(shade.area);
+      }
+      // What was laid covers the grown view, or the whole of the filled areas
+      // where they are smaller — either way the view as it stands is inside.
+      const laid = { minX: -Infinity, minY: -Infinity, maxX: Infinity, maxY: Infinity };
+      for (const group of byKind.values()) {
+        const lines = new Path2D();
+        const box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+        for (const area of group.areas) {
+          box.minX = Math.min(box.minX, area.bounds.minX);
+          box.minY = Math.min(box.minY, area.bounds.minY);
+          box.maxX = Math.max(box.maxX, area.bounds.maxX);
+          box.maxY = Math.max(box.maxY, area.bounds.maxY);
+        }
+        if (box.minX <= grown.minX) laid.minX = Math.max(laid.minX, grown.minX);
+        if (box.minY <= grown.minY) laid.minY = Math.max(laid.minY, grown.minY);
+        if (box.maxX >= grown.maxX) laid.maxX = Math.min(laid.maxX, grown.maxX);
+        if (box.maxY >= grown.maxY) laid.maxY = Math.min(laid.maxY, grown.maxY);
+        const cover = {
+          minX: Math.max(box.minX, grown.minX), minY: Math.max(box.minY, grown.minY),
+          maxX: Math.min(box.maxX, grown.maxX), maxY: Math.min(box.maxY, grown.maxY),
+        };
+        if (cover.minX < cover.maxX && cover.minY < cover.maxY) {
+          // Rows are one family of lines whichever area they cross, so one set
+          // over the group's box does every area at once.
+          if (group.pattern === "rows") rowLines(lines, cover, step);
+          else for (const area of group.areas) nestedLines(lines, area, cover, step);
+        }
+        groups.push({ clip: unionPath(group.areas), lines, warn: group.warn });
+      }
+      hatchCache.set(doc, { shades, step, angle: S.fillAngle, cover: laid, groups });
+      return groups;
+    }
+
     /* ---------- drawing ---------------------------------------------------- */
 
     function worldTransform() {
@@ -648,15 +898,89 @@
       ctx.globalAlpha = 1;
     }
 
+    // The filled areas, under everything else the page draws: a soft clay
+    // tint, and — on the page being drawn — hairlines that name the pattern.
+    // The pages behind show the tint only: enough to see that they are filled,
+    // too faint to read as this page's.  An area too narrow for a fill coil
+    // keeps its tint and wears its hairlines in the warning colour, because
+    // the slice will print it empty.
+    function drawFills(doc, shades, ghost) {
+      if (!filledAreas(shades).length) return;
+      ctx.globalAlpha = ghost ? GHOST_TINT_ALPHA : TINT_ALPHA;
+      ctx.fillStyle = P.claySoft;
+      ctx.fill(tintOf(doc, shades), "evenodd");
+      ctx.globalAlpha = 1;
+      if (ghost) return;
+      ctx.lineWidth = HATCH_PX / S.scale;
+      for (const group of hatchOf(doc, shades)) {
+        ctx.save();
+        ctx.clip(group.clip, "evenodd");
+        ctx.globalAlpha = HATCH_ALPHA;
+        ctx.strokeStyle = group.warn ? P.warning : P.clayDark;
+        ctx.stroke(group.lines);
+        ctx.restore();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // A fill whose area is not closed any more prints nothing, so it gets no
+    // tint: a dashed ring in the warning colour where its point is, drawn over
+    // the lines so the gap that caused it is not hidden under it.
+    function drawWaiting(shades) {
+      const scale = S.scale;
+      let any = false;
+      for (const shade of shades) {
+        if (shade.status !== "waiting") continue;
+        if (!any) {
+          dash[0] = BAND_DASH_PX[0] / scale;
+          dash[1] = BAND_DASH_PX[1] / scale;
+          ctx.setLineDash(dash);
+          ctx.strokeStyle = P.warning;
+          ctx.lineWidth = SNAP_EDGE_PX / scale;
+          any = true;
+        }
+        ctx.beginPath();
+        ctx.arc(shade.x, shade.y, WAIT_R_PX / scale, 0, TAU);
+        ctx.stroke();
+      }
+      if (any) ctx.setLineDash(NO_DASH);
+    }
+
+    function drawWaitingOn(doc, placement) {
+      const shades = shadesOf(doc);
+      if (!shades) return;
+      ctx.save();
+      if (placement !== ORIGIN) ctx.translate(placement.x, placement.y);
+      drawWaiting(shades);
+      ctx.restore();
+    }
+
     function drawDocument(doc, placement, ghost) {
-      if (!doc || !doc.strokes.length) return;
-      const chunks = chunksOf(doc);
-      if (!chunks.length) return;
+      if (!doc) return;
+      const chunks = doc.strokes.length ? chunksOf(doc) : EMPTY_LIST;
+      if (!chunks.length) {
+        // No line left to draw — but a fill can still be waiting on this page
+        // for its area to come back, and its ring is the only way to find it.
+        if (!ghost) drawWaitingOn(doc, placement);
+        return;
+      }
       const scale = S.scale;
       ctx.save();
       if (placement !== ORIGIN) ctx.translate(placement.x, placement.y);
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
+
+      const shades = shadesOf(doc);
+      if (shades) drawFills(doc, shades, ghost);
+      // The area an armed click would fill takes a lighter tint of its own,
+      // under the clay like a fill's, so "this one?" is answered before the
+      // click and the lines round it stay as readable as ever.
+      if (!ghost && S.fillTarget) {
+        ctx.globalAlpha = TARGET_ALPHA;
+        ctx.fillStyle = P.claySoft;
+        ctx.fill(ringPath(S.fillTarget), "evenodd");
+        ctx.globalAlpha = 1;
+      }
 
       // The clay first — what the coil will actually occupy at this thickness.
       ctx.globalAlpha = ghost ? GHOST_BEAD_ALPHA : BEAD_ALPHA;
@@ -689,6 +1013,7 @@
           ctx.stroke(strokeEntry(hovered).body);
         }
         drawFindings(chunks);
+        if (shades) drawWaiting(shades);
       }
       ctx.restore();
     }
@@ -887,6 +1212,49 @@
       );
     }
 
+    // The area an armed click would fill, outlined dashed the way the grab
+    // frame is; its tint went down under the clay in drawDocument.
+    function drawFillTarget() {
+      const area = S.fillTarget;
+      if (!area) return;
+      const scale = S.scale;
+      dash[0] = BAND_DASH_PX[0] / scale;
+      dash[1] = BAND_DASH_PX[1] / scale;
+      ctx.setLineDash(dash);
+      ctx.strokeStyle = P.clayDark;
+      ctx.lineWidth = BAND_PX / scale;
+      ctx.stroke(ringPath(area));
+      ctx.setLineDash(NO_DASH);
+    }
+
+    // "Not closed": the loose ends nearest the pointer, ringed in the warning
+    // colour, so the gap to close is where the artist is already looking.
+    function drawFillGaps() {
+      const gaps = S.fillGaps;
+      if (!gaps) return;
+      const scale = S.scale;
+      ctx.strokeStyle = P.warning;
+      ctx.lineWidth = SNAP_EDGE_PX / scale;
+      for (const p of gaps) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, SNAP_R_PX / scale, 0, TAU);
+        ctx.stroke();
+      }
+    }
+
+    // The pill at the cursor, lifted clear of the pointer that is over it.
+    function drawFillNote(placement) {
+      const note = S.fillNote;
+      if (!note) return;
+      const scale = S.scale;
+      pushLabel(
+        note.text,
+        S.originX + (note.at.x + placement.x) * scale,
+        S.originY - (note.at.y + placement.y) * scale - NOTE_LIFT_PX,
+        note.warn ? P.warning : P.clayDark,
+      );
+    }
+
     function drawTrace() {
       const points = S.trace;
       if (!points || points.length < 2) return;
@@ -937,6 +1305,7 @@
       ctx.lineCap = "round";
       drawTrace();
       drawPreview();
+      drawFillTarget();
       drawAnchors();
       drawGrab();
       drawBand(placement);
@@ -944,6 +1313,8 @@
       drawPreviewLabel(placement);
       drawCorner(placement);
       drawSnap(placement);
+      drawFillGaps();
+      drawFillNote(placement);
       ctx.restore();
 
       drawReferenceHandles();
@@ -1024,11 +1395,28 @@
       if ("bedWidth" in scene) S.bedWidth = Math.max(0, finite(Number(scene.bedWidth), 0));
       if ("bedHeight" in scene) S.bedHeight = Math.max(0, finite(Number(scene.bedHeight), 0));
       if ("reference" in scene) S.reference = referenceOf(scene.reference);
+      // draw-core checks each of these numbers itself, so they are kept as
+      // given: a zero here is the rail's, not a missing value.
+      if ("fill" in scene) S.fill = scene.fill && typeof scene.fill === "object" ? { ...scene.fill } : null;
+      if ("fillAngle" in scene) S.fillAngle = finite(Number(scene.fillAngle), 45);
       requestDraw();
     }
 
     function pointLike(value) {
       return value && Number.isFinite(value.x) && Number.isFinite(value.y) ? value : null;
+    }
+
+    // The fill pill: words and the point they are about, or nothing.
+    function fillNoteOf(value) {
+      if (!value || typeof value.text !== "string" || !value.text) return null;
+      const at = pointLike(value.at);
+      return at ? { text: value.text, at, warn: Boolean(value.warn) } : null;
+    }
+
+    // An area as draw-core hands it over: rings of points and the box round
+    // them.  Anything else is not an area this file can outline.
+    function areaOf(value) {
+      return value && Array.isArray(value.rings) && value.rings.length && value.bounds ? value : null;
     }
 
     function ringOf(value) {
@@ -1113,6 +1501,12 @@
         : null;
       S.corner = source.corner && pointLike(source.corner.p) ? source.corner : null;
       S.grab = grabOf(source.grab);
+      S.gesture = typeof source.gesture === "string" ? source.gesture : null;
+      S.fillNote = fillNoteOf(source.fillNote);
+      S.fillGaps = Array.isArray(source.fillGaps) && source.fillGaps.length
+        ? source.fillGaps.filter(pointLike)
+        : null;
+      S.fillTarget = areaOf(source.fillTarget);
       requestDraw();
     }
 
@@ -1137,6 +1531,10 @@
       S.previewLabel = null;
       S.corner = null;
       S.grab = null;
+      S.gesture = null;
+      S.fillNote = null;
+      S.fillGaps = null;
+      S.fillTarget = null;
       S.anchorSet.clear();
       gridCache = null;
     }

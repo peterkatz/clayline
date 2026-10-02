@@ -83,6 +83,13 @@ from clayline.thread_protection_audit import (
 class StackError(ValueError):
     """Raised when a job cannot be stacked or emitted safely."""
 
+    def __init__(self, *args: object, lint_report: LintReport | None = None) -> None:
+        super().__init__(*args)
+        # When the independent lint is what refused the job: its scopes name
+        # the strokes, for a caller that can leave an optional one out.  The
+        # message is the same either way.
+        self.lint_report = lint_report
+
 
 class _OptionalSettleRejected(StackError):
     """A post-stack check rejected an otherwise complete settlement attempt."""
@@ -4631,7 +4638,10 @@ def _closed_stroke_points(stroke: Stroke) -> tuple[Point, ...]:
 
 def _require_lint(report: LintReport, label: str) -> None:
     if not report.ok:
-        raise StackError(f"{label} failed independent G-code lint:\n{report.format()}")
+        raise StackError(
+            f"{label} failed independent G-code lint:\n{report.format()}",
+            lint_report=report,
+        )
 
 
 def _validate_z(z: float, profile: Profile, label: str) -> None:

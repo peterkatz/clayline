@@ -47,6 +47,21 @@ class WarningCode(StrEnum):
     OUT_OF_BED = "out_of_bed"
     ASSUMED_UNITS = "assumed_units"
     OVER_VOID = "over_void"
+    # Draw area fills (clayline.draw_fill).  A fill never fails a slice: every
+    # area it cannot lay prints empty and says why with one of these.
+    FILL_WAITING = "fill_waiting"
+    FILL_TOO_NARROW = "fill_too_narrow"
+    FILL_REFUSED = "fill_refused"
+    FILL_TOO_SHORT = "fill_too_short"
+    FILL_THIN = "fill_thin"
+    FILL_ANGLE_CHANGED = "fill_angle_changed"
+    FILL_DRAPE = "fill_drape"
+    # Raised by ingest, not draw_fill: an entry of the drawing file's fill
+    # attribute that does not read is skipped rather than failing the file.
+    FILL_UNREADABLE = "fill_unreadable"
+    # Raised on a plan of the lines alone (clayline.api), which holds no fill:
+    # only the slice lays them, and it answers this note when it does.
+    FILL_UNLAID = "fill_unlaid"
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +241,28 @@ class Travel:
         return self.start.distance_to(self.end)
 
 
+class FillPattern(StrEnum):
+    """How a Draw area fill lays its coil: the cup bottom's two patterns."""
+
+    # Nested copies of the area's own shape, one connected coil ("spiral").
+    CONCENTRIC = "concentric"
+    # Side-by-side straight rows, one zigzag coil where the shape allows ("raster").
+    ROWS = "rows"
+
+
+@dataclass(frozen=True, slots=True)
+class FillSeed:
+    """One Draw area fill: its pattern and a point inside the area it fills.
+
+    The point is in the same millimetre frame as ``Design.polylines``.  The
+    fill is whatever closed area of the drawn lines holds that point at slice
+    time, so it follows the lines rather than storing a shape of its own.
+    """
+
+    pattern: FillPattern
+    point: Point
+
+
 @dataclass(frozen=True, slots=True)
 class Design:
     id: str
@@ -239,6 +276,9 @@ class Design:
     # between two pages authored on the same canvas when one drawing is
     # asymmetric inside that frame.
     document_bounds: Bounds | None = None
+    # Draw area fills read from the root ``data-clayline-fill`` attribute.
+    # Empty for every drawing without one, which leaves planning untouched.
+    fill_seeds: tuple[FillSeed, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
