@@ -316,7 +316,7 @@ def test_the_same_region_twice_over_prints_the_same_bytes_of_fill(
     """REGISTRATION.  Ribs stack into walls only if a layer's fill depends on
     the region and on nothing else — not on the layer index, not on how many
     layers came before it, not on which direction the layer below happened to
-    travel.  Thirty-nine identical regions therefore have to produce one fill
+    travel.  Forty identical regions therefore have to produce one fill
     path, byte for byte, at every spacing and every angle."""
 
     stack = _stacked(TUMBLER)
@@ -330,7 +330,7 @@ def test_the_same_region_twice_over_prints_the_same_bytes_of_fill(
     seed = modulated[stack.layers[0].rings[0].provenance].points
 
     # The premise: identical region in.
-    assert len(stack.layers) == 39
+    assert len(stack.layers) == 40
     for layer in stack.layers:
         assert np.array_equal(modulated[layer.rings[0].provenance].points, seed)
 
@@ -570,7 +570,7 @@ def test_hollow_never_reaches_the_fill_machinery_and_keeps_its_golden_bytes(
 def test_a_layer_with_a_hole_is_filled_around_it_with_no_bead_over_the_void() -> None:
     """A hollow-walled cylinder is an annulus on every layer, and the void in
     the middle is the one place a fill must never reach.  Measured on the
-    emitted stream of all nine layers: not one millimetre of deposition lies
+    emitted stream of all ten layers: not one millimetre of deposition lies
     outside the material plus its half-bead weld allowance, and the fill's own
     region carries the hole rather than having quietly closed over it."""
 
@@ -579,7 +579,7 @@ def test_a_layer_with_a_hole_is_filled_around_it_with_no_bead_over_the_void() ->
     result = _emit(sliced, pattern)
     built = _build(sliced, pattern)
 
-    assert [len(layer.rings) for layer in sliced.layers] == [2] * 9
+    assert [len(layer.rings) for layer in sliced.layers] == [2] * 10
     for layer_index in range(len(sliced.layers)):
         assert len(built.proofs[(layer_index, 0)].polygon.interiors) == 1
     assert _worst_bead_over_air(sliced, result, _modulated(sliced, pattern)) == 0.0
@@ -840,7 +840,7 @@ def test_a_ring_that_crosses_itself_names_what_folded_it() -> None:
 
 def test_skins_taller_than_the_form_print_dense_clay_and_say_so() -> None:
     """Base and cap are each clamped to the layers that exist, so asking for 99
-    of each on a six-layer lid is legal — and it prints the solid mass an artist
+    of each on a seven-layer lid is legal — and it prints the solid mass an artist
     chose ribs to avoid.  The clamping is right; the silence would not be, so
     the form says what it did in one warning that names the whole band."""
 
@@ -852,9 +852,9 @@ def test_skins_taller_than_the_form_print_dense_clay_and_say_so() -> None:
     assert all(stroke.dense for stroke in result.strokes)
     assert [warning.code for warning in result.warnings] == [FormWarningCode.INFILL_NO_RIBS]
     message = result.warnings[0].message
-    assert message.startswith("layers 1-6: the base and cap skins together cover every layer")
+    assert message.startswith("layers 1-7: the base and cap skins together cover every layer")
     assert "prints as solid clay" in message
-    assert result.warnings[0].layer_span == cl.LayerSpan(0, 5)
+    assert result.warnings[0].layer_span == cl.LayerSpan(0, 6)
 
 
 @pytest.mark.parametrize(
@@ -870,8 +870,8 @@ def test_skins_taller_than_the_form_print_dense_clay_and_say_so() -> None:
         (
             LID,
             {"infill_base_layers": 2, "infill_cap_layers": 2},
-            2,
-            "only 2 sparse layers sit between the cap and the layers below it",
+            1,
+            "only 1 sparse layer sits between the cap and the layers below it",
         ),
     ),
 )
@@ -882,10 +882,11 @@ def test_a_ramp_longer_than_the_sparse_body_says_what_it_asked_for_and_got(
 
     The tumbler runs out of HALVINGS: the ramp cannot tighten past the dense
     skin it is running into, so 30 asked for is 3 printed.  The lid runs out of
-    ROOM: with two base and two cap layers on a six-layer form there are two
-    sparse layers left, so 30 asked for is 2 printed.  Truncating is right in
-    both cases; going quiet about it is not, and the sentence names whichever
-    bound bit first.
+    ROOM: two base and two cap layers on a seven-layer form, and the dome's
+    wall steps in by more than half the 5 mm coil just under the cap, so that
+    layer is a roof too, and one sparse layer is left: 30 asked for is 1
+    printed.  Truncating is right in both cases; going quiet about it is not,
+    and the sentence names whichever bound bit first.
     """
 
     result = _build(

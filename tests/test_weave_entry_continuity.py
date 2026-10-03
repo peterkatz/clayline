@@ -296,7 +296,8 @@ def test_reference_infill_jobs_emit_without_refusal() -> None:
     """The portable reference is the exact stock M12 recipe, not a small proxy."""
 
     result = _m12_result()
-    assert len(result.sliced.layers) == 39
+    # The 80 mm tumbler's top is a whole number of layers up and has its own.
+    assert len(result.sliced.layers) == 40
     assert "; CLAYLINE_BODY_END" in result.emission.gcode
     assert result.emission.lint_report.ok
     assert not (_warning_codes(result) & WALL_ONLY_WARNING_CODES)

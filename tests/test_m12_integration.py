@@ -86,7 +86,7 @@ def test_bottoms_share_wall_layers_and_keep_structural_flow_and_labels() -> None
     assert {move.z for move in bottom} == {2.0, 4.0, 6.0}
     assert min(move.layer_index for move in wall) == 0
     assert min(move.z for move in wall) == 2.0
-    assert result.report().totals.total_stack_height_mm == 18.0
+    assert result.report().totals.total_stack_height_mm == 20.0
     for layer_index in range(3):
         layer_moves = [
             move
@@ -174,7 +174,7 @@ def test_shared_bottom_warning_provenance_keeps_print_and_source_layers_aligned(
     warning = next(item for item in result.warnings if item.code.value == "overhang")
 
     assert warning.provenance is not None
-    assert warning.provenance.element_id.startswith("layer=1;island=0;span=0-13;z=4;source_layer=1")
+    assert warning.provenance.element_id.startswith("layer=1;island=0;span=0-14;z=4;source_layer=1")
     assert "print layer=2" in warning.message
     assert "source layer=2" in warning.message
 
@@ -245,8 +245,9 @@ def test_multiple_bottom_islands_are_ordered_layer_first() -> None:
 # and no established run topology moves to buy that proof.
 # --------------------------------------------------------------------------
 
+# Recaptured 2026-10-02 when the 30 mm top got its own layer (15 layers, not 14).
 LOBED_ZBLEND_BOTTOM3_BODY_SHA256 = (
-    "b06b3d0a3cc3fbf1e1a1392903d9a052b02ab01080ba113dd0a9856d03b4a6d3"
+    "6e0fb60e8fc1cbe79356c822601652c02e0ad85ccfcdec29d64b9212373c79bc"
 )
 
 

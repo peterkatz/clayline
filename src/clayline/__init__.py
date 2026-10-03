@@ -1,6 +1,6 @@
 """Clayline's stable public contracts and one-true-pipeline facade."""
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 from clayline.api import (
     DesignFacade,

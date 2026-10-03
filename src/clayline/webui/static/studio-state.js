@@ -200,6 +200,12 @@
       "nozzle", "layer_height", "first_layer_height", "sample_spacing", "bead_width",
     ];
     if (coreSliceKeys.some((key) => current.slice[key] !== next.slice[key])) return "slice";
+    // How the top is sliced is part of the slice too. A print file 0.5.1 saved
+    // says "below" and every other job leaves the key out, so an old file over
+    // the same model at the same numbers slices again to its own layers rather
+    // than settling on a stack one layer taller than the one it was saved with.
+    const topLayer = (slice) => (slice.top_layer === "below" ? "below" : "nearest");
+    if (topLayer(current.slice) !== topLayer(next.slice)) return "slice";
     return hasSlice ? "settle" : "invalidate";
   }
 

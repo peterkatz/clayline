@@ -297,6 +297,40 @@ def test_weave_restore_action_chooses_existing_application_path() -> None:
     assert result == ["mesh", "mesh", "slice", "settle", "invalidate"]
 
 
+def test_weave_restore_action_slices_again_when_only_the_top_layer_rule_differs() -> None:
+    # A print file 0.5.1 saved slices with only the layers under the top ("below");
+    # every other job leaves the key out.  Opened over the same model at the same
+    # numbers, settling would print the slice on the table, one layer taller than the
+    # file's, while the status line said the model matched.
+    result = _run_node(
+        f"""
+        const ui = require({json.dumps(str(MODULE))});
+        const base = {{
+          placement: {{up_axis: "z", scale: 1, offset_x: 0}},
+          slice: {{
+            profile: "potterbot-xl", nozzle: 5, layer_height: 1.5,
+            first_layer_height: 1.5, sample_spacing: 1, bead_width: 5,
+          }},
+          pattern_json: "flat",
+          export: {{flow_multiplier: 1}},
+        }};
+        const withTop = (snapshot, top) => ({{
+          ...snapshot, slice: {{...snapshot.slice, top_layer: top}},
+        }});
+        const open = {{hasFile: true, hasSlice: true}};
+        console.log(JSON.stringify([
+          ui.weaveRestoreAction(base, withTop(base, "below"), open),
+          ui.weaveRestoreAction(withTop(base, "below"), base, open),
+          ui.weaveRestoreAction(withTop(base, "below"), withTop(base, "nearest"), open),
+          ui.weaveRestoreAction(base, withTop(base, "nearest"), open),
+          ui.weaveRestoreAction(withTop(base, "below"), withTop(base, "below"), open),
+          ui.weaveRestoreAction(base, withTop(base, "below"), {{hasFile: false, hasSlice: false}}),
+        ]));
+        """
+    )
+    assert result == ["slice", "slice", "slice", "settle", "settle", "slice"]
+
+
 def test_item_7_wiring_uses_full_mode_snapshots_without_weave_cache_identity() -> None:
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     app = (STATIC / "app.js").read_text(encoding="utf-8")

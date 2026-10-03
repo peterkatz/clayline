@@ -568,8 +568,9 @@ def test_no_continuous_prefix_still_refuses_with_named_reason() -> None:
 
     sliced = _no_continuous_prefix_form()
 
+    # 20 mm prongs, planes at 1, 3 ... 19, and the top layer for the 1 mm left.
     assert zblend_disabled_hint(sliced, SeamPolicy.CHAINED) == (
-        "Layers 1\N{EN DASH}10 split into 3 islands \N{EM DASH} "
+        "Layers 1\N{EN DASH}11 split into 3 islands \N{EM DASH} "
         "Vase mode needs one continuous ring per layer."
     )
 

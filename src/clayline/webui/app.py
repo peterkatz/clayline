@@ -395,11 +395,15 @@ def create_app(
             cache, token, created = _resolve_weave_session(request)
             mesh = cache.get("mesh", _required_id(payload, "mesh_id"))
             restore_id = payload.get("restore_id")
-            restore_profile = (
+            restore_recipe = (
                 None
                 if restore_id is None
-                else cache.get("recipe", _required_id(payload, "restore_id")).profile
+                else cache.get("recipe", _required_id(payload, "restore_id"))
             )
+            restore_profile = None if restore_recipe is None else restore_recipe.profile
+            if restore_recipe is not None and "top_layer" not in payload:
+                # The saved job's own top-layer rule, unless the page says one.
+                payload = {**payload, "top_layer": restore_recipe.top_layer}
             started = time.perf_counter()
             sliced, result = await asyncio.to_thread(
                 _slice_weave_mesh_payload, mesh, payload, restore_profile
@@ -1282,7 +1286,7 @@ def _slice_weave_mesh_payload(
 ) -> tuple[Any, dict[str, Any]]:
     from clayline.weave_api import sliced_form_stats
     from clayline.weave_emergence import find_island_emergence
-    from clayline.weave_models import SeamPolicy
+    from clayline.weave_models import TOP_LAYER_NEAREST, TOP_LAYER_RULES, SeamPolicy
     from clayline.weave_range import (
         layer_range_payload,
         select_layer_range,
@@ -1321,20 +1325,36 @@ def _slice_weave_mesh_payload(
         if "bead_width" not in payload or payload["bead_width"] is None
         else _finite(payload, "bead_width", 1.0, minimum=0.01)
     )
+    # Every new job reads the top to the nearest layer.  A print file 0.5.1
+    # saved comes back with "below", and the page sends that while its job is
+    # the one on the table, so it slices to the layers it was saved with.
+    top_layer = _string(payload, "top_layer", TOP_LAYER_NEAREST)
+    if top_layer not in TOP_LAYER_RULES:
+        raise UiRequestError(f"top_layer must be one of {', '.join(TOP_LAYER_RULES)}")
     sliced = mesh.slice(
         nozzle=nozzle,
         layer_height=layer_height,
         first_layer_height=first_layer_height,
         sample_spacing=sample_spacing,
         bead_width=bead_width,
+        top_layer=top_layer,
     )
     requested_range = payload.get("layer_range")
-    emergence = find_island_emergence(sliced)
+    # The page says when Vase mode is on: its one continuous spiral cannot
+    # print past a split of any length, so the proposal reads the form strictly.
+    emergence = find_island_emergence(
+        sliced,
+        transient_layers=_island_split_allowance(_boolean(payload, "z_blend", False)),
+    )
     # Island handling is a studio proposal, never an engine-wide range rule:
     # command-line/API callers keep their full-form default, and an explicit
     # range from the artist always wins.  The full Stage-A slice stays cached
     # either way for later range changes and the Item 8 crown interlock.
-    default_island_stop = requested_range is None and emergence is not None
+    # An artist who switched the range off has declined the proposal, and the
+    # page says so with island_stop: false; without it every re-slice turned
+    # the range back on.
+    island_stop_wanted = _boolean(payload, "island_stop", True)
+    default_island_stop = requested_range is None and emergence is not None and island_stop_wanted
     selected = select_layer_range(
         sliced,
         (1, emergence.layer_index) if default_island_stop else requested_range,
@@ -1350,42 +1370,76 @@ def _slice_weave_mesh_payload(
     # full mesh facts/warnings.  An artist needs to see that the form really
     # continues above the proposed print range, not a falsely truncated mesh.
     display = sliced if default_island_stop else selected
-    island_emergence = None
-    if emergence is not None:
-        first = emergence.layer_number
-        last = sliced.source_layer_total
-        islands = emergence.outer_count
-        range_includes_islands = selected.layer_range[1] >= first
-        island_emergence = {
-            "layer": first,
-            "last_layer": last,
-            "outer_count": islands,
-            "base_outer_count": emergence.base_outer_count,
-            "default_stop_to_layer": first - 1,
-            "default_applied": default_island_stop,
-            "message": (
-                f"Layers {first}\N{EN DASH}{last} split into {islands} separate "
-                "islands — the printer can't cut the thread between them, so "
-                f"printing stops at layer {first - 1}. Raise 'To layer' to override."
-            ),
-            "override_message": (
-                f"Layers {first}\N{EN DASH}{last} split into {islands} separate "
-                "islands. This selected range includes them, so the thread will "
-                "drag between islands."
-                if range_includes_islands and not default_island_stop
-                else None
-            ),
-        }
     return sliced, {
         "schema": "clayline.ui.weave-slice.v1",
         "stats": sliced_form_stats(display),
         "centerline": compact_slice_payload(display),
         "print_range": layer_range_payload(selected),
-        "island_emergence": island_emergence,
+        "island_emergence": _island_emergence_payload(
+            emergence, selected.layer_range, applied=default_island_stop
+        ),
         "capabilities": {
             "z_blend_eligible": hint is None,
             "z_blend_disabled_hint": hint,
         },
+    }
+
+
+def _island_split_allowance(vase_mode: bool) -> int:
+    """How many layers a split may last and still not stop the print.
+
+    Vase mode climbs in one continuous spiral and cannot print a layer in two
+    pieces, so with it on a split of any length stops the print, as every split
+    did before short ones were let through.  With it off, a short skirt beside
+    a dish is printed through: the thread drags across it for a layer or two
+    and the wall is one again.
+    """
+
+    from clayline.weave_emergence import TRANSIENT_SPLIT_LAYERS
+
+    return 0 if vase_mode else TRANSIENT_SPLIT_LAYERS
+
+
+def _island_emergence_payload(
+    emergence: Any | None,
+    selected_range: tuple[int, int],
+    *,
+    applied: bool,
+) -> dict[str, Any] | None:
+    """The split the studio read, in the words and numbers the page shows.
+
+    ``applied`` says whether the studio's own island rule chose the range
+    (the stop, or Vase mode's crown) rather than the artist.
+    """
+
+    if emergence is None:
+        return None
+    first = emergence.layer_number
+    last = emergence.last_layer_number
+    islands = emergence.outer_count
+    selected_first, selected_last = selected_range
+    # Whether the selected band takes in any of the split layers: it has to
+    # reach the split's first layer and not start above its last.
+    range_includes_islands = selected_last >= first and selected_first <= last
+    span = f"Layers {first}\N{EN DASH}{last} split" if last > first else f"Layer {first} splits"
+    return {
+        "layer": first,
+        "last_layer": last,
+        "outer_count": islands,
+        "base_outer_count": emergence.base_outer_count,
+        "default_stop_to_layer": first - 1,
+        "default_applied": applied,
+        "message": (
+            f"{span} into {islands} separate pieces \N{EM DASH} the printer "
+            "can't cut the thread between them, so printing stops at layer "
+            f"{first - 1}. Raise 'To layer' to print past them."
+        ),
+        "override_message": (
+            f"{span} into {islands} separate pieces. This selected range "
+            "includes them, so the thread will drag between the pieces."
+            if range_includes_islands and not applied
+            else None
+        ),
     }
 
 
@@ -1395,12 +1449,13 @@ def _crown_finish_payload(
     *,
     applied: bool | None = None,
     automatic: bool = False,
+    transient_layers: int,
 ) -> dict[str, Any] | None:
     """Return server-owned truth for the island/crown range interlock."""
 
     from clayline.weave_emergence import find_island_emergence
 
-    emergence = find_island_emergence(sliced)
+    emergence = find_island_emergence(sliced, transient_layers=transient_layers)
     if emergence is None:
         return None
     if applied is None:
@@ -1473,8 +1528,25 @@ def _modulate_weave_payload(
     if quality not in {"drag", "settle"}:
         raise UiRequestError("quality must be 'drag' or 'settle'")
     pattern = resolve_pattern(payload)
-    emergence = find_island_emergence(sliced)
+    split_allowance = _island_split_allowance(pattern.settings.z_blend)
+    emergence = find_island_emergence(sliced, transient_layers=split_allowance)
     island_range_auto = _boolean(payload, "island_range_auto", False)
+    # The artist declined the island stop (range switched off): no stop is
+    # proposed here either, so the range they chose is the whole form.
+    island_stop_declined = not _boolean(payload, "island_stop", True)
+    explicit_range = payload.get("layer_range")
+    if (
+        pattern.settings.z_blend
+        and not island_stop_declined
+        and (explicit_range is None or island_range_auto)
+    ):
+        # Vase mode switched on after the slice: the slice let a short split
+        # through and proposed no stop, or a later one, but the spiral cannot
+        # print past any split, so the studio's island rule decides here.  A
+        # range sent with island_range_auto is that earlier proposal, never one
+        # the artist typed (typing a layer clears it), so it is read again too.
+        island_range_auto = True
+        explicit_range = None
     # Top-follow uses the split suffix only as a target field. With it on, Z
     # relief grows through the continuous wall; with it off, the wall stops at
     # the last one-ring layer. The disconnected suffix is never threaded.
@@ -1485,14 +1557,21 @@ def _modulate_weave_payload(
         and pattern.settings.follow_top_edge
         and not pattern.settings.level_rim
     )
-    explicit_range = payload.get("layer_range")
+    island_stop = (
+        not auto_crown
+        and explicit_range is None
+        and island_range_auto
+        and not island_stop_declined
+        and emergence is not None
+    )
     if auto_crown:
         requested_range = None
     elif explicit_range is not None:
         requested_range = explicit_range
-    elif island_range_auto and emergence is not None:
-        # Z-blend off (or ineligible): stop at the split instead of printing
-        # islands with dragged threads between them.
+    elif island_stop:
+        # No crown to absorb the split (Vase mode off, or its level rim on or
+        # top-follow off): stop at the split instead of printing islands with
+        # dragged threads between them.
         requested_range = (1, emergence.layer_index)
     else:
         requested_range = None
@@ -1513,6 +1592,11 @@ def _modulate_weave_payload(
     interior_hint = interior_disabled_hint(selected)
     if interior_hint is not None and pattern.settings.interior != "hollow":
         raise UiRequestError(f"The interior cannot be filled: {interior_hint}")
+    # The split this job was read against, so a stop Vase mode called for
+    # after the slice reaches the page's range readout too.
+    island_emergence = _island_emergence_payload(
+        emergence, selected.layer_range, applied=auto_crown or island_stop
+    )
     hint = zblend_disabled_hint(selected, pattern.settings.seam)
     if pattern.settings.z_blend and hint is not None:
         # F9.7 + Pete 2026-07-22 (restored-settings deadlock): a persisted
@@ -1539,6 +1623,7 @@ def _modulate_weave_payload(
             selected,
             zblend_path,
             automatic=auto_crown,
+            transient_layers=split_allowance,
         )
         trace = drag_trace_payload(
             selected,
@@ -1563,6 +1648,7 @@ def _modulate_weave_payload(
             "trace": trace,
             "pattern": visuals,
             "print_range": layer_range_payload(selected),
+            "island_emergence": island_emergence,
             "crown_finish": crown_finish,
             "warnings": [],
             "warnings_settled": False,
@@ -1660,11 +1746,13 @@ def _modulate_weave_payload(
             zblend_path=prepared_result.zblend_path,
         ),
         "print_range": layer_range_payload(prepared_result.sliced),
+        "island_emergence": island_emergence,
         "crown_finish": _crown_finish_payload(
             prepared_result.sliced,
             prepared_result.zblend_path,
             applied=top_follow_applied,
             automatic=auto_crown,
+            transient_layers=split_allowance,
         ),
         "capabilities": {
             "bottom_eligible": bottom_hint is None,
@@ -1936,6 +2024,9 @@ def _restore_weave_gcode_payload(
             "end_early_mm": recipe.end_early_mm,
             "job_id": recipe.job_id,
             "reproducible": recipe.reproducible,
+            # "below" for a file 0.5.1 or earlier saved: the page slices that
+            # job with only the planes under the top, as it was saved.
+            "top_layer": recipe.top_layer,
         },
     }
 

@@ -60,7 +60,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from types import MappingProxyType
 from typing import NoReturn
@@ -108,6 +108,7 @@ from clayline.weave_models import (
     FormWarning,
     FormWarningCode,
     LayerSpan,
+    Ring,
     RingProvenance,
     SeamPolicy,
     SlicedForm,
@@ -319,6 +320,11 @@ _NO_PROOFS: Mapping[tuple[int, int], InteriorProof] = MappingProxyType({})
 # into a default that every other caller is also holding.
 _NO_WELDS: Mapping[int, tuple[FloatArray, ...]] = MappingProxyType({})
 
+# The same, for the walls and sparse fill areas :func:`_wall_over_ribs_warnings`
+# reads off a hand-built support context that never set them.
+_NO_WALLS: Mapping[int, tuple[FloatArray, ...]] = MappingProxyType({})
+_NO_REGIONS: Mapping[int, Polygon | MultiPolygon] = MappingProxyType({})
+
 
 @dataclass(frozen=True, slots=True)
 class InteriorResult:
@@ -326,9 +332,9 @@ class InteriorResult:
 
     strokes: tuple[InteriorStroke, ...]
     # STATIC FAMILIES ONLY.  Everything here is knowable from the geometry this
-    # builder laid down, before anybody has chosen a wall seam.  The two
-    # families that depend on the route the emitter actually took —
-    # ``INFILL_DRIFT`` and ``INTERIOR_UNWELDED_SEAM`` — are produced by
+    # builder laid down, before anybody has chosen a wall seam.  The families
+    # that depend on the route the emitter actually took — ``INFILL_DRIFT``,
+    # ``WALL_OVER_RIBS`` and ``INTERIOR_UNWELDED_SEAM`` — are produced by
     # :meth:`resolved_warnings` and are deliberately absent from this tuple, so
     # nothing can read a provisional guess about a weld as if it were the weld.
     warnings: tuple[FormWarning, ...]
@@ -442,7 +448,9 @@ class InteriorResult:
         deposition of its own or as clay under the next layer, and the unwelded
         sentence read the seam POLICY, which decides nothing — a pinned cone
         welds some layers, a scattered cylinder welds some layers, and a chained
-        layer can refuse on geometry alone.
+        layer can refuse on geometry alone.  The wall-over-ribs family is
+        resolved here for the drift family's reason: a weld is clay the wall
+        above can land on.
 
         ``resolved_welds`` is keyed by ``(layer_index, island_index)`` — the same
         pair :attr:`proofs` and every stroke carry — and has THREE states:
@@ -490,6 +498,14 @@ class InteriorResult:
                     support.wall_paths,
                     support.shared_rows,
                     bead_width=support.bead_width,
+                    weld_paths=welded,
+                ),
+                *_wall_over_ribs_warnings(
+                    support,
+                    weld_paths=welded,
+                ),
+                *_skin_over_unfilled_warnings(
+                    support,
                     weld_paths=welded,
                 ),
             )
@@ -847,12 +863,36 @@ class _InfillLayer:
 
 
 @dataclass(frozen=True, slots=True)
+class _InfillRamp:
+    """One ramp: the sparse layers tightening up into one roof skin.
+
+    A form has one of these under every roof whose own layer below is ribbed —
+    the top, and any shoulder or dome on the way up — and each is truncated on
+    its own, so each carries its own counts.
+    """
+
+    # The sparse layer directly under the roof.
+    under: int
+    # The roof itself: the dense layer this ramp runs up into.
+    roof: int
+    # Sparse layers between that roof and the next dense layer down (or the
+    # bed), before the halving floor is applied — how much ROOM the form left.
+    room: int
+    # The layer indices this ramp actually claimed, tightest (roof-ward) first.
+    layers: tuple[int, ...]
+
+    @property
+    def built(self) -> int:
+        return len(self.layers)
+
+
+@dataclass(frozen=True, slots=True)
 class _InfillPlan:
     """The per-layer plan, plus what the artist's ramp count actually bought.
 
     The counts ride out with the plan rather than being re-derived later because
     a ramp is truncated by two different things — the layers there are room for
-    under the cap, and the halvings that stay looser than the dense skin — and
+    under its roof, and the halvings that stay looser than the dense skin — and
     both are known exactly once, here, while the plan is being built.  Asking a
     second function to work them out again is asking it to agree, and the
     measured consequence of nobody asking at all was an artist setting the ramp
@@ -861,21 +901,32 @@ class _InfillPlan:
 
     layers: tuple[_InfillLayer, ...]
     ramp_asked: int
-    # Sparse layers between the base skin (or the bed) and the cap, before the
-    # halving floor is applied — how much ROOM the form left for a ramp.
-    ramp_room: int
     # Halvings of the artist's spacing that stay looser than the dense skin's.
     ramp_halvings: int
-    # The layer indices the ramp actually claimed, tightest (cap-ward) first.
-    ramp_layers: tuple[int, ...]
-    # The sparse layer directly under the cap, or None when there is no cap and
-    # therefore nothing for a ramp to run into.
-    under_cap: int | None
+    # One per roof with ribs under it, topmost first.
+    ramps: tuple[_InfillRamp, ...]
     dense_beads: float
 
     @property
+    def ramp_layers(self) -> tuple[int, ...]:
+        """Every layer any ramp claimed, topmost ramp first, tightest first within."""
+
+        return tuple(layer for ramp in self.ramps for layer in ramp.layers)
+
+    # The three below read the TOPMOST ramp — the one under the form's highest
+    # roof, which on a form whose only roof is its top is the only ramp there
+    # is, exactly as 0.5.1 counted it.
+    @property
+    def ramp_room(self) -> int:
+        return self.ramps[0].room if self.ramps else 0
+
+    @property
     def ramp_built(self) -> int:
-        return len(self.ramp_layers)
+        return self.ramps[0].built if self.ramps else 0
+
+    @property
+    def under_cap(self) -> int | None:
+        return self.ramps[0].under if self.ramps else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -909,6 +960,27 @@ class _InfillSupport:
     seam: SeamPolicy
     static_before_seam: tuple[FormWarning, ...]
     static_after_seam: tuple[FormWarning, ...]
+    # What :func:`_wall_over_ribs_warnings` reads on top of the drift inputs:
+    # the walls of EVERY printed layer, dense ones too, because the wall that
+    # steps in over the ribs is the layer above's whatever that layer fills
+    # with; and each sparse layer's fill area, which is where a wall landing
+    # off the walls below can only be landing on ribs or on the gaps between
+    # them.  Defaulted empty so a hand-built context measures no wall at all
+    # rather than inventing one.
+    printed_walls: Mapping[int, tuple[FloatArray, ...]] = field(default=_NO_WALLS)
+    sparse_regions: Mapping[int, Polygon | MultiPolygon] = field(default=_NO_REGIONS)
+    # ARTIST COPY ONLY, like ``seam``: it picks the lever sentence of a
+    # wall-over-ribs warning and never whether the warning exists.
+    cap_layers: int = 0
+    # The wall's own lean rule (:func:`clayline.weave_analysis` overhang): a coil
+    # may sit up to ``bead * (1 - overlap)`` off the one below and still rest
+    # on it.  The wall-over-ribs check holds a wall to that rule, not the fill's.
+    overlap_fraction: float = 0.2
+    # What :func:`_skin_over_unfilled_warnings` reads: each sparse layer's clay
+    # that printed no fill, and the fill of each dense layer laid directly over
+    # a sparse one.  Defaulted empty, like the two above.
+    unfilled_areas: Mapping[int, Polygon | MultiPolygon] = field(default=_NO_REGIONS)
+    skin_paths: Mapping[int, tuple[FloatArray, ...]] = field(default=_NO_WALLS)
 
 
 def _build_infill(
@@ -944,7 +1016,7 @@ def _build_infill(
     filled_layers = _filled_layers(sliced)
     first_filled = filled_layers[0]
     last_filled = filled_layers[-1]
-    plan = _infill_layer_plan(filled_layers, settings)
+    readings, plan = _read_and_plan(sliced, settings, modulated_by_address=modulated_by_address)
 
     strokes: list[InteriorStroke] = []
     proofs: dict[tuple[int, int], InteriorProof] = {}
@@ -970,17 +1042,29 @@ def _build_infill(
     # neighbour also carried, used to tell an old rib from a rib the halving
     # invented.  Keyed by the tightening layer.
     shared_rows: dict[int, MultiLineString] = {}
+    # Every printed layer's wall centrelines, dense layers included, and every
+    # sparse layer's fill area, for :func:`_wall_over_ribs_warnings`.  Kept
+    # apart from ``wall_paths`` on purpose: that mapping is what the drift
+    # check and the direct weld read as the clay under a sparse layer, and a
+    # dense layer's wall alone is not that — its fill is.
+    printed_walls: dict[int, tuple[FloatArray, ...]] = {}
+    sparse_regions: dict[int, Polygon | MultiPolygon] = {}
+    # For :func:`_skin_over_unfilled_warnings`: the clay of each sparse layer
+    # that printed NO fill — islands that printed as wall alone and pockets
+    # left empty — and the fill of every dense layer laid straight over a
+    # sparse one, which is the skin that has to bridge whatever that left.
+    unfilled_areas: dict[int, Polygon | MultiPolygon] = {}
+    skin_paths: dict[int, tuple[FloatArray, ...]] = {}
+    # The spacing each layer's ribs REALLY printed at, loosest island first,
+    # where it differs from the plan: a ramp island that refused its tighter
+    # spacing printed at the body spacing instead, and the step a skin or a
+    # tighter layer above has to bridge is set by what printed.
+    printed_spacing: dict[int, float] = {}
 
     try:
         for position, step in enumerate(plan.layers):
             layer = sliced.layers[step.layer_index]
-            reading = _layer_regions(
-                layer,
-                step.layer_index,
-                subject=_INFILL_SUBJECT,
-                bead_width=bead_width,
-                modulated_by_address=modulated_by_address,
-            )
+            reading = readings[step.layer_index]
             regions = reading.regions
             fill_kind, angle, grid_anchor = _infill_fill_for_layer(
                 settings,
@@ -1003,6 +1087,13 @@ def _build_infill(
                 # take this exit — see the message it raises for why one narrow
                 # island is a skip and not a refusal.
                 skip_off_lattice=not step.dense,
+                # A ramp layer never costs an island the fill its body spacing
+                # gives it — see :func:`_fill_layer_strokes`.
+                fallback_spacing=(
+                    bead_width * settings.infill_spacing_beads
+                    if not step.dense and step.spacing_beads < settings.infill_spacing_beads
+                    else None
+                ),
             )
             strokes.extend(layer_strokes)
             proofs.update(layer_proofs)
@@ -1015,24 +1106,43 @@ def _build_infill(
                 for record in layer_skipped
                 if record.off_lattice
             )
+            # The walls of skipped islands ride along: their rings still
+            # print, and a rib resuming above them must be measured against
+            # that clay rather than reported as drifting over nothing.
+            #
+            # Frozen on the way in, because this geometry now OUTLIVES the
+            # builder — it rides out on :class:`_InfillSupport` so the
+            # support measure can be re-run against a resolved route — and a
+            # retained reference that can still be written through is a way
+            # to make two measurements of one form disagree.  The sparse
+            # paths below are already read-only, inherited through
+            # ``InteriorStroke.points``.
+            walls = tuple(_frozen(path) for path in (*_wall_paths(regions), *reading.skipped_walls))
+            printed_walls[step.layer_index] = walls
+            if step.dense and position and not plan.layers[position - 1].dense:
+                skin_paths[step.layer_index] = tuple(stroke.points for stroke in layer_strokes)
             if not step.dense:
+                loosest = max(
+                    (
+                        proof.spacing_mm / bead_width
+                        for (layer_index, _island), proof in layer_proofs.items()
+                        if layer_index == step.layer_index and proof.spacing_mm is not None
+                    ),
+                    default=step.spacing_beads,
+                )
+                if loosest > step.spacing_beads:
+                    printed_spacing[step.layer_index] = loosest
+                unfilled = _unfilled_area(layer, (*reading.skipped, *layer_skipped))
+                if unfilled is not None:
+                    unfilled_areas[step.layer_index] = unfilled
                 sparse_paths[step.layer_index] = [
                     np.asarray(stroke.points, dtype=np.float64) for stroke in layer_strokes
                 ]
-                # The walls of skipped islands ride along: their rings still
-                # print, and a rib resuming above them must be measured against
-                # that clay rather than reported as drifting over nothing.
-                #
-                # Frozen on the way in, because this geometry now OUTLIVES the
-                # builder — it rides out on :class:`_InfillSupport` so the
-                # support measure can be re-run against a resolved route — and a
-                # retained reference that can still be written through is a way
-                # to make two measurements of one form disagree.  The sparse
-                # paths above are already read-only, inherited through
-                # ``InteriorStroke.points``.
-                wall_paths[step.layer_index] = [
-                    _frozen(path) for path in (*_wall_paths(regions), *reading.skipped_walls)
-                ]
+                wall_paths[step.layer_index] = list(walls)
+                if regions:
+                    sparse_regions[step.layer_index] = shapely.union_all(
+                        [region.polygon for region in regions]
+                    )
                 below = plan.layers[position - 1] if position else None
                 if (
                     below is not None
@@ -1065,7 +1175,17 @@ def _build_infill(
     # a resolved one to be appended to later would simply say everything twice.
     static_before_seam = _no_ribs_warnings(plan.layers)
     static_after_seam = (
-        *_ramp_bridge_warnings(plan.layers, bead_width=bead_width),
+        # Measured on the spacings that PRINTED, so a ramp island that fell
+        # back to the body spacing is bridged from the body spacing.
+        *_ramp_bridge_warnings(
+            tuple(
+                replace(step, spacing_beads=printed_spacing[step.layer_index])
+                if step.layer_index in printed_spacing
+                else step
+                for step in plan.layers
+            ),
+            bead_width=bead_width,
+        ),
         *_ramp_truncation_warnings(plan, settings),
         # The missed-lattice islands keep their own code and advice, and the
         # open-outline layers their own sentence; every other wall-only island
@@ -1093,6 +1213,12 @@ def _build_infill(
         seam=settings.seam,
         static_before_seam=static_before_seam,
         static_after_seam=static_after_seam,
+        printed_walls=MappingProxyType(dict(printed_walls)),
+        sparse_regions=MappingProxyType(dict(sparse_regions)),
+        cap_layers=settings.infill_cap_layers,
+        overlap_fraction=settings.overlap_fraction,
+        unfilled_areas=MappingProxyType(dict(unfilled_areas)),
+        skin_paths=MappingProxyType(dict(skin_paths)),
     )
     return InteriorResult(
         strokes=tuple(strokes),
@@ -1106,6 +1232,42 @@ def _build_infill(
         proofs=MappingProxyType(proofs),
         _support=support,
     )
+
+
+def _read_and_plan(
+    sliced: SlicedForm,
+    settings: WeaveSettings,
+    *,
+    modulated_by_address: Mapping[RingProvenance, ModulatedRing],
+) -> tuple[dict[int, _LayerRegions], _InfillPlan]:
+    """Read every filled layer, then plan the skins and ribs from those readings.
+
+    Every layer is READ before any is planned, because where the skins go is a
+    question about the form's shape — what clay sits above and below each
+    island — and a layer cannot answer it from its own outline alone.  The
+    skins measure that shape off the slice (see :func:`_skin_layers`); the
+    readings tell them which islands are fill islands at all.  The fill reuses
+    these readings rather than assembling twice, so the skins and the ribs
+    agree on which islands fill.  One function for both, so anything that asks
+    what a form's plan is gets the plan its interior was built from.
+    """
+
+    filled_layers = _filled_layers(sliced)
+    try:
+        readings = {
+            layer_index: _layer_regions(
+                sliced.layers[layer_index],
+                layer_index,
+                subject=_INFILL_SUBJECT,
+                bead_width=sliced.bead_width,
+                modulated_by_address=modulated_by_address,
+            )
+            for layer_index in filled_layers
+        }
+    except FillError as error:
+        raise InteriorError(str(error)) from error
+    roofs, floors = _skin_layers(sliced, readings, settings)
+    return (readings, _infill_layer_plan(filled_layers, settings, roofs=roofs, floors=floors))
 
 
 def _wall_paths(regions: Sequence[FillRegion]) -> list[FloatArray]:
@@ -1125,6 +1287,36 @@ def _wall_paths(regions: Sequence[FillRegion]) -> list[FloatArray]:
         for interior in region.polygon.interiors
     )
     return paths
+
+
+def _unfilled_area(
+    layer: SliceLayer,
+    records: Sequence[_SkippedIsland],
+) -> Polygon | MultiPolygon | None:
+    """The clay of one layer that printed no fill, or None where all of it did.
+
+    Each record's own area where it has one — the region that refused, the
+    pocket's chamber — and otherwise the island's clay in the slice, by the
+    record's island: a fold or a crossing hole is read before any region
+    exists.  An open outline bounds no clay and adds nothing.
+    """
+
+    areas: list[shapely.Geometry] = []
+    islands: dict[int, shapely.Geometry] | None = None
+    for record in records:
+        if record.open_gap_mm is not None:
+            continue
+        area: shapely.Geometry | None = record.area
+        if area is None:
+            if islands is None:
+                islands, _lines = _ring_islands(layer.rings)
+            area = islands.get(record.island_index)
+        if area is not None and not area.is_empty:
+            areas.append(area)
+    if not areas:
+        return None
+    merged = shapely.union_all(areas)
+    return merged if isinstance(merged, (Polygon, MultiPolygon)) else None
 
 
 def _shared_rows(
@@ -1186,30 +1378,40 @@ def _shared_rows(
 def _infill_layer_plan(
     filled_layers: tuple[int, ...],
     settings: WeaveSettings,
+    *,
+    roofs: frozenset[int],
+    floors: frozenset[int],
 ) -> _InfillPlan:
     """Decide, per printed layer, whether it is skin or rib and at what spacing.
 
-    Skins and the ramp are counted over the FILLED layers, never over the slice,
-    for the reason :func:`_filled_layers` gives.
+    WHERE the skins go is decided by the form, not counted here: ``roofs`` and
+    ``floors`` are the layer indices :func:`_skin_layers` read as having open
+    air above or below them (or a wall stepping in over them) within the
+    artist's cap and base counts.  On a form whose only roof is its top and
+    whose only floor is the bed, printed over its whole height, those are the
+    last ``infill_cap_layers`` and first ``infill_base_layers`` filled layers —
+    the positional rule this plan used to apply — so a straight form plans
+    exactly as it always did.  What the reading adds is every OTHER roof: the
+    shoulder under a narrower neck, a dome closing over the ribs.
 
-    The rules, in the order they resolve, because the artist's three counts can
-    ask for more layers than the form has:
+    The ramp is counted over the FILLED layers, never over the slice, for the
+    reason :func:`_filled_layers` gives.  The rules, in the order they resolve:
 
-    1.  The base skin claims the first ``infill_base_layers`` filled layers and
-        the cap skin the last ``infill_cap_layers``, each clamped to the layers
-        that exist.  Nothing is dropped when they overlap — DENSE WINS over
-        sparse, and a layer claimed by both is simply dense.  A one-layer form
-        with any skin asked for is that one dense layer, which is bed face and
-        show face at once and gets the spiral, exactly as a one-layer solid
-        does.  When the two skins meet, the form prints dense all the way
-        through: that is what was asked for, layer by layer, and it is the only
-        answer that honours both counts.
-    2.  The ramp acts only under a cap.  It takes the sparse layers immediately
-        below the cap, at most ``infill_ramp_layers`` of them, and stops early at
-        the base skin or at the bed — dense wins there too.
+    1.  A layer the reading names is dense.  Nothing is dropped when a roof and
+        a floor claim the same layer — DENSE WINS over sparse.  A one-layer
+        form with any skin asked for is that one dense layer, which is bed face
+        and show face at once and gets the spiral, exactly as a one-layer solid
+        does.
+    2.  A ramp acts only under a roof.  Under every roof layer whose own layer
+        below is ribbed, it takes the sparse layers immediately below, at most
+        ``infill_ramp_layers`` of them, and stops early at the next dense layer
+        or at the bed — dense wins there too.  Where two ramps would claim one
+        layer the tighter spacing wins; with skins dense per layer each ramp
+        stops at the dense layer above the next one down, so that is a guard
+        rather than a case any form reaches today.
     3.  Ramp spacing halves upward: the layer nearest the sparse body prints at
         S/2 and each layer above it halves again, so the layer directly under the
-        cap is the tightest.  A ramp with no room for every halving loses steps
+        roof is the tightest.  A ramp with no room for every halving loses steps
         from the TIGHT end, not the loose one: it still starts at S/2 above the
         body and still tightens every layer, it simply arrives less tight.  The
         alternative — keeping the tightest steps and dropping the gentle ones —
@@ -1231,53 +1433,70 @@ def _infill_layer_plan(
         simply arrives at the dense skin one step sooner.
 
     A ramp that could not run its full length is not silently fine, and it is
-    not silent either: the step it leaves under the cap is measured by
+    not silent either: the step it leaves under its roof is measured by
     :func:`_ramp_bridge_warnings` like every other step, and the truncation
-    itself is reported by :func:`_ramp_truncation_warnings`, which is why both
-    counts ride out of here on the :class:`_InfillPlan`.
+    itself is reported by :func:`_ramp_truncation_warnings`, which is why every
+    ramp's counts ride out of here on the :class:`_InfillPlan`.
     """
 
     total = len(filled_layers)
-    base_count = min(settings.infill_base_layers, total)
-    cap_count = min(settings.infill_cap_layers, total)
-    dense_positions = set(range(base_count)) | set(range(total - cap_count, total))
+    dense_positions = {
+        position
+        for position, layer_index in enumerate(filled_layers)
+        if layer_index in roofs or layer_index in floors
+    }
     dense_beads = 1.0 - settings.overlap_fraction
 
-    # The ROOM first, counted without reference to what was asked for, because
-    # the artist has to be told how much room the form left them and not merely
-    # what fitted.  It runs downward from the cap and stops at the base skin or
-    # the bed — dense wins there too.
-    room_positions: list[int] = []
-    if cap_count:
-        position = total - cap_count - 1
-        while position >= 0 and position not in dense_positions:
-            room_positions.append(position)
-            position -= 1
-    # Then the halvings, counted the same way: how many times the artist's
-    # spacing can halve and still stay looser than the dense skin it is heading
-    # for.  Counted by halving rather than by a logarithm because the comparison
-    # that matters is the one the spacing is built by, and because a dense
-    # spacing of zero — legal only at an overlap of 1.0, which the dense fill
-    # itself refuses — then simply yields no ramp instead of an infinity.
-    # It stops counting once it has reached the count asked for, which is all
-    # the caller can act on and which is also what keeps it finite: an overlap
-    # of exactly 1.0 puts the dense spacing at zero, and nothing halves past
-    # that.
+    # The halvings first: how many times the artist's spacing can halve and
+    # still stay looser than the dense skin it is heading for.  Counted by
+    # halving rather than by a logarithm because the comparison that matters is
+    # the one the spacing is built by, and because a dense spacing of zero —
+    # legal only at an overlap of 1.0, which the dense fill itself refuses —
+    # then simply yields no ramp instead of an infinity.  It stops counting
+    # once it has reached the count asked for, which is all the caller can act
+    # on and which is also what keeps it finite: an overlap of exactly 1.0 puts
+    # the dense spacing at zero, and nothing halves past that.  The same for
+    # every ramp, because it depends on the spacing and nothing else.
     halvings = 0
     step_beads = settings.infill_spacing_beads
     while halvings < settings.infill_ramp_layers and step_beads / 2.0 > dense_beads:
         step_beads /= 2.0
         halvings += 1
-    # Both truncations at once, and both from the TIGHT end, for rule 3's
-    # reason: the ramp keeps its gentle steps and arrives at the skin sooner.
-    ramp_positions = room_positions[:halvings]
-    # ``ramp_positions`` runs downward from the cap, so its first entry is the
-    # tightest layer and its last is the gentlest.  Dividing by a power of two is
-    # exact, which is what keeps every original rib on the halved lattice.
-    ramp_spacing = {
-        ramp_position: settings.infill_spacing_beads / float(2 ** (len(ramp_positions) - index))
-        for index, ramp_position in enumerate(ramp_positions)
-    }
+
+    ramps: list[_InfillRamp] = []
+    ramp_spacing: dict[int, float] = {}
+    # Topmost roof first, so the first ramp is the one under the form's top —
+    # the one :class:`_InfillPlan`'s single-ramp counts read.
+    for position in reversed(range(total)):
+        if filled_layers[position] not in roofs or position == 0 or position - 1 in dense_positions:
+            continue
+        # The ROOM, counted without reference to what was asked for, because
+        # the artist has to be told how much room the form left them and not
+        # merely what fitted.  It runs downward from the roof and stops at the
+        # next dense layer or the bed — dense wins there too.
+        room_positions: list[int] = []
+        below = position - 1
+        while below >= 0 and below not in dense_positions:
+            room_positions.append(below)
+            below -= 1
+        # Both truncations at once, and both from the TIGHT end, for rule 3's
+        # reason: the ramp keeps its gentle steps and arrives at the skin sooner.
+        ramp_positions = room_positions[:halvings]
+        # ``ramp_positions`` runs downward from the roof, so its first entry is
+        # the tightest layer and its last is the gentlest.  Dividing by a power
+        # of two is exact, which is what keeps every original rib on the halved
+        # lattice.
+        for index, ramp_position in enumerate(ramp_positions):
+            spacing = settings.infill_spacing_beads / float(2 ** (len(ramp_positions) - index))
+            ramp_spacing[ramp_position] = min(spacing, ramp_spacing.get(ramp_position, spacing))
+        ramps.append(
+            _InfillRamp(
+                under=filled_layers[room_positions[0]],
+                roof=filled_layers[position],
+                room=len(room_positions),
+                layers=tuple(filled_layers[ramp_position] for ramp_position in ramp_positions),
+            )
+        )
 
     return _InfillPlan(
         layers=tuple(
@@ -1293,12 +1512,259 @@ def _infill_layer_plan(
             for position in range(total)
         ),
         ramp_asked=settings.infill_ramp_layers,
-        ramp_room=len(room_positions),
         ramp_halvings=halvings,
-        ramp_layers=tuple(filled_layers[position] for position in ramp_positions),
-        under_cap=filled_layers[room_positions[0]] if room_positions else None,
+        ramps=tuple(ramps),
         dense_beads=dense_beads,
     )
+
+
+# How far a skin zone is opened before it counts, in bead widths: a quarter
+# bead in and back out drops every sliver narrower than half a coil.  That is
+# the wall's own reach — a bead laid on a centreline covers half a coil either
+# side of it — so a zone that thin is already under the wall above or beside it
+# and asks for no skin of its own.
+_SKIN_OPENING_BEADS = 0.25
+
+
+def _skin_layers(
+    sliced: SlicedForm,
+    readings: Mapping[int, _LayerRegions],
+    settings: WeaveSettings,
+) -> tuple[frozenset[int], frozenset[int]]:
+    """The filled layers the FORM asks to be roof skin, and those it asks to be floor.
+
+    Cap and Base layers used to mean the last and first so-many layers of the
+    PRINT.  That is right for a straight form printed whole and wrong for
+    anything else: a shoulder under a narrower neck, or a dome closing over the
+    ribs, put the neck's wall and the dome's crown straight over open lattice,
+    and a print range cut short of the top laid a roof under a top that was not
+    there.  Pete asked for forms with tops and "it doesn't work"; this is the
+    reading that makes it work.  For each fill island on layer ``i``, with
+    ``F`` the area its ribs go in (the island's material inset by half a bead)
+    and ``C_j`` layer ``j``'s clay footprint (its material, half a bead wider):
+
+    * ROOF (Cap layers ``N > 0``): ``F`` minus what ``C_{i+1} … C_{i+N}`` all
+      cover — the part of the island with open air above it within ``N``
+      layers.
+    * UNDER A WALL (Cap layers ``N > 0``): ``F`` within half a bead of the next
+      layer's wall rings — a wall stepping inward over the ribs.
+    * FLOOR (Base layers ``M > 0``): ``F`` minus what ``C_{i-1} … C_{i-M}`` all
+      cover — open air below within ``M`` layers.
+
+    Each zone is opened by :data:`_SKIN_OPENING_BEADS` and parts smaller than
+    one bead's stamp, ``pi * (bead / 2)^2``, are ignored — the same physical
+    floor :func:`_dominant_lobe` and :func:`_chamber_regions` use for what a
+    bead can draw at all.  A layer is a roof when any island keeps a roof or
+    under-wall zone, and a floor when any keeps a floor zone.
+
+    WHOLE LAYERS, as before: the thread, weld, proof and drift machinery all
+    expect one fill per island per layer, and skinning only the roof spot
+    while ribbing beside it would split an island into two fills the one-line
+    thread cannot yet join.
+
+    THE FORM, NOT THE PATTERN.  Every zone is read off the SLICED rings — the
+    shape of the form — and never off the patterned rings that print.  The
+    pattern moves a wall a few millimetres in and out on purpose, and it moves
+    it differently layer to layer: the number of waves round a ring flips as
+    the ring widens, and a half Twist alternates its lobes every layer.  Read
+    off the patterned rings, those jumps looked like walls stepping in, and
+    whole layers went dense for them — Pete's drum on layers 10-12 and 14, a
+    sphere's 46 and 48, the tall tumbler at the layers where its wave count
+    flips, and a straight cylinder at Twist 0.5 on every layer — while the form
+    under the pattern did not step there at all.  A skin is for a top the form has,
+    so the form is what is asked.  The readings decide only WHICH islands of a
+    layer are fill islands (an island the reading could not take prints wall
+    alone and asks for no skin); the island's provenance names the same island
+    in the slice.  So the plan does not depend on the pattern at all, and a
+    form whose sections never step plans exactly as the positional rule did,
+    whatever pattern it wears.
+
+    THE WHOLE FORM, NOT THE RANGE.  Layers in the print range and layers above
+    a range cut short (:attr:`SlicedForm.layers_above`) answer alike, with
+    their sliced rings.  Past the form's last source layer, and below the bed,
+    there is no clay.  So a straight form printed whole reads exactly the
+    positional rule — its top ``N`` layers have nothing above them and its
+    first ``M`` the bed below — and prints as it did.
+    """
+
+    cap = settings.infill_cap_layers
+    base = settings.infill_base_layers
+    if not cap and not base:
+        return (frozenset(), frozenset())
+    bead_width = sliced.bead_width
+    half_bead = bead_width / 2.0
+    opening = bead_width * _SKIN_OPENING_BEADS
+    stamp = math.pi * half_bead**2
+    layer_total = len(sliced.layers)
+    above = sliced.layers_above
+    # The first index with no source layer at all: everything from here up is
+    # open air, which is what makes a form's own top a roof.
+    source_top = layer_total + len(above)
+    empty = Polygon()
+    clay_cache: dict[int, shapely.Geometry] = {}
+    centreline_cache: dict[int, shapely.Geometry] = {}
+
+    def source_rings(layer_index: int) -> tuple[Ring, ...]:
+        if layer_index >= layer_total:
+            return above[layer_index - layer_total].rings
+        return sliced.layers[layer_index].rings
+
+    def clay(layer_index: int) -> shapely.Geometry:
+        if layer_index < 0 or layer_index >= source_top:
+            return empty
+        cached = clay_cache.get(layer_index)
+        if cached is not None:
+            return cached
+        material = _ring_material(source_rings(layer_index))
+        footprint = empty if material.is_empty else material.buffer(half_bead)
+        shapely.prepare(footprint)
+        clay_cache[layer_index] = footprint
+        return footprint
+
+    def centrelines(layer_index: int) -> shapely.Geometry:
+        # The closed wall rings of a layer's slice, as lines.
+        if layer_index < 0 or layer_index >= source_top:
+            return empty
+        cached = centreline_cache.get(layer_index)
+        if cached is not None:
+            return cached
+        lines = [LineString(ring.points) for ring in source_rings(layer_index) if ring.closed]
+        centreline = empty if not lines else shapely.union_all(lines)
+        shapely.prepare(centreline)
+        centreline_cache[layer_index] = centreline
+        return centreline
+
+    def keeps(zone: shapely.Geometry) -> bool:
+        if zone.is_empty:
+            return False
+        opened = zone.buffer(-opening).buffer(opening)
+        return any(part.area >= stamp for part in _polygon_parts(opened))
+
+    def under_wall(fill: shapely.Geometry, layer_index: int) -> shapely.Geometry:
+        # A shortcut, then the band.  A centreline that never enters the fill
+        # area can still lie within half a bead of it, but what it reaches is
+        # dropped by the opening: any quarter-bead disk inside the band has a
+        # centreline point within a quarter bead of its centre — inside the
+        # disk, so inside the fill — unless the centreline is a loop closing
+        # round the disk.  That one exception is a fill narrower than a coil
+        # with the next layer's wall looped round it closer than half a bead
+        # all the way, so the whole fill sits under that wall's own bead; that
+        # is not a wall stepping in over ribs, and skipping it is what the rule
+        # means anyway.  So the costly band is built only where the wall above
+        # really crosses into the ribs.
+        centreline = centrelines(layer_index)
+        if centreline.is_empty or not centreline.intersects(fill):
+            return empty
+        return fill.intersection(centreline.buffer(half_bead))
+
+    def open_air(fill: shapely.Geometry, window: range) -> shapely.Geometry:
+        # What of ``fill`` no layer in ``window`` covers: ``F`` less the
+        # intersection of the footprints, computed as the union of ``F`` less
+        # each footprint — the same set, without overlaying near-identical
+        # footprints against each other, which is what made it slow.  A window
+        # that runs past the form or under the bed has a layer with no clay in
+        # it, so the whole fill is open air.
+        if window.start < 0 or window.stop > source_top or window.start >= window.stop:
+            return fill
+        pieces: list[shapely.Geometry] = []
+        for layer_index in window:
+            footprint = clay(layer_index)
+            if footprint.is_empty:
+                return fill
+            if not footprint.covers(fill):
+                pieces.append(fill.difference(footprint))
+        return shapely.union_all(pieces) if pieces else empty
+
+    roofs: set[int] = set()
+    floors: set[int] = set()
+    for layer_index, reading in readings.items():
+        if not reading.regions:
+            continue
+        islands, _lines = _ring_islands(sliced.layers[layer_index].rings)
+        fills = [
+            fill
+            for fill in (
+                islands[region.island_index].buffer(-half_bead)
+                for region in reading.regions
+                if region.island_index in islands
+            )
+            if not fill.is_empty
+        ]
+        if not fills:
+            continue
+        if cap and any(
+            keeps(open_air(fill, range(layer_index + 1, layer_index + cap + 1)))
+            or keeps(under_wall(fill, layer_index + 1))
+            for fill in fills
+        ):
+            roofs.add(layer_index)
+        if base and any(
+            keeps(open_air(fill, range(layer_index - base, layer_index))) for fill in fills
+        ):
+            floors.add(layer_index)
+    return (frozenset(roofs), frozenset(floors))
+
+
+def _ring_islands(
+    rings: Sequence[Ring],
+) -> tuple[dict[int, shapely.Geometry], tuple[LineString, ...]]:
+    """The clay each outline of some sliced rings encloses, keyed by its island.
+
+    Read, never repaired, the way :func:`_layer_regions` reads.  A ring that
+    crosses itself counts as the regions its linework encloses.  A hole goes to
+    the smallest outline that wholly contains it — the assembler's own rule —
+    and a hole no outline wholly holds removes nothing, because which clay it
+    bounds is exactly what such a slice cannot say.  Keyed by the outline's own
+    island index, the provenance a fill region carries, so a region names its
+    island in the slice without a second opinion about where it is.
+
+    An open ring bounds no region, so it comes back apart, as its centreline:
+    buffered by the caller, that is the wall's own footprint, the only clay it
+    lays.
+    """
+
+    outers: dict[int, shapely.Geometry] = {}
+    holes: list[shapely.Geometry] = []
+    lines: list[LineString] = []
+    for ring in rings:
+        if not ring.closed:
+            lines.append(LineString(ring.points))
+            continue
+        polygon = Polygon(ring.points[:-1])
+        if not polygon.is_valid:
+            polygon = shapely.union_all(list(_polygon_parts(shapely.make_valid(polygon))))
+        if polygon.is_empty:
+            continue
+        if ring.is_hole:
+            holes.append(polygon)
+        else:
+            outers[ring.provenance.island_index] = polygon
+    owned: dict[int, list[shapely.Geometry]] = {index: [] for index in outers}
+    for hole in holes:
+        candidates = [
+            (outer.area, index) for index, outer in outers.items() if outer.contains(hole)
+        ]
+        if candidates:
+            owned[min(candidates)[1]].append(hole)
+    islands = {
+        index: outer.difference(shapely.union_all(owned[index])) if owned[index] else outer
+        for index, outer in outers.items()
+    }
+    return (islands, tuple(lines))
+
+
+def _ring_material(rings: Sequence[Ring]) -> shapely.Geometry:
+    """The clay some sliced rings enclose, all islands and open walls together.
+
+    :func:`_ring_islands`' reading, unioned: outlines less the holes they
+    wholly hold, plus each open ring's centreline.
+    """
+
+    islands, lines = _ring_islands(rings)
+    pieces: list[shapely.Geometry] = [*islands.values(), *lines]
+    if not pieces:
+        return Polygon()
+    return shapely.union_all(pieces)
 
 
 def _infill_fill_for_layer(
@@ -1540,53 +2006,97 @@ def _ramp_truncation_warnings(
     reported "(no warnings)".  The artist set a control to 3, got 1, and heard
     nothing.  At 4.0 and 6.0 beads, 3, 5 and 8 all yield two.
 
-    Silent only when there is no cap at all: a ramp exists to run INTO a dense
-    skin, so with ``infill_cap_layers`` at zero there was never a ramp to
-    truncate and the count is simply not in play.  Saying otherwise would put a
-    warning on every print at the shipped defaults, which ship with a ramp count
-    of 3 and no cap.
+    Silent only when there is no roof with ribs under it: a ramp exists to run
+    INTO a dense skin, so with ``infill_cap_layers`` at zero there was never a
+    ramp to truncate and the count is simply not in play.  Saying otherwise
+    would put a warning on every print at the shipped defaults, which ship with
+    a ramp count of 3 and no cap.
+
+    One sentence PER CAUSE AND COUNT.  A form with a shoulder has a roof under
+    the neck as well as at the top, a stepped drum has one under every step, and
+    each ramp runs out of room against its own next dense layer down.  Ramps cut
+    short for the same reason to the same count are one fact about the form, so
+    they are said once, naming every layer they sit on and the roof each runs
+    into: on a drum whose four ramps sit at layers 1, 5, 9 and 13 the artist
+    read four identical sentences, which asks them to compare four lines to
+    learn there was one thing to know.  The ramp layers and the roofs are
+    named apart — "layers 1, 5, 9 and 13, under the roofs at 2, 6, 10 and 14"
+    — because a list of ramp layers read as "these roofs" names the wrong
+    layers.  Ramps cut short to different counts, or by different things, stay
+    separate sentences, because the artist can act on them differently.  A
+    single ramp, and a form whose only roof is its top, says exactly the one
+    sentence it always said.
 
     It is :data:`~clayline.weave_models.FormWarningCode.INFILL_RAMP_BRIDGE`
     because it is the ramp's own code and this is the ramp's own count.  An
     artist filtering for "what happened to my ramp" wants both sentences.
     """
 
-    if plan.under_cap is None or plan.ramp_built >= plan.ramp_asked:
-        return ()
-    # The two truncations read differently to a potter, so they are said
-    # differently, and a form can be short of BOTH — the sentence names the one
-    # that bit first.  ``ramp_halvings`` stops counting at the asked-for count,
-    # so it being under that count is itself the proof the floor was reached.
-    if plan.ramp_halvings <= plan.ramp_room and plan.ramp_halvings < plan.ramp_asked:
-        reason = (
-            f"halving {_a_bead_phrase(settings.infill_spacing_beads)} rib spacing reaches the "
-            f"{plan.dense_beads:g}-bead spacing of the dense skin above after "
-            f"{_count_phrase(plan.ramp_halvings, 'halving')}, and a ramp does not tighten past "
-            "the skin it runs into. A longer ramp needs a looser rib spacing to halve down "
-            "from, which widens the first step in exchange"
+    # (cause, ramp layers printed, room left or 0) -> the band each such ramp
+    # sits on.  The room only keys the layer-short cause, where it IS the count
+    # printed; the halving cause says nothing about room, so ramps with
+    # different room still share its sentence.
+    groups: dict[tuple[str, int, int], list[tuple[int, int, int]]] = {}
+    for ramp in plan.ramps:
+        if ramp.built >= plan.ramp_asked:
+            continue
+        # The two truncations read differently to a potter, so they are said
+        # differently, and a ramp can be short of BOTH — the sentence names the
+        # one that bit first.  ``ramp_halvings`` stops counting at the asked-for
+        # count, so it being under that count is itself the proof the floor was
+        # reached.
+        halved = plan.ramp_halvings <= ramp.room and plan.ramp_halvings < plan.ramp_asked
+        first = min(ramp.layers) if ramp.layers else ramp.under
+        key = ("halved", ramp.built, 0) if halved else ("room", ramp.built, ramp.room)
+        groups.setdefault(key, []).append((first, ramp.under, ramp.roof))
+
+    warnings: list[FormWarning] = []
+    for (cause, built, room), found in groups.items():
+        ramps = sorted(found)
+        bands = [(first, last) for first, last, _roof in ramps]
+        several = len(bands) > 1
+        if cause == "halved":
+            reason = (
+                f"halving {_a_bead_phrase(settings.infill_spacing_beads)} rib spacing reaches the "
+                f"{plan.dense_beads:g}-bead spacing of the dense "
+                f"{'skins' if several else 'skin'} above after "
+                f"{_count_phrase(plan.ramp_halvings, 'halving')}, and a ramp does not tighten past "
+                "the skin it runs into. A longer ramp needs a looser rib spacing to halve down "
+                "from, which widens the first step in exchange"
+            )
+        else:
+            reason = (
+                f"only {_count_phrase(room, 'sparse layer')} "
+                f"{'sits' if room == 1 else 'sit'} between "
+                f"{'each roof' if several else 'the cap'} and the layers below it"
+            )
+        asked = _count_phrase(plan.ramp_asked, "ramp layer")
+        if several:
+            # The ramps and the roofs they run into are different layers, and
+            # both are named: the list is where the ramps sit, and the roofs
+            # are what each one is short of reaching.
+            roofs = _and_list([str(roof + 1) for _first, _last, roof in ramps])
+            message = (
+                f"{_layers_list_phrase(bands)}, under the roofs at {roofs}: you asked for "
+                f"{asked} and each printed {built} — {reason}."
+            )
+        else:
+            message = (
+                f"{_layer_phrase(*bands[0])}: you asked for {asked} and this form printed "
+                f"{built} — {reason}."
+            )
+        warnings.append(
+            FormWarning(
+                code=FormWarningCode.INFILL_RAMP_BRIDGE,
+                severity=Severity.WARNING,
+                message=message,
+                layer_span=LayerSpan(
+                    first_layer=min(first for first, _last in bands),
+                    last_layer=max(last for _first, last in bands),
+                ),
+            )
         )
-    else:
-        reason = (
-            f"only {_count_phrase(plan.ramp_room, 'sparse layer')} "
-            "sits between the cap and the layers below it"
-            if plan.ramp_room == 1
-            else f"only {_count_phrase(plan.ramp_room, 'sparse layer')} "
-            "sit between the cap and the layers below it"
-        )
-    first = min(plan.ramp_layers) if plan.ramp_layers else plan.under_cap
-    last = plan.under_cap
-    return (
-        FormWarning(
-            code=FormWarningCode.INFILL_RAMP_BRIDGE,
-            severity=Severity.WARNING,
-            message=(
-                f"{_layer_phrase(first, last)}: you asked for "
-                f"{_count_phrase(plan.ramp_asked, 'ramp layer')} and this form printed "
-                f"{plan.ramp_built} — {reason}."
-            ),
-            layer_span=LayerSpan(first_layer=first, last_layer=last),
-        ),
-    )
+    return tuple(warnings)
 
 
 def _off_lattice_warnings(
@@ -1783,6 +2293,10 @@ def _drift_warnings(
     * a DENSE skin over sparse ribs — skipped.  The cap covers its whole region
       and most of it is deliberately over the gaps between ribs; that step is
       bridging, not drift, and :func:`_ramp_bridge_warnings` measures it.
+      Where the layer below printed NO ribs under the skin — an island as wall
+      alone, a pocket left empty — there are no gaps to bridge but the whole
+      island, and :func:`_skin_over_unfilled_warnings` measures that under
+      this same code.
 
     THE THRESHOLD IS ``bead_width / 2``, FLAT, FOR EVERY PAIR.  An earlier round
     handed a tightening pair "the offset its own halving builds in" on top of
@@ -1914,6 +2428,291 @@ def _drift_warnings(
     )
 
 
+def _wall_over_ribs_warnings(
+    support: _InfillSupport,
+    *,
+    weld_paths: Mapping[int, Sequence[FloatArray]] = _NO_WELDS,
+) -> tuple[FormWarning, ...]:
+    """Warn wherever a wall steps in past the wall below and lands off the clay.
+
+    The drift check asks whether the RIBS stack.  Nothing asked the same of the
+    wall above them: on a closing dome or under a shoulder the wall steps inward
+    a little more each layer, off the wall below and onto the lattice, and a
+    bead laid across the gaps between ribs has open air under part of its
+    width.  A cap skin under that wall is what :func:`_skin_layers` lays; this
+    is what says so when there is none, or not enough.
+
+    For each pair — a SPARSE layer below, the next printed layer above it,
+    whatever that one fills with — the upper layer's wall centrelines are
+    sampled at the drift check's own interval.  Only samples inside the lower
+    layer's fill area and more than half a bead from its walls are judged:
+    within half a bead the coil sits at least half on the wall below, and a
+    wall stepping OUT past the clay is an overhang the wall's own slope rule
+    already governs.  Each
+    judged sample's distance to the clay below — walls, sparse ribs, and the
+    welds the emitter actually laid — is measured centre to centre against
+    the WALL's lean limit, ``bead * (1 - overlap)``, the same number the
+    overhang check holds every wall to.  Judged by the fill's half bead
+    instead, a twisted wave whose lobes alternate layer to layer warned on
+    every layer of a straight cylinder at 3.98 mm while the overhang check,
+    at 4.0, rightly said nothing: one wall, two rules.
+
+    A STRETCH AT LEAST ONE COIL LONG, not a stray sample.  A bead shorter than
+    its own width over a gap is carried by the clay at both its ends — the
+    reason the ribs are allowed to bridge :data:`_MAX_BRIDGE_BEADS` widths at
+    all — and the roof skin under a wall ignores a zone smaller than one
+    coil's stamp for the same reason.  Fired on any one sample, it warned on
+    stretches a few samples long that no skin would ever be laid under, and
+    sent a potter to a control that could not change them.  So a band warns
+    only where consecutive unsupported samples along one wall span a coil's
+    width, and the distance it names is the worst on such a stretch.
+    Measured at Cap 2 with Pete's wave on, that drops the drum's layer 9 and
+    the sphere's layers 40, 43 and 49, and keeps the sphere's 45 and 47, where
+    more than a coil of wall lands off the clay.
+
+    THE WORDS SAY WHAT WAS MEASURED.  The number is how far the coil's centre
+    lands from the clay's, not a gap; the stretch has too little under it,
+    not nothing; and whether ribs, a slot between two walls or open fill lie
+    under it is not claimed.  The lever is offered only where it works: with
+    Cap layers at 0, a cap lays a roof skin under a layer where the form
+    itself steps in.  With a cap already set, the form's real steps already
+    have their skins, and what is left — a step the pattern makes, a stretch
+    the skin's own floor let go — has no control that moves it, so the
+    sentence stops at the measurement.
+
+    Route-resolved for the drift family's reason: a weld is clay the wall above
+    can land on, and only the emitted route says where the welds went.
+    Warnings, never refusals, banded on plan position like every other family.
+    """
+
+    plan = support.plan
+    half_bead = support.bead_width / 2.0
+    lean_limit = support.bead_width * (1.0 - support.overlap_fraction)
+    interval = support.bead_width * _SUPPORT_SAMPLE_BEADS
+    violating: list[tuple[int, int, float]] = []
+    for position, (below, above) in enumerate(pairwise(plan), start=1):
+        if below.dense:
+            # A dense layer covers its region; a wall landing on it is on clay.
+            continue
+        region = support.sparse_regions.get(below.layer_index)
+        upper = support.printed_walls.get(above.layer_index, ())
+        if region is None or region.is_empty or not upper:
+            continue
+        shapely.prepare(region)
+        below_walls = tuple(support.wall_paths.get(below.layer_index, ()))
+        walls = MultiLineString(list(below_walls)) if below_walls else None
+        if walls is not None:
+            shapely.prepare(walls)
+        lower_paths = [
+            *support.sparse_paths.get(below.layer_index, ()),
+            *weld_paths.get(below.layer_index, ()),
+            *below_walls,
+        ]
+        if not lower_paths:
+            # Only reachable for a hand-built context: a printed layer always
+            # has at least its wall.  Fail quiet rather than guess.
+            continue
+        lower = MultiLineString(list(lower_paths))
+        shapely.prepare(lower)
+        worst: float | None = None
+        for path in upper:
+            if len(path) < 2:
+                continue
+            coordinates = shapely.get_coordinates(
+                shapely.segmentize(LineString(np.asarray(path, dtype=np.float64)), interval)
+            )
+            samples = shapely.points(coordinates)
+            judged = shapely.contains(region, samples)
+            if walls is not None:
+                judged &= ~shapely.dwithin(walls, samples, half_bead)
+            if not judged.any():
+                continue
+            # Only the samples that already failed pay for a distance, as in
+            # the drift check: the warning names a measured millimetre.
+            off = judged.copy()
+            off[judged] = ~shapely.dwithin(lower, samples[judged], lean_limit)
+            if not off.any():
+                continue
+            distances = np.zeros(len(samples), dtype=np.float64)
+            distances[off] = shapely.distance(lower, samples[off])
+            stretch = _worst_off_clay_stretch(
+                coordinates,
+                off,
+                distances,
+                interval=interval,
+                minimum=support.bead_width,
+            )
+            if stretch is not None and (worst is None or stretch > worst):
+                worst = stretch
+        if worst is not None:
+            violating.append((position, above.layer_index, worst))
+
+    lever = (
+        " Cap layers above 0 lays a roof skin under a layer where the form itself steps in."
+        if support.cap_layers == 0
+        else ""
+    )
+    return tuple(
+        FormWarning(
+            code=FormWarningCode.WALL_OVER_RIBS,
+            severity=Severity.WARNING,
+            message=(
+                f"{_layer_phrase(first, last)}: the wall steps in past the wall below and lands "
+                f"up to {worst:.2f} mm off the clay under it — past the {lean_limit:.2f} mm a "
+                "coil can sit off the coil below and still rest on it, so that stretch has too "
+                f"little clay under it.{_worst_phrase(first, last, worst_layer)}"
+                f"{lever}"
+            ),
+            layer_span=LayerSpan(first_layer=first, last_layer=last),
+        )
+        for first, last, worst, worst_layer in _collapse_bands(violating)
+    )
+
+
+def _worst_off_clay_stretch(
+    coordinates: np.ndarray,
+    off: np.ndarray,
+    distances: np.ndarray,
+    *,
+    interval: float,
+    minimum: float,
+) -> float | None:
+    """The worst distance on any off-clay stretch of one wall at least ``minimum`` long.
+
+    ``coordinates`` are one wall's samples in path order and ``off`` marks the
+    ones landing more than half a bead from the clay below.  A stretch is a run
+    of consecutive marked samples; its length is the wall between its first and
+    last sample plus one ``interval``, the share of wall each end sample stands
+    for.  A closed wall's run may cross its own start, so the two ends of a
+    closed path join into one run.  None when no stretch is long enough.
+    """
+
+    count = len(off)
+    if count == 0 or not off.any():
+        return None
+    steps = np.linalg.norm(np.diff(coordinates, axis=0), axis=1)
+    closed = count > 2 and bool(np.array_equal(coordinates[0], coordinates[-1]))
+    if closed and off.all():
+        return float(distances.max()) if float(steps.sum()) >= minimum else None
+    # Walk the runs.  On a closed wall the walk starts just after a sample that
+    # is on clay, so no run is split by where the path happens to begin; the
+    # repeated closing sample is the start sample again and is left out.
+    order = np.arange(count - 1 if closed else count)
+    if closed:
+        start = int(np.flatnonzero(~off[: count - 1])[0]) + 1
+        order = np.roll(order, -start)
+    worst: float | None = None
+    length = 0.0
+    run_worst = 0.0
+    previous: int | None = None
+    for index in (*order.tolist(), None):
+        if index is not None and off[index]:
+            if previous is not None and off[previous]:
+                # Consecutive samples: the wall between them, wrapping at the
+                # start of a closed path through its closing segment.
+                low, high = sorted((previous, index))
+                length += float(steps[low]) if high - low == 1 else float(steps[-1])
+            else:
+                length = 0.0
+                run_worst = 0.0
+            run_worst = max(run_worst, float(distances[index]))
+        elif previous is not None and off[previous]:
+            if length + interval >= minimum and (worst is None or run_worst > worst):
+                worst = run_worst
+        previous = index
+    return worst
+
+
+def _skin_over_unfilled_warnings(
+    support: _InfillSupport,
+    *,
+    weld_paths: Mapping[int, Sequence[FloatArray]] = _NO_WELDS,
+) -> tuple[FormWarning, ...]:
+    """Warn wherever a dense skin lands on a layer that printed no fill under it.
+
+    A skin over ribs bridges the gaps between them, and how far is the ramp's
+    question (:func:`_ramp_bridge_warnings`), asked of the spacing that
+    printed.  A skin over an island that printed as wall alone, or over a
+    pocket left empty, bridges the whole island, and nobody asked: the drift
+    check skips a dense layer over sparse ones and leaves that step to the
+    ramp, and the ramp reads spacings, so a layer with no fill at all passed
+    as ribbed.  Measured on Pete's drum: layer 6 laid dense over layer 5,
+    which printed as wall alone, and 83% of that skin sat more than half a
+    coil from any clay — worst 11.9 mm — in silence, where the old plan's
+    sparse layer 6 had said so.
+
+    For each dense layer laid straight over a sparse one, the skin's own fill
+    is sampled at the drift check's interval, and only the samples over the
+    lower layer's unfilled clay are judged — over its ribs the bridge rule
+    owns the answer.  Each is measured centre to centre against the clay below
+    — walls, ribs, and the welds the emitter laid — and a band warns when the
+    worst is more than half a bead, the support contract every bead is held to.
+
+    It is :data:`~clayline.weave_models.FormWarningCode.INFILL_DRIFT`, not the
+    ramp's code: it is the drift check's own measurement and threshold, it is
+    the family the same spot warned under when that layer was ribbed, and the
+    ramp's lever — a tighter rib spacing — does nothing for an island with no
+    ribs.  Route-resolved for the drift family's reason: a weld is clay.  A
+    sparse layer cannot sit between two such pairs, so each band is one layer,
+    and the sentence names the layer under it.
+    """
+
+    plan = support.plan
+    half_bead = support.bead_width / 2.0
+    interval = support.bead_width * _SUPPORT_SAMPLE_BEADS
+    violating: list[tuple[int, int, float]] = []
+    under: dict[int, int] = {}
+    for position, (below, above) in enumerate(pairwise(plan), start=1):
+        if below.dense or not above.dense:
+            continue
+        area = support.unfilled_areas.get(below.layer_index)
+        skin = support.skin_paths.get(above.layer_index, ())
+        if area is None or area.is_empty or not skin:
+            continue
+        samples = _support_samples(skin, interval)
+        if samples.size == 0:
+            continue
+        shapely.prepare(area)
+        samples = samples[shapely.contains(area, samples)]
+        lower_paths = [
+            *support.sparse_paths.get(below.layer_index, ()),
+            *weld_paths.get(below.layer_index, ()),
+            *support.wall_paths.get(below.layer_index, ()),
+        ]
+        if samples.size == 0 or not lower_paths:
+            continue
+        lower = MultiLineString(list(lower_paths))
+        shapely.prepare(lower)
+        supported = shapely.dwithin(lower, samples, half_bead)
+        if bool(supported.all()):
+            continue
+        worst = float(shapely.distance(lower, samples[~supported]).max())
+        violating.append((position, above.layer_index, worst))
+        under[above.layer_index] = below.layer_index
+
+    warnings: list[FormWarning] = []
+    for first, last, worst, worst_layer in _collapse_bands(violating):
+        landing = (
+            f"lands on layer {under[first] + 1}, which printed as wall alone there"
+            if first == last
+            else "lands where the layer below printed as wall alone"
+        )
+        warnings.append(
+            FormWarning(
+                code=FormWarningCode.INFILL_DRIFT,
+                severity=Severity.WARNING,
+                message=(
+                    f"{_layer_phrase(first, last)}: the dense skin {landing}, so the skin bridges "
+                    f"open air — it lands up to {worst:g} mm from the clay below, more than half "
+                    f"of a {support.bead_width:g} mm bead, so those beads sit less than half "
+                    f"supported.{_worst_phrase(first, last, worst_layer)}"
+                ),
+                layer_span=LayerSpan(first_layer=first, last_layer=last),
+            )
+        )
+    return tuple(warnings)
+
+
 def _worst_phrase(first_layer: int, last_layer: int, worst_layer: int) -> str:
     """Name where in a band the worst reading was, when the band has a where.
 
@@ -2007,6 +2806,26 @@ def _layer_phrase(first_layer: int, last_layer: int) -> str:
     return f"layers {first_layer + 1}-{last_layer + 1}"
 
 
+def _layers_list_phrase(bands: Sequence[tuple[int, int]]) -> str:
+    """Name several layer bands in one breath: ``layers 1, 5, 9 and 13``.
+
+    Counted the way :func:`_layer_phrase` counts, from one, and a band of more
+    than one layer reads ``4-5`` in place.  Two or more bands only — one band is
+    :func:`_layer_phrase`'s sentence, and a list of one would read "layers 5".
+    """
+
+    names = [
+        str(first + 1) if first == last else f"{first + 1}-{last + 1}" for first, last in bands
+    ]
+    return f"layers {_and_list(names)}"
+
+
+def _and_list(names: Sequence[str]) -> str:
+    """Join two or more names the way a sentence lists them: ``2, 6, 10 and 14``."""
+
+    return f"{', '.join(names[:-1])} and {names[-1]}"
+
+
 def _count_phrase(count: int, noun: str) -> str:
     """Say ``count`` of ``noun`` so the noun agrees with the number.
 
@@ -2098,6 +2917,12 @@ class _SkippedIsland:
     # telling a potter their island printed wall-only when most of it carries
     # fill would send them hunting a fill that is right there on the bed.
     pocket: bool = False
+    # The clay that printed no fill: the island's region, or the pocket's
+    # chamber.  None where the skip was read before any region existed — a
+    # fold, a crossing hole — and the builder looks the island up in the
+    # slice instead; an open outline bounds no area at all.  It is what
+    # :func:`_skin_over_unfilled_warnings` measures a skin above against.
+    area: Polygon | MultiPolygon | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2469,6 +3294,7 @@ def _fill_layer_strokes(
     grid_anchor: float | None,
     dense: bool,
     skip_off_lattice: bool,
+    fallback_spacing: float | None = None,
 ) -> tuple[
     tuple[InteriorStroke, ...],
     dict[tuple[int, int], InteriorProof],
@@ -2498,7 +3324,21 @@ def _fill_layer_strokes(
     partially filled island whose own chamber fill still refused
     (``pocket``).  Those print wall-only rather than refusing the print; the
     builders warn about them per band and refuse only when nothing anywhere
-    fills.
+    fills.  Every record carries the AREA that printed no fill — the island's
+    region, or the pocket's chamber — so a skin laid over it can be measured.
+
+    ``fallback_spacing`` is a ramp layer's body spacing.  A ramp tightens the
+    ribs under a roof, and a tighter spacing reaches deeper insets: a
+    concentric island that rings happily at the body spacing can split at the
+    halved one and refuse.  Measured on Pete's half2 job (fit 30, 3.5/1.05,
+    Concentric, a 3-layer ramp), ramp layers 13 and 16 split after a 7 mm inset
+    and printed as wall alone, where 0.5.1 had filled every layer.  An island that refuses at the
+    ramp's spacing is therefore asked again at the body spacing, and fills
+    there if it can — that layer simply does not tighten for that island, and
+    its proof records the spacing it really printed at.  A tighter spacing
+    must never cost an island the fill the body spacing gives it.  A lattice
+    MISS is not retried: the body lattice is a subset of the halved one, so an
+    island no halved rib reaches no body rib reaches either.
     """
 
     # Caller bugs stay loud.  The per-island catch below exists for geometry —
@@ -2524,7 +3364,13 @@ def _fill_layer_strokes(
     strokes: list[InteriorStroke] = []
     proofs: dict[tuple[int, int], InteriorProof] = {}
     skipped: list[_SkippedIsland] = []
-    for position, region in enumerate(regions):
+
+    def fill_island(
+        region: FillRegion,
+        island_spacing: float,
+    ) -> tuple[tuple[FloatArray, ...], list[Polygon], list[_SkippedIsland]] | _SkippedIsland:
+        """One island at one spacing: its paths, targets and pockets, or its skip."""
+
         subject_prefix = (
             f"layer {layer_index + 1} interior island {_public_island(region.island_index)} "
         )
@@ -2537,15 +3383,13 @@ def _fill_layer_strokes(
         # recursive: a spiral that splits at a DEEPER inset inside a chamber
         # refuses that chamber (the primitive's honest refusal), and the
         # per-chamber catch turns that into a pocket skip.
-        paths: tuple[FloatArray, ...] | None = None
-        # The polygons the fill was actually clipped to, in the order the
-        # strokes came off them.  The weld rides one of their inset boundaries
-        # home to the wall, and only the target a rib was drawn in holds that
-        # rib's end — see :class:`InteriorProof`.
-        targets: list[Polygon] = []
         chambers = _chamber_regions(region.polygon, first_inset=first_inset)
         if chambers is not None:
             chamber_paths: list[FloatArray] = []
+            # The polygons the fill was actually clipped to, in the order the
+            # strokes came off them.  The weld rides one of their inset
+            # boundaries home to the wall, and only the target a rib was drawn
+            # in holds that rib's end — see :class:`InteriorProof`.
             chamber_targets: list[Polygon] = []
             pockets: list[_SkippedIsland] = []
             for chamber in chambers:
@@ -2554,7 +3398,7 @@ def _fill_layer_strokes(
                         chamber,
                         fill_kind=fill_kind,
                         first_inset=first_inset,
-                        spacing=spacing,
+                        spacing=island_spacing,
                         angle_degrees=angle,
                         grid_anchor=grid_anchor,
                         island_index=_public_island(region.island_index),
@@ -2574,6 +3418,7 @@ def _fill_layer_strokes(
                             message=str(error),
                             cause=error,
                             pocket=True,
+                            area=chamber,
                         )
                     )
                 else:
@@ -2584,63 +3429,78 @@ def _fill_layer_strokes(
                 # refused are pocket skips: the warning family words them as a
                 # pocket printing wall-only, never the island, because most of
                 # the island's clay carries fill.
-                paths = tuple(chamber_paths)
-                targets = chamber_targets
-                skipped.extend(pockets)
+                return (tuple(chamber_paths), chamber_targets, pockets)
             # else: NO chamber fills, and the island skips exactly as it did
             # before decomposition existed — the plain call below refuses with
             # the primitive's own island-level split message, so one record
             # speaks for the island instead of a recital of its pockets.
-        if paths is None:
-            try:
-                paths = fill_region(
-                    region.polygon,
-                    fill_kind=fill_kind,
-                    first_inset=first_inset,
-                    spacing=spacing,
-                    angle_degrees=angle,
-                    grid_anchor=grid_anchor,
-                    island_index=_public_island(region.island_index),
-                    subject=f"layer {layer_index + 1} interior island",
-                    tolerance=tolerance,
-                )
-            except OffLatticeError as error:
-                if not skip_off_lattice:
-                    raise
-                skipped.append(
-                    _SkippedIsland(
-                        island_index=region.island_index,
-                        clause=_refusal_clause(str(error), subject_prefix),
-                        message=str(error),
-                        cause=error,
-                        off_lattice=True,
-                    )
-                )
-                # No proof is published for a skipped island, and that is the
-                # point: ``weld_route`` fails closed on an island it never
-                # proved, so the sequencer travels to that island's wall
-                # instead of welding a bead to a fill that does not exist.
-                continue
-            except FillError as error:
-                # An island the fill cannot take prints as wall alone — exactly
-                # what the same island prints hollow — instead of refusing the
-                # whole print.  Measured on handStand_ex3.obj, one 30 mm2
-                # fingertip island held a form that was 58% fillable at 0%
-                # printable, and every settings change just walked to the next
-                # refusal.  The skip is not silent (the builders band these
-                # into INTERIOR_UNFILLED_ISLAND warnings) and it is not
-                # unconditional: a form with nothing to fill anywhere still
-                # refuses with the first of these records, so an artist who
-                # asked for solid can never silently receive hollow.
-                skipped.append(
-                    _SkippedIsland(
-                        island_index=region.island_index,
-                        clause=_refusal_clause(str(error), subject_prefix),
-                        message=str(error),
-                        cause=error,
-                    )
-                )
-                continue
+        try:
+            paths = fill_region(
+                region.polygon,
+                fill_kind=fill_kind,
+                first_inset=first_inset,
+                spacing=island_spacing,
+                angle_degrees=angle,
+                grid_anchor=grid_anchor,
+                island_index=_public_island(region.island_index),
+                subject=f"layer {layer_index + 1} interior island",
+                tolerance=tolerance,
+            )
+        except OffLatticeError as error:
+            if not skip_off_lattice:
+                raise
+            # No proof is published for a skipped island, and that is the
+            # point: ``weld_route`` fails closed on an island it never proved,
+            # so the sequencer travels to that island's wall instead of welding
+            # a bead to a fill that does not exist.
+            return _SkippedIsland(
+                island_index=region.island_index,
+                clause=_refusal_clause(str(error), subject_prefix),
+                message=str(error),
+                cause=error,
+                off_lattice=True,
+                area=region.polygon,
+            )
+        except FillError as error:
+            # An island the fill cannot take prints as wall alone — exactly
+            # what the same island prints hollow — instead of refusing the
+            # whole print.  Measured on handStand_ex3.obj, one 30 mm2 fingertip
+            # island held a form that was 58% fillable at 0% printable, and
+            # every settings change just walked to the next refusal.  The skip
+            # is not silent (the builders band these into
+            # INTERIOR_UNFILLED_ISLAND warnings) and it is not unconditional: a
+            # form with nothing to fill anywhere still refuses with the first
+            # of these records, so an artist who asked for solid can never
+            # silently receive hollow.
+            return _SkippedIsland(
+                island_index=region.island_index,
+                clause=_refusal_clause(str(error), subject_prefix),
+                message=str(error),
+                cause=error,
+                area=region.polygon,
+            )
+        return (paths, [], [])
+
+    for position, region in enumerate(regions):
+        island_spacing = spacing
+        outcome = fill_island(region, spacing)
+        if (
+            isinstance(outcome, _SkippedIsland)
+            and not outcome.off_lattice
+            and fallback_spacing is not None
+            and fallback_spacing != spacing
+        ):
+            # A ramp layer's island that refused at the ramp's spacing gets the
+            # body spacing before it is given up on — see the docstring.
+            retried = fill_island(region, fallback_spacing)
+            if not isinstance(retried, _SkippedIsland):
+                outcome = retried
+                island_spacing = fallback_spacing
+        if isinstance(outcome, _SkippedIsland):
+            skipped.append(outcome)
+            continue
+        paths, targets, pockets = outcome
+        skipped.extend(pockets)
         if not targets:
             targets = [region.polygon]
         if not dense and fill_kind == "spiral":
@@ -2670,7 +3530,7 @@ def _fill_layer_strokes(
             weld_ride_limit=first_inset * 2.0 * _MAX_WELD_RIDE_BEADS,
             fill_kind=fill_kind,
             first_inset_mm=first_inset,
-            spacing_mm=spacing,
+            spacing_mm=island_spacing,
             angle_degrees=angle,
             grid_anchor=grid_anchor,
         )
@@ -2859,11 +3719,12 @@ def _layer_regions(
 
     # What each outer covers, for assigning folded holes and evicting the holes
     # of poisoned islands: valid outers by their polygon, folded ones by the
-    # union of the lobes their boundary encloses.  The min-area choice mirrors
-    # ``assemble_regions``'s own hole assignment; nested outers could in
-    # principle make the two disagree about a poisoned island's holes, but an
-    # island inside a hole inside an island is a fence this v1 does not climb —
-    # noted here rather than silently assumed away.
+    # union of the lobes their boundary encloses.  A readable hole is evicted
+    # by ``assemble_regions``'s own rule — the smallest cover that wholly holds
+    # it, the one-point rule only when none does — so an island standing in
+    # another island's hole cannot take that hole with it when it is skipped.
+    # A FOLDED hole has no polygon to hold whole and is still placed by the
+    # point its largest lobe offers.
     outer_covers: list[tuple[float, int, Polygon | MultiPolygon]] = []
     if folded_holes or poisoned:
         for points, is_hole, island_index, _wall in readable:
@@ -2912,10 +3773,20 @@ def _layer_regions(
                 kept.append((points, is_hole, island_index, wall))
             continue
         if poisoned:
-            where = Polygon(points).representative_point()
+            # The hole's owner by the assembler's own rule: the smallest outline
+            # that holds ALL of it, and the one-point rule only when none does.
+            # Judged by one point alone, a skirt's hole left with a folded dish
+            # standing inside it — the point landed in the dish — and the
+            # skirt, its hole gone, filled across the open middle as a disc.
+            hole = Polygon(points)
             candidates = [
-                (area, owner) for area, owner, cover in outer_covers if cover.contains(where)
+                (area, owner) for area, owner, cover in outer_covers if cover.contains(hole)
             ]
+            if not candidates:
+                where = hole.representative_point()
+                candidates = [
+                    (area, owner) for area, owner, cover in outer_covers if cover.contains(where)
+                ]
             if candidates and min(candidates)[1] in poisoned:
                 # The hole leaves with its poisoned island; keeping it would
                 # make ``assemble_regions`` refuse the layer over an island
@@ -2951,35 +3822,148 @@ def _layer_regions(
             slice_subject=f"layer {public_layer}",
             ring_subject=f"layer {public_layer}",
         )
-    except FillError as error:
+    except FillError:
         # Every ring read as sound on its own, and the ASSEMBLY still refused:
         # an outer-plus-holes polygon can be invalid when the wave pushes a
         # hole's crest through its outer's trough — a drum shell thinner than
-        # twice the amplitude does it on every layer.  The same island-scoped
-        # rule applies at this last gate: the layer prints wall-only, the
-        # builders decide whether the FORM still fills anywhere, and the
-        # refusal text rides along for the band and for the zero-fill message.
-        # Found on SteelDrum2.obj, where "layer 5 island 1 is not a valid fill
-        # region" out of assemble_regions refused a 33-layer print whole.
-        for _points, _is_hole, _island_index, wall in kept:
-            skipped_walls.append(wall)
-        assembly = _SkippedIsland(
-            island_index=next(
-                (island for _points, is_hole, island, _wall in kept if not is_hole), 0
+        # twice the amplitude does it on every layer.  Found on SteelDrum2.obj,
+        # where "layer 5 island 1 is not a valid fill region" out of
+        # assemble_regions refused a 33-layer print whole.
+        #
+        # ONE ISLAND'S REFUSAL IS ONE ISLAND'S.  The assembler answers for the
+        # whole layer, so one crossing used to cost every other island on the
+        # layer its fill too.  Each outer is now read again on its own, with
+        # the holes it wholly holds; every island that assembles keeps its
+        # fill, and only the ones that still cannot print wall-only.
+        regions, failed = _assemble_island_by_island(
+            tuple((points, is_hole, island) for points, is_hole, island, _wall in kept),
+            subject=subject,
+            public_layer=public_layer,
+        )
+        # The pattern is blamed only when it is the cause: the same island's
+        # SLICED rings assemble and its patterned ones do not.  A crossing the
+        # slice already had points a potter at a mesh, not an amplitude slider
+        # — the fold messages above draw the same line for the same reason.
+        sliced_regions, _sliced_failed = _assemble_island_by_island(
+            tuple(
+                (layer.rings[island].points[:-1], is_hole, island)
+                for _points, is_hole, island, _wall in kept
             ),
-            clause=(
+            subject=subject,
+            public_layer=public_layer,
+        )
+        sliced_whole = {region.island_index for region in sliced_regions}
+        records: list[_SkippedIsland] = []
+        for island_index in sorted(failed):
+            clause = (
                 "cannot be read as one region once the pattern is applied — "
                 "the wall and its hole cross"
-            ),
-            message=str(error),
-            cause=error,
+                if island_index in sliced_whole
+                # The comma lets the banded sentence close the clause before
+                # "and prints as wall alone" — see _unfilled_island_warnings.
+                else "cannot be read as one region — its outline and a hole inside it "
+                "cross, or nest the wrong way"
+            )
+            records.append(
+                _SkippedIsland(
+                    island_index=island_index,
+                    clause=clause,
+                    message=(
+                        f"layer {public_layer} island {_public_island(island_index)} {clause}, "
+                        "so its material region is not fillable"
+                    ),
+                    cause=failed[island_index],
+                )
+            )
+        # Every ring no surviving region prints as its own boundary still
+        # prints as wall, so the drift check above must count it as clay.
+        taken = {index for region in regions for index in region.wall_island_indices}
+        skipped_walls.extend(
+            wall for _points, _is_hole, island, wall in kept if island not in taken
         )
         return _LayerRegions(
-            regions=(),
-            skipped=(*skipped, assembly),
+            regions=regions,
+            skipped=(*skipped, *records),
             skipped_walls=tuple(skipped_walls),
         )
     return _LayerRegions(regions=regions, skipped=skipped, skipped_walls=tuple(skipped_walls))
+
+
+def _assemble_island_by_island(
+    contours: Sequence[tuple[FloatArray, bool, int]],
+    *,
+    subject: str,
+    public_layer: int,
+) -> tuple[tuple[FillRegion, ...], dict[int, FillError | None]]:
+    """Assemble each outer island on its own, with the holes it wholly holds.
+
+    For a layer the assembler refused as a whole.  A hole goes to the smallest
+    outline that wholly contains it, the assembler's own rule.  A hole no
+    outline wholly contains has crossed every outline it overlaps, so each of
+    those islands has a void reaching into it that no region can describe, and
+    it fails without being asked — filling it would lay beads where the void
+    is.  Every other island is handed to :func:`assemble_regions` alone, so its
+    refusal, if any, is its own.
+
+    Returns the regions that assembled, in the assembler's own order (centroid
+    X, then Y, then descending area), and the islands that did not, each with
+    the refusal it earned (None for a crossing no single assembly was asked
+    about).  An outline that is not a valid polygon at all — only reachable
+    from the sliced rings, which nothing has read for folds — fails the same
+    way.
+    """
+
+    outer_polygons: dict[int, Polygon] = {}
+    failed: dict[int, FillError | None] = {}
+    for points, is_hole, island_index in contours:
+        if is_hole:
+            continue
+        polygon = Polygon(points)
+        if polygon.is_valid:
+            outer_polygons[island_index] = polygon
+        else:
+            failed[island_index] = None
+    owned: dict[int, list[tuple[FloatArray, int]]] = {index: [] for index in outer_polygons}
+    for points, is_hole, island_index in contours:
+        if not is_hole:
+            continue
+        hole = Polygon(points)
+        if hole.is_valid:
+            holders = [
+                (polygon.area, index)
+                for index, polygon in outer_polygons.items()
+                if polygon.contains(hole)
+            ]
+            if holders:
+                owned[min(holders)[1]].append((points, island_index))
+                continue
+        else:
+            hole = shapely.union_all(list(_polygon_parts(shapely.make_valid(hole))))
+        for index, polygon in outer_polygons.items():
+            if polygon.intersects(hole) and not polygon.touches(hole):
+                failed.setdefault(index, None)
+    regions: list[FillRegion] = []
+    for points, is_hole, island_index in contours:
+        if is_hole or island_index in failed:
+            continue
+        try:
+            regions.extend(
+                assemble_regions(
+                    (
+                        (points, False, island_index),
+                        *((hole, True, hole_index) for hole, hole_index in owned[island_index]),
+                    ),
+                    subject=subject,
+                    slice_subject=f"layer {public_layer}",
+                    ring_subject=f"layer {public_layer}",
+                )
+            )
+        except FillError as error:
+            failed[island_index] = error
+    regions.sort(
+        key=lambda item: (item.polygon.centroid.x, item.polygon.centroid.y, -item.polygon.area)
+    )
+    return (tuple(regions), failed)
 
 
 def _solid_fill_for_layer(

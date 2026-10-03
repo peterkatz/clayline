@@ -23,7 +23,13 @@ from typing import Any
 from clayline.models import Bounds, ExtrusionMode, Point, Profile, TravelPolicy
 from clayline.profiles import validate_profile
 from clayline.wave import pattern_from_json, pattern_to_json
-from clayline.weave_models import Pattern, UpAxis
+from clayline.weave_models import (
+    TOP_LAYER_BELOW,
+    TOP_LAYER_NEAREST,
+    TOP_LAYER_RULES,
+    Pattern,
+    UpAxis,
+)
 
 RESTORE_CAPSULE_PARAMETER = "restore_capsule_v1_b64"
 PATTERN_PARAMETER = "pattern"
@@ -75,6 +81,10 @@ _SLICE_KEYS = {
     "range_from",
     "range_to",
 }
+# The top-layer rule, present only when a top layer was put on ("nearest").  A
+# capsule without it is cut "below", which is how every file 0.5.1 and earlier
+# saved was sliced, so those files restore exactly as they did.
+_SLICE_OPTIONAL_KEYS = {"top_layer"}
 _EMISSION_KEYS = {
     "flow_multiplier_hex",
     "wet_density_g_cm3_hex",
@@ -144,6 +154,8 @@ class DecodedWeaveRestore:
     scale_x: float = 1.0
     scale_y: float = 1.0
     scale_z: float = 1.0
+    # How the form's top was sliced; "below" when the capsule does not say.
+    top_layer: str = TOP_LAYER_BELOW
 
 
 def pattern_header_projection(pattern: Pattern) -> str:
@@ -296,10 +308,13 @@ def encode_restore_capsule(
     scale_x: float = 1.0,
     scale_y: float = 1.0,
     scale_z: float = 1.0,
+    top_layer: str = TOP_LAYER_BELOW,
 ) -> str:
     """Encode one strict canonical capsule ready for bounded framing."""
 
     validate_profile(profile, source="restore capsule profile")
+    if top_layer not in TOP_LAYER_RULES:
+        raise ValueError(f"restore capsule top_layer {top_layer!r} is not a known rule")
     source_payload: dict[str, Any] = {
         "mesh_name": source_mesh_name,
         "mesh_sha256": source_mesh_sha256,
@@ -329,18 +344,23 @@ def encode_restore_capsule(
     ):
         if float(factor) != 1.0:
             source_payload[key] = _hex(float(factor))
+    slice_payload: dict[str, Any] = {
+        "layer_height_mm_hex": _hex(layer_height),
+        "first_layer_height_mm_hex": _hex(first_layer_height),
+        "sample_spacing_mm_hex": _hex(sample_spacing),
+        "bead_width_mm_hex": _hex(bead_width),
+        "range_from": layer_range[0],
+        "range_to": layer_range[1],
+    }
+    # Written only when the slice put a top layer on: a job whose stack is the
+    # one 0.5.1 cut keeps the capsule 0.5.1 wrote, byte for byte.
+    if top_layer != TOP_LAYER_BELOW:
+        slice_payload["top_layer"] = top_layer
     payload = {
         "schema": _SCHEMA,
         "version": _VERSION,
         "source": source_payload,
-        "slice": {
-            "layer_height_mm_hex": _hex(layer_height),
-            "first_layer_height_mm_hex": _hex(first_layer_height),
-            "sample_spacing_mm_hex": _hex(sample_spacing),
-            "bead_width_mm_hex": _hex(bead_width),
-            "range_from": layer_range[0],
-            "range_to": layer_range[1],
-        },
+        "slice": slice_payload,
         "emission": {
             "flow_multiplier_hex": _hex(flow_multiplier),
             "wet_density_g_cm3_hex": _hex(wet_density_g_cm3),
@@ -392,7 +412,11 @@ def decode_restore_capsule(encoded: str) -> DecodedWeaveRestore:
     source = _object(payload["source"], "restore source")
     _exact_keys_with_optional(source, _SOURCE_KEYS, _SOURCE_OPTIONAL_KEYS, "restore source")
     sliced = _object(payload["slice"], "restore slice")
-    _exact_keys(sliced, _SLICE_KEYS, "restore slice")
+    _exact_keys_with_optional(sliced, _SLICE_KEYS, _SLICE_OPTIONAL_KEYS, "restore slice")
+    if "top_layer" in sliced and sliced["top_layer"] != TOP_LAYER_NEAREST:
+        # "below" is said by leaving the key out, so anything else here is not
+        # a capsule Clayline wrote.
+        raise ValueError("restore slice.top_layer must be 'nearest' when present")
     emission = _object(payload["emission"], "restore emission")
     _exact_keys(emission, _EMISSION_KEYS, "restore emission")
     job = _object(payload["job_id"], "restore job id")
@@ -490,6 +514,7 @@ def decode_restore_capsule(encoded: str) -> DecodedWeaveRestore:
         ),
         reproducible=_boolean(emission["reproducible"], "emission.reproducible"),
         job_id=job_id,
+        top_layer=sliced.get("top_layer", TOP_LAYER_BELOW),
     )
     canonical = encode_restore_capsule(
         source_mesh_name=decoded.source_mesh_name,
@@ -519,6 +544,7 @@ def decode_restore_capsule(encoded: str) -> DecodedWeaveRestore:
         scale_x=decoded.scale_x,
         scale_y=decoded.scale_y,
         scale_z=decoded.scale_z,
+        top_layer=decoded.top_layer,
     )
     if canonical != encoded:
         raise ValueError("restore capsule is not in canonical form")

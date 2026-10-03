@@ -17,7 +17,7 @@ from clayline.models import Bounds, Point, Profile
 from clayline.profiles import load_profile_unregistered
 from clayline.wave import pattern_from_json, pattern_to_json
 from clayline.weave_api import load_mesh
-from clayline.weave_models import MeshForm, Pattern, UpAxis
+from clayline.weave_models import TOP_LAYER_BELOW, MeshForm, Pattern, UpAxis
 from clayline.weave_range import LAYER_RANGE_SEMANTICS
 from clayline.weave_restore_codec import (
     PATTERN_PARAMETER,
@@ -69,6 +69,10 @@ class WeaveRestoreRecipe:
     scale_z: float = 1.0
     # Barrel charge before the first line; None keeps the profile's start block.
     start_charge_e: float | None = None
+    # How the form's top was sliced.  Files 0.5.1 and earlier saved do not say,
+    # and were cut "below" (only the planes under the top), so that is what
+    # they are cut with again; a new job that put a top layer on says "nearest".
+    top_layer: str = TOP_LAYER_BELOW
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +206,7 @@ def _recipe_from_decoded(decoded: DecodedWeaveRestore) -> WeaveRestoreRecipe:
         end_early_mm=decoded.end_early_mm,
         reproducible=decoded.reproducible,
         job_id=decoded.job_id,
+        top_layer=decoded.top_layer,
     )
 
 
@@ -366,6 +371,7 @@ def restore_weave_result(
         first_layer_height=recipe.first_layer_height,
         sample_spacing=recipe.sample_spacing,
         bead_width=recipe.bead_width,
+        top_layer=recipe.top_layer,
     )
     if len(sliced.layers) != recipe.source_layer_total:
         detail = (

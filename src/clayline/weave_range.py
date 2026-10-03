@@ -177,6 +177,12 @@ def select_layer_range(
         bounds=bounds,
         source_layer_start=first - 1,
         source_layer_total=sliced.source_layer_total,
+        # The form does not end where the range does.  A filled interior asks
+        # what clay sits above its last printed layer, and a range cut short of
+        # the top must answer "more form", not "open air", or the interior lays
+        # a roof skin under a top that is not there.  Left as they were, not
+        # rebased: only the rings' XY is ever read.
+        layers_above=(*sliced.layers[local_stop:], *sliced.layers_above),
     )
 
 

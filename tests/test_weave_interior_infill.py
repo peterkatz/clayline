@@ -40,9 +40,9 @@ from clayline.weave_interior import (
     InteriorError,
     InteriorResult,
     _chamber_regions,
-    _infill_layer_plan,
     _InfillLayer,
     _ramp_bridge_warnings,
+    _read_and_plan,
     build_interior_strokes,
 )
 from clayline.weave_models import FormWarningCode, Pattern, RingProvenance, SeamPolicy
@@ -103,6 +103,20 @@ def _modulated(
         for layer in sliced.layers
         for ring in layer.rings
     }
+
+
+def _plan(sliced: cl.SlicedFormFacade, settings: object) -> object:
+    """The plan this form's interior is built from, read off the form itself.
+
+    Where the skins go is the form's answer — what clay sits above and below
+    each layer — so the plan is asked of the builder's own reading rather than
+    recounted here from the layer indices.
+    """
+
+    pattern = replace(_pattern(), settings=settings)  # type: ignore[arg-type]
+    return _read_and_plan(
+        sliced, pattern.settings, modulated_by_address=_modulated(sliced, pattern)
+    )[1]
 
 
 def _build(sliced: cl.SlicedFormFacade, pattern: Pattern) -> InteriorResult:
@@ -593,10 +607,7 @@ def test_the_warned_bands_and_the_measurement_agree_in_both_directions(
     half_bead = sliced.bead_width / 2.0
     sanctioned = sliced.bead_width * (_MAX_BRIDGE_BEADS + 1.0) / 2.0
 
-    plan = _infill_layer_plan(
-        tuple(index for index, layer in enumerate(sliced.layers) if layer.rings),
-        pattern.settings,
-    )
+    plan = _plan(sliced, pattern.settings)
     dense = {step.layer_index for step in plan.layers if step.dense}
     ramp = set(plan.ramp_layers)
     warned = {
@@ -731,7 +742,13 @@ def test_the_ramp_halves_upward_and_leaves_every_earlier_rib_exactly_where_it_wa
         assert deltas == {round(spacing, 6)}, (layer_index, deltas)
         steps.append(spacing)
         # PRE-RAMP RIBS UNMOVED: every line of the sparse body is still there.
-        assert positions(body, sparse) <= set(found), layer_index
+        # The cone narrows as it climbs, so a ramp layer holds only the ribs that
+        # fit its own, narrower island; the body's outermost ribs have nowhere to
+        # land up there and are not what is being asked about.
+        body_ribs_that_fit = {
+            rib for rib in positions(body, sparse) if found[0] <= rib <= found[-1]
+        }
+        assert body_ribs_that_fit <= set(found), layer_index
 
     assert steps == [sparse / 2.0, sparse / 4.0, sparse / 8.0]
     assert steps[0] > steps[1] > steps[2]
@@ -752,7 +769,7 @@ def test_a_ramp_with_no_room_loses_its_tightest_steps_not_its_gentlest() -> None
         infill_cap_layers=2,
         infill_ramp_layers=20,
     ).settings
-    plan = _infill_layer_plan(tuple(range(len(sliced.layers))), settings)
+    plan = _plan(sliced, settings)
 
     sparse = [step for step in plan.layers if not step.dense]
     assert len(sparse) == 4
@@ -780,7 +797,7 @@ def test_dense_wins_wherever_the_three_counts_overlap() -> None:
         infill_cap_layers=total,
         infill_ramp_layers=total,
     ).settings
-    plan = _infill_layer_plan(tuple(range(total)), settings)
+    plan = _plan(sliced, settings)
 
     assert all(step.dense for step in plan.layers)
     assert [step.layer_index for step in plan.layers] == list(range(total))
@@ -985,11 +1002,10 @@ def test_the_ramp_never_tightens_past_the_dense_spacing() -> None:
 
     sliced = _slice("cone.obj")
     dense_beads = 1.0 - _pattern().settings.overlap_fraction
-    filled = tuple(index for index, layer in enumerate(sliced.layers) if layer.rings)
 
     for ramp_layers in (1, 2, 3, 4, 6, 999):
         settings = _pattern(infill_cap_layers=2, infill_ramp_layers=ramp_layers).settings
-        plan = _infill_layer_plan(filled, settings)
+        plan = _plan(sliced, settings)
         sparse = [step for step in plan.layers if not step.dense]
         assert sparse
         for step in sparse:
@@ -1025,14 +1041,13 @@ def test_a_truncated_ramp_says_what_was_asked_for_and_what_the_form_took() -> No
     """
 
     sliced = _slice("cone.obj")
-    filled = tuple(index for index, layer in enumerate(sliced.layers) if layer.rings)
 
     delivered: dict[tuple[float, int], int] = {}
     for spacing, asked in ((3.0, 1), (3.0, 2), (3.0, 3), (3.0, 5), (3.0, 8), (4.0, 3), (6.0, 8)):
         pattern = _pattern(
             infill_spacing_beads=spacing, infill_cap_layers=2, infill_ramp_layers=asked
         )
-        plan = _infill_layer_plan(filled, pattern.settings)
+        plan = _plan(sliced, pattern.settings)
         delivered[(spacing, asked)] = plan.ramp_built
 
         said = [
@@ -1092,7 +1107,7 @@ def test_a_ramp_short_of_layers_says_so_in_layers_and_not_in_halvings() -> None:
         infill_cap_layers=2,
         infill_ramp_layers=20,
     )
-    plan = _infill_layer_plan(tuple(range(total)), pattern.settings)
+    plan = _plan(sliced, pattern.settings)
 
     assert plan.ramp_room == 3
     assert plan.ramp_built == 3
@@ -1130,9 +1145,8 @@ def test_a_huge_ramp_count_is_a_short_ramp_and_never_a_refusal() -> None:
     # Same plan as any other oversized ramp count: one halving, then the cap.
     spacings = {
         step.spacing_beads
-        for step in _infill_layer_plan(
-            tuple(index for index, layer in enumerate(sliced.layers) if layer.rings),
-            _pattern(infill_cap_layers=2, infill_ramp_layers=999).settings,
+        for step in _plan(
+            sliced, _pattern(infill_cap_layers=2, infill_ramp_layers=999).settings
         ).layers
     }
     assert spacings == {3.0, 1.5, 0.8}
@@ -1321,13 +1335,13 @@ def test_the_weld_a_layer_laid_is_clay_the_layer_above_lands_on() -> None:
 @pytest.mark.parametrize(
     ("mesh", "settings", "sparse_welds"),
     [
-        ("cone.obj", {}, 29),
+        ("cone.obj", {}, 30),
         ("cone.obj", {"seam": SeamPolicy.PINNED, "pinned_seam_angle": 87.0}, 2),
         ("cylinder.obj", {"seam": SeamPolicy.SCATTER}, 1),
         # With a skin at both ends, so the DENSE outcomes have to be discarded
         # rather than measured: a dense island's weld is the straight chord
         # across its own solid region and has no support question to answer.
-        ("cone.obj", {"infill_base_layers": 2, "infill_cap_layers": 2}, 25),
+        ("cone.obj", {"infill_base_layers": 2, "infill_cap_layers": 2}, 26),
     ],
 )
 def test_every_emitted_sparse_weld_reaches_the_support_measure(
@@ -1336,7 +1350,7 @@ def test_every_emitted_sparse_weld_reaches_the_support_measure(
     """Whatever the seam policy, the routes that were laid are the ones measured.
 
     Measured on ``_slice``'s 2 mm nozzle and 1 mm layer with the flat pattern:
-    a chained cone welds all 29 of its sparse layers, a cone pinned at 87
+    a chained cone welds all 30 of its sparse layers, a cone pinned at 87
     degrees welds 2 of them, and a scattered cylinder welds 1.  None of those
     counts is a property of the policy — which is exactly why the measure may
     not read one.
@@ -1393,10 +1407,10 @@ def test_every_emitted_sparse_weld_reaches_the_support_measure(
         (
             "cone.obj",
             {"seam": SeamPolicy.PINNED, "pinned_seam_angle": 87.0},
-            [(0, 2), (5, 28)],
+            [(0, 2), (5, 29)],
             [3, 4],
         ),
-        ("cylinder.obj", {"seam": SeamPolicy.SCATTER}, [(0, 14), (16, 28)], [15]),
+        ("cylinder.obj", {"seam": SeamPolicy.SCATTER}, [(0, 14), (16, 29)], [15]),
     ],
 )
 def test_the_unwelded_bands_are_the_layers_that_actually_lifted(
@@ -1565,10 +1579,7 @@ def test_a_ramp_layer_answers_for_its_old_ribs_and_not_for_the_new_ones() -> Non
     sliced = _slice("bowl.obj")
     pattern = _pattern(infill_spacing_beads=8.0, infill_cap_layers=2, infill_ramp_layers=3)
     result = _build(sliced, pattern)
-    plan = _infill_layer_plan(
-        tuple(index for index, layer in enumerate(sliced.layers) if layer.rings),
-        pattern.settings,
-    )
+    plan = _plan(sliced, pattern.settings)
     ramp = sorted(plan.ramp_layers)
     assert len(ramp) == 3
 
@@ -1666,11 +1677,12 @@ def test_skins_that_cover_every_layer_say_so_instead_of_printing_a_solid() -> No
 
     sliced = _slice("cone.obj")
     total = len(sliced.layers)
-    assert total == 29
+    assert total == 30
 
     for settings in (
         _pattern(infill_cap_layers=999),
         _pattern(infill_base_layers=15, infill_cap_layers=15),
+        _pattern(infill_cap_layers=total - 1),
     ):
         result = _build(sliced, settings)
         assert all(stroke.dense for stroke in result.strokes)
@@ -1682,13 +1694,15 @@ def test_skins_that_cover_every_layer_say_so_instead_of_printing_a_solid() -> No
         assert "prints as solid clay" in warnings[0].message  # type: ignore[attr-defined]
 
     # A form with any sparse layer left is not this case and says nothing of it.
-    assert (
-        _codes(
-            _resolved(_build(sliced, _pattern(infill_cap_layers=total - 1))),
-            FormWarningCode.INFILL_NO_RIBS,
-        )
-        == []
-    )
+    # Asked of the straight cylinder: a cap counts open air above each layer
+    # within that many layers, and on the cone 29 layers up reaches past the
+    # sloping wall to the air beside the tip for every layer, the first one
+    # included — that cone with cap 29 IS dense throughout, and says so above.
+    cylinder = _slice("cylinder.obj")
+    assert len(cylinder.layers) == total
+    straight = _build(cylinder, _pattern(infill_cap_layers=total - 1))
+    assert not all(stroke.dense for stroke in straight.strokes)
+    assert _codes(_resolved(straight), FormWarningCode.INFILL_NO_RIBS) == []
 
 
 # --------------------------------------------------------------------------
@@ -2028,7 +2042,7 @@ def test_a_seam_the_artist_placed_elsewhere_is_left_alone_and_said_out_loud() ->
     assert all(route is None for route in spoken_welds.values())
     said = _codes(spoken_said, FormWarningCode.INTERIOR_UNWELDED_SEAM)
     assert len(said) == 1
-    assert _spans(said) == [(0, 28)]
+    assert _spans(said) == [(0, 29)]
     assert "scattered" in said[0].message  # type: ignore[attr-defined]
     assert "Chain the seam" in said[0].message  # type: ignore[attr-defined]
 
@@ -2390,8 +2404,8 @@ def test_an_island_that_splits_under_its_own_inset_skips_and_the_rest_still_fill
     # including layers 14 and 44, whose walls the occupied-area floor kept in
     # the slice.
     printed = sorted(_by_layer(result))
-    assert [index for index, layer in enumerate(sliced.layers) if layer.rings] == list(range(59))
-    assert [index for index in range(59) if index not in printed] == list(range(10, 15)) + list(
+    assert [index for index, layer in enumerate(sliced.layers) if layer.rings] == list(range(60))
+    assert [index for index in range(60) if index not in printed] == list(range(10, 15)) + list(
         range(44, 49)
     )
 
@@ -2430,8 +2444,8 @@ def test_a_slice_folded_island_skips_with_the_slice_named_and_its_wall_still_pri
 
     result = _build(sliced, flat)
     printed = sorted(_by_layer(result))
-    assert [index for index, layer in enumerate(sliced.layers) if layer.rings] == list(range(59))
-    assert [index for index in range(59) if index not in printed] == [14, 44]
+    assert [index for index, layer in enumerate(sliced.layers) if layer.rings] == list(range(60))
+    assert [index for index in range(60) if index not in printed] == [14, 44]
 
     warnings = _codes(_resolved(result), FormWarningCode.INTERIOR_UNFILLED_ISLAND)
     assert _spans(warnings) == [(14, 14), (44, 44)]

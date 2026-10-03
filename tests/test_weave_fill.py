@@ -124,7 +124,7 @@ def test_bottom_entry_points_translate_fill_error_into_bottom_spiral_error() -> 
     with pytest.raises(BottomSpiralError) as past_top:
         build_bottom_spirals(donut, bottom_layers=99, overlap_fraction=0.2)
     assert type(past_top.value) is BottomSpiralError
-    assert str(past_top.value) == "bottom layer index 9 is outside the sliced form"
+    assert str(past_top.value) == "bottom layer index 10 is outside the sliced form"
 
 
 def test_translation_is_load_bearing_because_the_subclass_runs_the_other_way() -> None:
@@ -183,7 +183,7 @@ def test_slice_region_defaults_emit_the_historical_bottom_wording() -> None:
 
     with pytest.raises(FillError) as above:
         fill_slice_regions(donut, len(donut.layers))
-    assert str(above.value) == "bottom layer index 9 is outside the sliced form"
+    assert str(above.value) == "bottom layer index 10 is outside the sliced form"
 
     with pytest.raises(FillError) as empty:
         fill_slice_regions(_slice("open-shell.obj"), 0)

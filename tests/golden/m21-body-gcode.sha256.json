@@ -21,15 +21,15 @@
     "tests/golden/M4/pages-job.gcode": "98ed56b4d7c2cfd4b85c1bf646b74c52f1205409d49c7edd1c747327946c18b6"
   },
   "weave": {
-    "m11/cone-ribs.gcode": "79d7b42af6f0cff9688e4baa90f70699e7eb9f21414ba52ac637ed33cc52c897",
-    "m11/cone-spiral.gcode": "7ed0cf843e743593ac342d63866c332a4064e908e916b244a18065e4c3327802",
-    "m11/cone-weave.gcode": "bf1039f8a83ee413ea20f4b043e48dd7e55ff92a28a6d0dafd7b5478c0756c8e",
-    "m11/cylinder-ribs.gcode": "d5224629cd74bd948b4a4860a0f24b3ec04768a28d2e12ea5f0739dde613162d",
-    "m11/cylinder-spiral.gcode": "b7a6828f3af03fff1b10afdc2d9029c58fdc3fa1268fe548e51ffeab246e76d4",
-    "m11/cylinder-weave.gcode": "c18b5be720a71ed6ff6d7dd62703265d8cc6552fab946afb010c4084d551ab86",
-    "m12/cone-zblend-level-rim.gcode": "21ad0d4251add100140e171d9a698c6d2c1c3fa95bee7fc08c39643e5bf2daf4",
-    "m12/cone-zblend-open-rim.gcode": "80aaf0e09ddcb02b38153576f39a4a2bc373f6a3bca3d0c07aa103842a494cb4",
-    "m12/hollow-cylinder-bottom3.gcode": "7bb80f5b4cda0ebfeaa194f3e6023f1f4c79090e5c36ed1ad8f3a44d4709fabf",
-    "m12/lobed-weave-zblend-bottom3.gcode": "b06b3d0a3cc3fbf1e1a1392903d9a052b02ab01080ba113dd0a9856d03b4a6d3"
+    "m11/cone-ribs.gcode": "80942784889bb10102593c95da2b4fe20ef1a22dff7000f8fd22a93776aafc11",
+    "m11/cone-spiral.gcode": "e2d2bd08e7e98e5b51cbcbd5a8876d04b102dd3a0a483e257d9b092f89c95fb1",
+    "m11/cone-weave.gcode": "ade4e8652213dfc8706663b261bad8a56f79bc4ec6035d573c43e3064e552282",
+    "m11/cylinder-ribs.gcode": "756f3b8c42eb517886b9efa8a5e123ee7781e10b9733b99fec66e3978493cfd6",
+    "m11/cylinder-spiral.gcode": "4819ee596c47bcfbc3870e1563ae4816a1e27203030678ead0c3237c710e366f",
+    "m11/cylinder-weave.gcode": "96542799eea2bbe386e55f41d86a5fcf0751e5e43fab90d67ed5449897a9776e",
+    "m12/cone-zblend-level-rim.gcode": "938e44f1a7dc7a39a45facf48d285a1d59a830b4edf6a3b403305d018031770d",
+    "m12/cone-zblend-open-rim.gcode": "24c3bc190ad401b991c1c19f9a034e181f0b931e909eab7feda38284f0010382",
+    "m12/hollow-cylinder-bottom3.gcode": "8ff4cdea9b60a098d86c609bf4b2a2d5bed8485232bad05c8e792d1eecf8001b",
+    "m12/lobed-weave-zblend-bottom3.gcode": "6e0fb60e8fc1cbe79356c822601652c02e0ad85ccfcdec29d64b9212373c79bc"
   }
 }

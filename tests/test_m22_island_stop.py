@@ -25,9 +25,11 @@ def _trunk_to_prongs_mesh() -> bytes:
     trunk = trimesh.creation.cylinder(radius=10.0, height=20.0, sections=24)
     trunk.apply_translation((0.0, 0.0, 10.0))
     prongs = []
+    # The tips end half a layer above the last slice plane (z = 39), so the form
+    # is 20 layers whether or not a flat top rounds its last half layer up.
     for x, y in ((-5.0, -4.0), (5.0, -4.0), (0.0, 5.0)):
-        prong = trimesh.creation.cylinder(radius=3.0, height=20.0, sections=24)
-        prong.apply_translation((x, y, 30.0))
+        prong = trimesh.creation.cylinder(radius=3.0, height=19.5, sections=24)
+        prong.apply_translation((x, y, 29.75))
         prongs.append(prong)
     return trimesh.util.concatenate([trunk, *prongs]).export(file_type="stl")
 
@@ -96,8 +98,9 @@ def test_web_slice_defaults_before_fork_but_keeps_full_mesh_truth() -> None:
         "default_applied": True,
     }
     assert emergence["message"] == (
-        "Layers 11\N{EN DASH}20 split into 3 separate islands — the printer can't cut "
-        "the thread between them, so printing stops at layer 10. Raise 'To layer' to override."
+        "Layers 11\N{EN DASH}20 split into 3 separate pieces \N{EM DASH} the printer can't cut "
+        "the thread between them, so printing stops at layer 10. Raise 'To layer' to print "
+        "past them."
     )
     assert emergence["override_message"] is None
 
@@ -129,7 +132,7 @@ def test_upward_override_wins_and_range_rebases_with_island_warning() -> None:
     emergence = payload["island_emergence"]
     assert emergence["default_applied"] is False
     assert emergence["override_message"] is not None
-    assert "thread will drag between islands" in emergence["override_message"]
+    assert "thread will drag between the pieces" in emergence["override_message"]
     assert any(item["code"] == "island_change" for item in payload["stats"]["warning_details"])
 
     prepared, modulated = _modulate_weave_payload(
@@ -149,6 +152,6 @@ def test_upward_override_wins_and_range_rebases_with_island_warning() -> None:
 
 
 def test_range_panel_has_both_safe_default_and_override_truth() -> None:
-    assert "Raise 'To layer' to override" not in WEAVE  # server owns the exact default fact
+    assert "Raise 'To layer'" not in WEAVE  # server owns the exact default fact
     assert "emergence.message" in WEAVE
-    assert "thread will drag between islands" in WEAVE
+    assert "thread will drag between the pieces" in WEAVE

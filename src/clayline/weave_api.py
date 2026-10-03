@@ -14,7 +14,14 @@ from clayline.mesh import load_mesh_form
 from clayline.models import Point, Profile
 from clayline.slice_form import slice_mesh_form
 from clayline.wave import extrusion_preset, load_pattern
-from clayline.weave_models import MeshForm, Pattern, SeamPolicy, SlicedForm, UpAxis
+from clayline.weave_models import (
+    TOP_LAYER_NEAREST,
+    MeshForm,
+    Pattern,
+    SeamPolicy,
+    SlicedForm,
+    UpAxis,
+)
 
 if TYPE_CHECKING:
     from clayline.weave_workflow import WeaveResult
@@ -174,13 +181,16 @@ class MeshFormFacade(MeshForm):
         first_layer_height: float | None = _defaults.DEFAULT_WEAVE_FIRST_LAYER_HEIGHT_MM,
         sample_spacing: float | None = _defaults.DEFAULT_WEAVE_SAMPLE_SPACING_MM,
         bead_width: float | None = _defaults.DEFAULT_WEAVE_BEAD_WIDTH_MM,
+        top_layer: str = TOP_LAYER_NEAREST,
     ) -> SlicedFormFacade:
         """Return the cached immutable slice for these pattern-independent inputs.
 
         ``nozzle`` defaults to the placement profile's default nozzle diameter.
         ``layer_height=None`` follows the nozzle at 30 % (Pete 2026-07-18:
         the verified 5 mm / 1.5 mm print) and ``bead_width=None`` follows the
-        nozzle exactly; explicitly passed values always win.
+        nozzle exactly; explicitly passed values always win.  ``top_layer``
+        is ``"nearest"`` for every new slice; ``"below"`` slices the way 0.5.1
+        did, for restoring the print files it saved.
         """
 
         if layer_height is None or bead_width is None:
@@ -195,6 +205,7 @@ class MeshFormFacade(MeshForm):
             None if first_layer_height is None else float(first_layer_height),
             None if sample_spacing is None else float(sample_spacing),
             float(bead_width),
+            str(top_layer),
         )
 
     def _resolved_nozzle(self, nozzle: float | None) -> float:
@@ -350,7 +361,11 @@ def _cached_slice(
     first_layer_height: float | None,
     sample_spacing: float | None,
     bead_width: float,
+    top_layer: str,
 ) -> SlicedFormFacade:
+    # The rule is part of the key: a print file saved by 0.5.1 is cut "below"
+    # and a new job "nearest", and the two stacks must never be handed out for
+    # each other.
     return _as_sliced_form_facade(
         slice_mesh_form(
             form,
@@ -358,6 +373,7 @@ def _cached_slice(
             first_layer_height=first_layer_height,
             sample_spacing=sample_spacing,
             bead_width=bead_width,
+            top_layer=top_layer,
         )
     )
 
@@ -417,6 +433,8 @@ def _as_sliced_form_facade(sliced: SlicedForm) -> SlicedFormFacade:
         scale_z=sliced.scale_z,
         source_layer_start=sliced.source_layer_start,
         source_layer_total=sliced.source_layer_total,
+        layers_above=sliced.layers_above,
+        top_layer=sliced.top_layer,
     )
 
 

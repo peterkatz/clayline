@@ -471,11 +471,13 @@ def rebuild_form(text: str, *, bead_width_hint: float | None = None) -> GcodeReb
                 current.append((ring, base))
             previous = current
         previous_bucket = b
-    # Carry the last strip half a layer up so the top slice plane still meets
-    # the wall instead of grazing its edge.
+    # Carry the last strip a quarter layer up so the top slice plane still
+    # meets the wall instead of grazing its edge.  Not half: the studio now
+    # prints a top layer whenever half a layer of form is left above its last
+    # plane, and half would add a copy of the top ring that was never printed.
     if previous is not None:
         for ring, base in previous:
-            top = add_ring(ring, z_of[ordered[-1]] + layer_height / 2.0)
+            top = add_ring(ring, z_of[ordered[-1]] + layer_height / 4.0)
             join(base, top)
 
     lines = [

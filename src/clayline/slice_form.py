@@ -14,6 +14,9 @@ from shapely.geometry import Polygon
 
 from clayline.models import Point, Severity
 from clayline.weave_models import (
+    TOP_LAYER_BELOW,
+    TOP_LAYER_NEAREST,
+    TOP_LAYER_RULES,
     FormWarning,
     FormWarningCode,
     LayerSpan,
@@ -64,6 +67,7 @@ def slice_mesh_form(
     first_layer_height: float | None = None,
     sample_spacing: float | None = None,
     bead_width: float = 5.0,
+    top_layer: str = TOP_LAYER_NEAREST,
 ) -> SlicedForm:
     """Slice a placed mesh into immutable, pattern-independent wall bands.
 
@@ -71,6 +75,13 @@ def slice_mesh_form(
     correspondence is known, every ring track is resampled to the largest count
     needed anywhere in that band, preserving both the spacing bound and real
     index-wise correspondence for later z-blend.
+
+    top_layer is how the form's top is read.  ``"nearest"`` (every new slice)
+    puts one more layer on when half a layer or more of form stands above the
+    last plane and that layer continues the wall below it (the same rings, the
+    same holes, the same open outlines); ``"below"`` keeps only the planes under
+    the top, which is how 0.5.1 and earlier sliced, and is what their saved
+    print files restore with.
     """
 
     import trimesh
@@ -82,6 +93,10 @@ def slice_mesh_form(
         else _positive_finite(first_layer_height, "first_layer_height")
     )
     bead_width = _positive_finite(bead_width, "bead_width")
+    if top_layer not in TOP_LAYER_RULES:
+        raise ValueError(
+            f"top_layer must be one of {', '.join(TOP_LAYER_RULES)}, not {top_layer!r}"
+        )
     resolved_spacing = (
         min(bead_width / 2.0, 1.0)
         if sample_spacing is None
@@ -92,6 +107,24 @@ def slice_mesh_form(
         first_layer_height=resolved_first,
         layer_height=layer_height,
     )
+    # Layers print at ``print_heights``; the mesh is cut at ``section_heights``.
+    # They are the same list except for a top layer the planes below skipped,
+    # which prints one stride up but is cut through the form left above the
+    # last plane.
+    print_heights = list(heights)
+    section_heights = list(heights)
+    top_layer_planes = (
+        None
+        if top_layer == TOP_LAYER_BELOW
+        else _top_layer_heights(
+            maximum_z=form.bounds.max_z,
+            last_height=float(heights[-1]),
+            layer_height=layer_height,
+        )
+    )
+    if top_layer_planes is not None:
+        print_heights.append(top_layer_planes[0])
+        section_heights.append(top_layer_planes[1])
 
     mesh = trimesh.Trimesh(
         vertices=form.vertices,
@@ -103,7 +136,7 @@ def slice_mesh_form(
         mesh,
         plane_origin=np.array([0.0, 0.0, 0.0]),
         plane_normal=np.array([0.0, 0.0, 1.0]),
-        heights=heights,
+        heights=np.array(section_heights, dtype=np.float64),
     )
 
     join_tolerance = max(
@@ -116,15 +149,30 @@ def slice_mesh_form(
     )
     raw_layers: list[_RawLayer] = []
     warnings = list(form.warnings)
+    top_layer_index = len(heights)
+    warnings_before_top_layer = 0
     for layer_index, (z, segments, transform) in enumerate(
-        zip(heights, segments_2d, transforms, strict=True)
+        zip(print_heights, segments_2d, transforms, strict=True)
     ):
+        if top_layer_planes is not None and layer_index == top_layer_index:
+            warnings_before_top_layer = len(warnings)
         world_segments = _segments_to_world_xy(segments, transform)
         raw_paths = _assemble_section_paths(world_segments, tolerance=join_tolerance)
         rings = _classify_rings(raw_paths)
         kept: list[_RawRing] = []
         for candidate_index, ring in enumerate(rings):
             degenerate, floor_text = _degenerate_ring_floor(ring, bead_width)
+            if (
+                not degenerate
+                and layer_index == top_layer_index
+                and not ring.closed
+                and ring.length < bead_width
+            ):
+                # The added top layer is there to finish a flat top, not to
+                # lay a dab: a broken tip's open scrap shorter than one coil
+                # would otherwise become the form's last layer.
+                degenerate = True
+                floor_text = f"< {bead_width:.2f} mm bead width on the added top layer"
             if degenerate:
                 shape = "around" if ring.closed else "long"
                 # An area verdict must not read "is only N mm around" — the
@@ -160,6 +208,28 @@ def slice_mesh_form(
                 section_failed=len(segments) == 0,
             )
         )
+
+    if top_layer_planes is not None and (
+        not raw_layers[-1].rings
+        or not _matching_signatures(raw_layers[-2].rings, raw_layers[-1].rings)
+    ):
+        # A pointed tip has nothing left to print up there, and a top layer
+        # that is not the wall below it carried on (a rim that splits in two,
+        # an open outline that breaks into pieces) would be a new band of its
+        # own, which costs the one continuous line on every layer under it.
+        # The layer only goes on when it continues the wall that is there.
+        # If it goes, so does anything it said while it was being tried, so
+        # the form reads exactly as it always did.
+        raw_layers.pop()
+        del warnings[warnings_before_top_layer:]
+    # The rule this stack needs to be cut again exactly.  A nearest slice that
+    # put nothing on is the same stack as a below slice, and says so, so its id
+    # and its saved print file stay what 0.5.1 wrote for the same form.
+    effective_top_layer = (
+        TOP_LAYER_NEAREST
+        if top_layer_planes is not None and len(raw_layers) > len(heights)
+        else TOP_LAYER_BELOW
+    )
 
     band_ranges = _order_corresponding_rings(raw_layers)
     layers, bands = _resample_bands(raw_layers, band_ranges, resolved_spacing)
@@ -217,6 +287,7 @@ def slice_mesh_form(
         first_layer_height=resolved_first,
         sample_spacing=resolved_spacing,
         bead_width=bead_width,
+        top_layer=effective_top_layer,
     )
     return SlicedForm(
         id=sliced_id,
@@ -244,6 +315,7 @@ def slice_mesh_form(
         scale_z=form.scale_z,
         source_layer_start=0,
         source_layer_total=len(layers),
+        top_layer=effective_top_layer,
     )
 
 
@@ -259,6 +331,33 @@ def _slice_heights(
     if count < 1:
         raise ValueError("mesh height does not contain a printable slice plane")
     return first_layer_height + np.arange(count, dtype=np.float64) * layer_height
+
+
+def _top_layer_heights(
+    *, maximum_z: float, last_height: float, layer_height: float
+) -> tuple[float, float] | None:
+    """The extra top layer's (print height, section height), or None.
+
+    ``_slice_heights`` only keeps planes strictly below the form's top, so the
+    layer count always rounded down and a flat top was never printed: 30 mm at
+    1.5 mm layers stopped at 28.5.  Round to the nearest instead: when half a
+    layer or more of form is left above the last plane, one more layer goes on.
+    It prints one normal stride up, so everything that reads
+    ``first + k * layer`` stays right.
+
+    It is cut through the middle of the form left above the last plane, not at
+    the top.  A flat top's section there is the section below it.  A rim that
+    rounds over in its last few tenths of a millimetre (Pete's SteelDrum2) gives
+    its ordinary outer and inner rings there, where a cut just under the top
+    caught two thin ragged loops and a cloud of crumbs.  A pointed tip is mostly
+    too small there to print, and the layer is dropped.
+    """
+
+    tolerance = max(1e-9, abs(maximum_z) * 1e-9)
+    leftover = maximum_z - last_height
+    if leftover < 0.5 * layer_height - tolerance:
+        return None
+    return last_height + layer_height, last_height + 0.5 * leftover
 
 
 def _segments_to_world_xy(segments: np.ndarray, transform: np.ndarray) -> np.ndarray:
@@ -786,6 +885,7 @@ def _slice_id(
     first_layer_height: float,
     sample_spacing: float,
     bead_width: float,
+    top_layer: str = TOP_LAYER_BELOW,
 ) -> str:
     payload = {
         "form_id": form_id,
@@ -794,6 +894,10 @@ def _slice_id(
         "sample_spacing": format(sample_spacing, ".17g"),
         "bead_width": format(bead_width, ".17g"),
     }
+    # Named only when the top layer is on, so a stack 0.5.1 would have cut the
+    # same keeps the id it had.
+    if top_layer != TOP_LAYER_BELOW:
+        payload["top_layer"] = top_layer
     digest = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()

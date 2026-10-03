@@ -613,7 +613,9 @@ def assemble_regions(
 
     The ordering — centroid X, then centroid Y, then descending area — and every
     refusal text are the bottom's, unchanged, because bottom goldens are pinned
-    to both.
+    to both.  A hole goes to the smallest outline that wholly contains it; only
+    when none does (rings that cross) does the point rule decide, so a layer
+    that assembled before assembles identically.
     """
 
     outers = tuple(contour for contour in contours if not contour[1])
@@ -630,11 +632,27 @@ def assemble_regions(
     assigned_indices: list[list[int]] = [[] for _ in outers]
     for points, _is_hole, island_index in holes:
         hole_polygon = Polygon(points)
+        # A hole belongs to the smallest outline that holds ALL of it.  Judging
+        # by one point of the hole misfiled a skirt's hole to a separate dish
+        # standing inside that hole (the point landed in the dish, which is
+        # smaller), handed the dish a hole bigger than itself, and cost the
+        # whole layer its fill.  ``contains`` lets a hole touch its outline at a
+        # shared vertex; ``covers`` would only differ for a zero-area hole,
+        # which is no region either way.
         candidates = [
             (outer.area, index)
             for index, outer in enumerate(outer_polygons)
-            if outer.contains(hole_polygon.representative_point())
+            if outer.contains(hole_polygon)
         ]
+        if not candidates:
+            # No outline holds the whole hole (patterned rings that cross each
+            # other).  The old one-point rule still decides, so the refusal
+            # that follows, if any, reads exactly as it always has.
+            candidates = [
+                (outer.area, index)
+                for index, outer in enumerate(outer_polygons)
+                if outer.contains(hole_polygon.representative_point())
+            ]
         if not candidates:
             raise FillError(f"{ring_subject} hole ring {island_index} has no containing island")
         chosen = min(candidates)[1]

@@ -28,6 +28,15 @@ class UpAxis(StrEnum):
     Y = "y"
 
 
+# How a slice reads the form's top (2026-10-02, Pete: "print objects with
+# tops").  Nearest puts one more layer on when half a layer or more of form
+# stands above the last plane; below keeps only the planes under the top, as
+# 0.5.1 and earlier did, and is what their saved print files restore with.
+TOP_LAYER_NEAREST = "nearest"
+TOP_LAYER_BELOW = "below"
+TOP_LAYER_RULES = (TOP_LAYER_NEAREST, TOP_LAYER_BELOW)
+
+
 class SeamPolicy(StrEnum):
     """Artist-facing wall seam policy frozen for the Stage-B engine."""
 
@@ -106,6 +115,11 @@ class FormWarningCode(StrEnum):
     # A layer the thread cannot open now breaks the thread at that layer only,
     # and says which layer, which gate, and by how much.
     INTERIOR_THREAD_BROKEN = "interior_thread_broken"
+    # 2026-10-02 (Pete, printing forms with tops): a wall that steps inward
+    # over a ribbed layer lands across the gaps between the ribs, not on clay.
+    # Said out loud per band like INFILL_DRIFT, and measured on the route the
+    # emitter actually took, because the welds below are clay it can land on.
+    WALL_OVER_RIBS = "wall_over_ribs"
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,10 +388,24 @@ class SlicedForm:
     scale_x: float = 1.0
     scale_y: float = 1.0
     scale_z: float = 1.0
+    # The source layers ABOVE a print range cut short of the top, nearest
+    # first.  A filled interior reads only their rings' XY, to tell a roof the
+    # form really has from a top the range merely stops at.  Kept out of
+    # equality and repr, and never part of an id or the restore codec: the
+    # selected layers alone are what the form IS, and this is context for one
+    # reading of it.
+    layers_above: tuple[SliceLayer, ...] = field(default=(), compare=False, repr=False)
+    # The top-layer rule this stack is cut again with, exactly.  "nearest" only
+    # when that rule really put a top layer on; a stack it added nothing to is
+    # the stack 0.5.1 cut and says "below", so its id and print file are the
+    # ones 0.5.1 wrote.
+    top_layer: str = TOP_LAYER_BELOW
 
     def __post_init__(self) -> None:
         if not self.profile_name.strip():
             raise ValueError("a sliced form must retain its placement profile name")
+        if self.top_layer not in TOP_LAYER_RULES:
+            raise ValueError(f"sliced-form top_layer must be one of {', '.join(TOP_LAYER_RULES)}")
         if not self.layers:
             raise ValueError("a sliced form needs at least one slice layer")
         if self.layer_height <= 0 or self.first_layer_height <= 0:
@@ -818,6 +846,9 @@ def _validate_optional_sha256(value: str, label: str) -> None:
 
 
 __all__ = [
+    "TOP_LAYER_BELOW",
+    "TOP_LAYER_NEAREST",
+    "TOP_LAYER_RULES",
     "CurvePoint",
     "FormWarning",
     "FormWarningCode",

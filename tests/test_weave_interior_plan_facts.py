@@ -109,7 +109,7 @@ def _assert_facts(
                 "infill_cap_layers": 1,
                 "infill_ramp_layers": 0,
             },
-            "9b27dc3638e531d1be574370963c8613b81e67904084d77d31518e6c23720f2e",
+            "855de7f48bf1f8bd94c7b5141bf7ec3ed37340f40833f90e28b2ccbad22f9dc9",
             {
                 "fill_kind": "raster",
                 "spacing_mm": 15.0,
@@ -129,7 +129,7 @@ def _assert_facts(
                 "infill_cap_layers": 1,
                 "infill_ramp_layers": 0,
             },
-            "44d8a914c92fb7f177f297c03df3ea51574a4bb31ce1e7135f6fc04ea3ee8f97",
+            "e0b5f32c9b38ac392a5648437d74756a0c62aedf32acc025473dd9c124f5f284",
             {
                 "fill_kind": "spiral",
                 "spacing_mm": 15.0,
@@ -141,7 +141,7 @@ def _assert_facts(
         ),
         pytest.param(
             {"interior": "solid", "solid_pattern": "crossing"},
-            "933eb44030e13d54ed6552242f6688f642b000d01cdc5999248179ad9bded10b",
+            "1d74cb125d5701b99323a5e4683158a6c47bddfb4be5a55c21f2c65fb21b2255",
             {
                 "fill_kind": "raster",
                 "spacing_mm": 4.0,
@@ -162,9 +162,10 @@ def test_every_proof_retains_exact_fill_inputs_without_moving_canonical_strokes(
 
     # These hashes were captured from the canonical strokes before
     # InteriorProof carried construction facts.  The planner metadata must not
-    # move, reverse, split, or otherwise regenerate one coordinate.
+    # move, reverse, split, or otherwise regenerate one coordinate.  Recaptured
+    # once (2026-10-02) when the 30 mm top got its own layer: 15 layers, not 14.
     assert _coordinate_hash(result) == coordinate_hash
-    assert len(result.proofs) == len(_sliced().layers) == 14
+    assert len(result.proofs) == len(_sliced().layers) == 15
     assert all(
         proof.fill_kind is not None
         and proof.first_inset_mm is not None

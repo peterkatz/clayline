@@ -23,13 +23,13 @@ def test_weave_dry_run_prints_json_ring_and_band_stats(
     assert payload["profile_name"] == "potterbot-xl"
     assert payload["mesh"]["triangle_count"] == 1024
     assert payload["mesh"]["watertight"] is True
-    assert payload["slice"]["layer_count"] == 14
-    assert payload["slice"]["ring_count"] == 14
+    assert payload["slice"]["layer_count"] == 15
+    assert payload["slice"]["ring_count"] == 15
     assert payload["slice"]["wall_bands"] == [
         {
             "first_layer": 0,
             "index": 0,
-            "last_layer": 13,
+            "last_layer": 14,
             "ring_count": 1,
             "track_ids": ["band-000-track-000"],
         }
@@ -45,9 +45,9 @@ def test_weave_dry_run_strict_promotes_open_ring_warnings_with_provenance(
     payload = json.loads(captured.out)
 
     assert result == 2
-    assert payload["warnings"] == {"open_ring": 14}
-    assert payload["warning_count"] == 14
+    assert payload["warnings"] == {"open_ring": 15}
+    assert payload["warning_count"] == 15
     assert "WARNING [open_ring] source_layer=1 island=0" in captured.err
-    assert "WARNING [open_ring] source_layer=14 island=0" in captured.err
+    assert "WARNING [open_ring] source_layer=15 island=0" in captured.err
     assert all(detail["layer_index"] is not None for detail in payload["warning_details"])
     assert all(detail["island_index"] == 0 for detail in payload["warning_details"])

@@ -54,19 +54,22 @@ def test_analytic_cylinder_and_cone_rings_match_radius_area_and_circumference(
         bead_width=5.0,
     )
 
-    assert len(sliced.layers) == 14
+    # 2 ... 28 are the planes under the 30 mm top; the top layer prints at 30 and
+    # is cut halfway up the 2 mm left above 28.
+    assert len(sliced.layers) == 15
     assert sliced.layers[0].z == 2.0
-    assert sliced.layers[-1].z == 28.0 < sliced.bounds.max_z
+    assert sliced.layers[-2].z == 28.0 < sliced.bounds.max_z
+    assert sliced.layers[-1].z == 30.0
     assert len(sliced.wall_bands) == 1
     band = sliced.wall_bands[0]
-    assert (band.span.first_layer, band.span.last_layer, band.ring_count) == (0, 13, 1)
+    assert (band.span.first_layer, band.span.last_layer, band.ring_count) == (0, 14, 1)
     assert band.tracks[0].id == "band-000-track-000"
     assert band.tracks[0].rings == tuple(layer.rings[0].provenance for layer in sliced.layers)
 
     sample_counts = set()
     for layer in sliced.layers:
         ring = _one_ring(sliced, layer.index)
-        radius = radius_at_z(layer.z)
+        radius = radius_at_z(29.0 if layer.index == 14 else layer.z)
         assert ring.circumference == pytest.approx(2 * math.pi * radius, rel=5e-4)
         assert ring.signed_area == pytest.approx(math.pi * radius**2, rel=5e-4)
         assert (ring.centroid.x, ring.centroid.y) == pytest.approx(BED_CENTER, abs=1e-8)
@@ -122,10 +125,10 @@ def test_lobed_ring_normals_point_outside_in_coves_and_are_not_radial_shortcuts(
 
 def test_upright_torus_freezes_exact_one_two_one_band_spans_and_tracks() -> None:
     sliced = cl.load_mesh(MESH / "torus-upright.obj").slice(layer_height=2.0)
-    assert [len(layer.rings) for layer in sliced.layers] == [1] * 7 + [2] * 15 + [1] * 7
+    assert [len(layer.rings) for layer in sliced.layers] == [1] * 7 + [2] * 15 + [1] * 8
     assert [
         (band.span.first_layer, band.span.last_layer, band.ring_count) for band in sliced.wall_bands
-    ] == [(0, 6, 1), (7, 21, 2), (22, 28, 1)]
+    ] == [(0, 6, 1), (7, 21, 2), (22, 29, 1)]
 
     for band in sliced.wall_bands:
         assert len(band.tracks) == band.ring_count
@@ -144,7 +147,7 @@ def test_upright_torus_freezes_exact_one_two_one_band_spans_and_tracks() -> None
     assert warnings[0].layer_span is not None
     assert (warnings[0].layer_span.first_layer, warnings[0].layer_span.last_layer) == (
         0,
-        28,
+        29,
     )
     assert "1 ring \u00d7 layers 1\u20137" in warnings[0].message
     assert "2 rings \u00d7 layers 8\u201322" in warnings[0].message
@@ -155,7 +158,7 @@ def test_open_shell_stays_open_and_every_warning_names_layer_and_island() -> Non
     warnings = [warning for warning in sliced.warnings if warning.code is FormWarningCode.OPEN_RING]
 
     assert sliced.mesh_honesty.watertight is False
-    assert len(warnings) == len(sliced.layers) == 14
+    assert len(warnings) == len(sliced.layers) == 15
     assert [warning.ring for warning in warnings] == [
         layer.rings[0].provenance for layer in sliced.layers
     ]
@@ -197,7 +200,7 @@ def test_sphere_pole_drops_thin_ring_with_original_candidate_provenance() -> Non
 
 def test_nested_closed_loops_classify_outer_and_hole_by_polygon_containment() -> None:
     sliced = cl.load_mesh(MESH / "hollow-cylinder.obj").slice(layer_height=2.0)
-    assert len(sliced.layers) == 9
+    assert len(sliced.layers) == 10
     assert len(sliced.wall_bands) == 1
     assert sliced.wall_bands[0].ring_count == 2
 
@@ -312,9 +315,9 @@ def test_y_up_choice_round_trips_through_the_public_slicer() -> None:
     wrong = cl.load_mesh(source, up="z").slice(layer_height=2.0)
     y_up = cl.load_mesh(source, up="y").slice(layer_height=2.0)
 
-    assert len(wrong.layers) == 11
+    assert len(wrong.layers) == 12
     assert wrong.bounds.max_z == pytest.approx(24)
-    assert len(y_up.layers) == 14
+    assert len(y_up.layers) == 15
     assert y_up.bounds.max_z == pytest.approx(30)
     assert all(len(layer.rings) == 1 for layer in y_up.layers)
     assert all(layer.rings[0].closed for layer in y_up.layers)

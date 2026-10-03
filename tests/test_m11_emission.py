@@ -74,7 +74,7 @@ def test_chained_cylinder_is_one_physical_run_across_layer_provenance() -> None:
 
     assert {move.kind for move in stream.moves} == {MoveKind.PRINT}
     assert len({deposition_run_key(move) for move in stream.moves}) == 1
-    assert {move.layer_index for move in stream.moves} == set(range(14))
+    assert {move.layer_index for move in stream.moves} == set(range(15))
     assert result.emission.gcode.count("; CLAYLINE_STROKE_BEGIN ") == 1
     assert result.emission.gcode.count("; CLAYLINE_STROKE_END ") == 1
     assert result.emission.lint_report.stats.stroke_count == 1
@@ -94,7 +94,7 @@ def test_nonzero_prime_and_end_early_apply_once_not_once_per_layer() -> None:
     ]
     assert prime_lines and tail_lines
     assert all("layer=0 " in line for line in prime_lines)
-    assert all("layer=13 " in line for line in tail_lines)
+    assert all("layer=14 " in line for line in tail_lines)
 
 
 def test_exact_per_layer_counts_and_half_wavelength_weave_shift() -> None:

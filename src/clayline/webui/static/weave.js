@@ -180,9 +180,28 @@
     projectName: null,
     // Item 2: this is a studio-only default proposal, never a replacement
     // for the full cached slice.  Keeping it separate lets an upward range
-    // edit say plainly that the live thread will drag between islands.
+    // edit say plainly that the live thread will drag between the pieces.
     islandEmergence: null,
     rangeAutoIslandStop: false,
+    // The artist switched "Print selected layers" off: the whole form is the
+    // job, and no slice or settle may propose the island stop again.  Without
+    // this the server re-proposed it on every re-slice and the range came back
+    // on by itself.  Cleared when a new model is chosen.
+    islandStopDeclined: false,
+    // How the form's top is sliced. Every job puts a top layer on when half a
+    // layer or more of form is left above the last one ("nearest"). A print
+    // file 0.5.1 saved comes back as "below", only the layers under the top,
+    // and keeps it while that job is on the table, model included, so it
+    // slices to the layers it was saved with.
+    topLayer: "nearest",
+    // A print file's settings landed before its model, or over a model that is
+    // not the one it names: the next model loaded is that job's own, so it
+    // keeps the file's print-range choice and top rule.
+    restoreAwaitingMesh: false,
+    // The engine's own answer to "is every printed layer a dense skin?": the
+    // last settled result carried its infill_no_ribs warning. Only a settled
+    // answer says so; the studio never works it out by counting layers.
+    settledNoRibs: false,
     crownFinish: null,
     // W16: a user edit that shapes local extrusion arms flow color by
     // default. A deliberate toolbar choice then wins for the rest of the
@@ -478,7 +497,7 @@
   function slicePayload() {
     // Empty layer/bead fields fall back to null so the backend derives them
     // from the nozzle through the same single defaults table as the CLI.
-    return {
+    const request = {
       mesh_id: S.mesh?.mesh_id || S.mesh?.id,
       nozzle: numberValue("#weaveNozzle"),
       layer_height: numberValue("#weaveLayerHeight"),
@@ -497,14 +516,41 @@
       // its own stop and the job comes back different from the saved one.
       layer_range: S.rangeAutoIslandStop ? null : (rangePayload() || parkedRangePayload()),
     };
+    // Said only when it is true, so a request from an artist who never turned
+    // the range off is the request it always was. A saved range switched on
+    // over the whole form asks for the whole form again, however many layers
+    // this slice has, and no stop in it, because the artist printed through.
+    if (S.islandStopDeclined || parkedWholeFormSelected()) request.island_stop = false;
+    if (S.topLayer === "below") request.top_layer = "below";
+    // Vase mode's one continuous spiral cannot print past a split of any
+    // length, so the server reads the form strictly while it is on.
+    if ($("#weaveZBlend").checked) request.z_blend = true;
+    return request;
+  }
+
+  // Whether a parked range was the whole form when it was saved: from layer 1
+  // to the saved layer count.
+  function parkedRangeIsWholeForm(parked) {
+    return Boolean(parked)
+      && Number.isInteger(parked.total)
+      && Math.trunc(Number(parked.from)) === 1
+      && Math.trunc(Number(parked.to)) === parked.total;
+  }
+
+  function parkedWholeFormSelected() {
+    return !S.rangeAutoIslandStop
+      && S.pendingRange?.enabled === true
+      && parkedRangeIsWholeForm(S.pendingRange);
   }
 
   // The parked range of a restored settings snapshot, and only that: a
   // restored G-code recipe parks its range without this flag and keeps
-  // asking the server the way it always has.
+  // asking the server the way it always has. The whole form is not sent as
+  // numbers: a slice that now has a top layer would be cut back to the old
+  // count and leave it off.
   function parkedRangePayload() {
     const parked = S.pendingRange;
-    if (!parked || parked.enabled !== true) return null;
+    if (!parked || parked.enabled !== true || parkedRangeIsWholeForm(parked)) return null;
     const from = Math.trunc(Number(parked.from));
     const to = Math.trunc(Number(parked.to));
     if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < from) return null;
@@ -609,7 +655,7 @@
       && $("#weaveFollowTop").checked
       && !$("#weaveLevelRim").checked
     );
-    return {
+    const request = {
       slice_id: S.slice?.slice_id || S.slice?.id,
       quality,
       pattern: patternObject(),
@@ -622,6 +668,8 @@
       layer_range: autoCrown ? null : rangePayload(),
       island_range_auto: S.rangeAutoIslandStop,
     };
+    if (S.islandStopDeclined) request.island_stop = false;
+    return request;
   }
 
   function layerRhythmValues() {
@@ -806,6 +854,12 @@
         // different rim work, so a saved job that comes back without it comes
         // back as a different job.
         range_auto_island_stop: S.rangeAutoIslandStop,
+        // Switching the range off is a choice about the whole job, so it is
+        // saved with it; a project saved before this key reopens as it did.
+        island_stop_declined: S.islandStopDeclined,
+        // Saved only for a job restored from a 0.5.1 print file, so every
+        // other project file is written exactly as before.
+        ...(S.topLayer === "below" ? { top_layer: "below" } : {}),
         first_layer_follows: S.firstLayerFollows,
         sample_spacing_auto: S.sampleSpacingAuto,
         layer_height_follows_nozzle: S.layerHeightFollows,
@@ -885,6 +939,14 @@
     // nobody chose.
     const autoIslandStop = slice.range_auto_island_stop === true;
     S.rangeAutoIslandStop = autoIslandStop;
+    // A project 0.5.1 saved has no word on declining. A range it saved switched
+    // off, with no automatic stop and a known layer count, was the whole form
+    // by the artist's choice: that is a declined stop, or every re-slice would
+    // propose it again and switch the range back on.
+    S.islandStopDeclined = "island_stop_declined" in slice
+      ? slice.island_stop_declined === true
+      : slice.range_enabled === false && !autoIslandStop && Number.isInteger(slice.range_total);
+    S.topLayer = slice.top_layer === "below" ? "below" : "nearest";
     if (S.slice && Number.isInteger(S.rangeTotal)) {
       S.pendingRange = null;
       $("#weaveRangeEnabled").disabled = false;
@@ -1334,7 +1396,17 @@
     if (exportable && S.activeMode === "weave") attachWeaveScrubber();
   }
 
+  // A job reopened from a 0.5.1 print file keeps that file's top, the layers
+  // under it only, while it is still that job. Once the artist changes how the
+  // form is placed or sliced it is a new slice, and a new slice gets the top
+  // layer every job gets. Called from the artist's own edits only, never from
+  // a restore, which sets the rule it brings.
+  function releaseOldTopRule() {
+    S.topLayer = "nearest";
+  }
+
   function scheduleMesh() {
+    releaseOldTopRule();
     invalidateExact();
     window.clearTimeout(S.timers.mesh);
     if (S.file) S.timers.mesh = window.setTimeout(uploadMesh, 220);
@@ -1513,6 +1585,10 @@
     $("#weaveStatLayers").textContent = String(facts.layer_count ?? "—");
     $("#weavePreviewTitle").textContent = `${S.file?.name || "Mesh"} · ${facts.layer_count ?? "—"} sliced layers`;
     S.islandEmergence = payload.island_emergence || null;
+    // A new slice is a new job until the engine says otherwise: an all-skin
+    // verdict from the last one is not this one's.
+    S.settledNoRibs = false;
+    S.pendingRange = rereadParkedRange(S.pendingRange, payload);
     // A parked range is a saved job landing again.  Whether its last layer was
     // the studio's proposal or the artist's own choice was saved with it, so it
     // survives this slice instead of being read back off the server.
@@ -1526,6 +1602,32 @@
       total: Number(facts.layer_count),
     });
     renderWarnings(stats.warning_details || [], false);
+  }
+
+  // A parked range that the studio worked out, rather than layers the artist
+  // picked, was a reading of the slice it was saved against: the automatic
+  // island stop, or the whole form as it then was. It is read again against
+  // this slice. The stop holds only where this slice proposes the same stop
+  // over the same layer count, and the whole form holds where no stop is
+  // proposed, stretched to this slice's count; otherwise the job follows this
+  // slice. A project 0.5.1 saved at "1-2 of 19, automatic" over a two-layer
+  // skirt the studio now prints through comes back as the whole form.
+  function rereadParkedRange(parked, payload) {
+    if (!parked) return parked;
+    const total = Number(payload.print_range?.total);
+    const emergence = payload.island_emergence;
+    const proposedStop = emergence?.default_applied ? emergence.default_stop_to_layer : null;
+    const sameCount = total === parked.total;
+    if (parked.autoIslandStop === true) {
+      return sameCount && proposedStop !== null && Math.trunc(Number(parked.to)) === proposedStop
+        ? parked
+        : null;
+    }
+    if (parkedRangeIsWholeForm(parked)) {
+      if (proposedStop !== null) return null;
+      return sameCount || !Number.isInteger(total) ? parked : { ...parked, to: total, total };
+    }
+    return parked;
   }
 
   function applyPrintRange(printRange) {
@@ -1618,9 +1720,12 @@
       truth = S.crownFinish.message;
     } else if (emergence && selected[0] === 1 && selected[1] === emergence.default_stop_to_layer) {
       truth = emergence.message;
-    } else if (emergence && selected[1] >= emergence.layer) {
+    } else if (emergence && selected[1] >= emergence.layer && selected[0] <= emergence.last_layer) {
+      const span = emergence.last_layer > emergence.layer
+        ? `Layers ${emergence.layer}–${emergence.last_layer} split`
+        : `Layer ${emergence.layer} splits`;
       truth = emergence.override_message
-        || `Layers ${emergence.layer}–${emergence.last_layer} split into ${emergence.outer_count} separate islands. This selected range includes them, so the thread will drag between islands.`;
+        || `${span} into ${emergence.outer_count} separate pieces. This selected range includes them, so the thread will drag between the pieces.`;
     }
     $("#weaveRangeReadout").textContent = `${sourceFirstZ.toFixed(1)}–${sourceLastZ.toFixed(1)} mm of the form · ${truth}`;
   }
@@ -2127,11 +2232,19 @@
   }
 
   async function renderResult(payload, quality) {
+    // Read before applyCapabilities, whose syncControls redraws the Interior
+    // controls from it.
+    if (quality === "settle") {
+      S.settledNoRibs = (payload.warnings || []).some((warning) => (
+        (typeof warning.code === "string" ? warning.code : warning.code?.value) === "infill_no_ribs"
+      ));
+    }
     S.scope = payload.pattern || S.scope;
     renderPatternVisuals(S.scope);
     applyCapabilities(payload);
     S.crownFinish = payload.crown_finish || null;
     renderZBlendReachReadout(S.crownFinish);
+    adoptServerIslandStop(payload.island_emergence);
     if (S.crownFinish?.applied && S.crownFinish?.automatic && payload.print_range) {
       setControlValue("#weaveRangeFrom", payload.print_range.from);
       setControlValue("#weaveRangeTo", payload.print_range.to);
@@ -2648,17 +2761,17 @@
     // the floor and the artist is told which number their clay actually gets.
     const typedSpacing = numberValue("#weaveInfillSpacing", 3);
     const belowFloor = Number.isFinite(typedSpacing) && typedSpacing <= RIB_SPACING_FLOOR_BEADS;
-    // The engine's INFILL_NO_RIBS condition, decided from the selected print
-    // range. weave_interior counts the layers that carry rings, which is at
-    // most the layers in that range, so `base + cap >= printed` only ever
-    // fires where every printed layer really is a dense skin — never on a
-    // guess, and it stays silent until a slice makes the count knowable.
+    // The engine's own INFILL_NO_RIBS answer, from the last settled result.
+    // Base and cap skins follow the form's open air, so no count of layers
+    // here can say whether every printed layer is dense: a sphere printed
+    // 1-4 under Base 2 and Cap 2 still ribs layer 4. Before a settled answer
+    // the studio claims nothing.
     const printed = printedLayerCount();
     const noRibs = interior.interior === "infill"
       && printed !== null
-      && interior.baseLayers + interior.capLayers >= printed;
+      && S.settledNoRibs;
     $("#weaveInfillSpacingReadout").textContent = noRibs
-      ? `Base and cap layers cover all ${printed} printed layers, so this form has no ribs to space — it prints dense throughout.`
+      ? `The base and cap skins cover all ${printed} printed layers, so this form has no ribs to space — it prints dense throughout.`
       : belowFloor
         ? `Rib spacing must be more than ${RIB_SPACING_FLOOR_BEADS} coil width — ribs a coil apart or closer touch, which is a dense fill under another name.`
         : spacingKnown
@@ -3070,6 +3183,20 @@
     syncAutomaticIslandRangeForPattern();
     syncControls();
     scheduleModulation("settle");
+  }
+
+  // Vase mode switched on after the slice: the slice let a short split
+  // through and proposed no stop, or a later one, but the spiral cannot print
+  // past any split, so the server stopped at the first itself, or ran the
+  // crown over it. The range takes that as the studio's own stop, so the
+  // readout says what prints. A range the artist chose or switched off is
+  // left alone, as the server left it.
+  function adoptServerIslandStop(emergence) {
+    if (!emergence?.default_applied || S.islandStopDeclined) return;
+    if (!S.rangeAutoIslandStop && rangePayload()) return;
+    S.islandEmergence = emergence;
+    S.rangeAutoIslandStop = true;
+    syncAutomaticIslandRangeForPattern();
   }
 
   function syncAutomaticIslandRangeForPattern() {
@@ -3671,6 +3798,11 @@
         range_to: to,
         range_total: total,
         range_auto_island_stop: false,
+        // A recipe that printed the whole form has already turned the stop
+        // down; one that says nothing about its layers keeps asking.
+        island_stop_declined: total !== null && from === 1 && to === total,
+        // A file 0.5.1 saved was sliced with only the layers under the top.
+        top_layer: saved.top_layer === "below" ? "below" : "nearest",
         // The file's numbers are the job's numbers: none of them follow the
         // nozzle any more.
         first_layer_follows: false,
@@ -3708,6 +3840,9 @@
         const source = payload.source_mesh || {};
         const modelName = source.filename || "the model";
         let sentence;
+        // The model to come is the file's own whether none is loaded or the one
+        // loaded is not it, so loading it keeps the file's top rule and stop.
+        S.restoreAwaitingMesh = Boolean(payload.needs_mesh) || source.match === false;
         if (payload.needs_mesh) {
           sentence = `Every setting came back from ${file.name}. Load ${modelName}, the model it was sliced from, to rebuild the job.`;
         } else if (source.match === false) {
@@ -4015,6 +4150,12 @@
     }
     S.file = file;
     S.inchesBannerEvaluated = false;
+    if (S.restoreAwaitingMesh) {
+      S.restoreAwaitingMesh = false;
+    } else {
+      S.islandStopDeclined = false;
+      S.topLayer = "nearest";
+    }
     $("#weaveInchesBanner").hidden = true;
     syncWeaveProjectControls();
     beginMetric();
@@ -4108,11 +4249,13 @@
 
   function bindSliceControls() {
     $("#weaveNozzle").addEventListener("change", () => {
+      releaseOldTopRule();
       beginMetric();
       applyNozzleFollows();
       weaveStateWriter?.schedule();
     });
     $("#weaveLayerHeight").addEventListener("input", () => {
+      releaseOldTopRule();
       S.layerHeightFollows = false;
       syncFollowChips();
       if (S.firstLayerFollows) setControlValue("#weaveFirstLayer", $("#weaveLayerHeight").value);
@@ -4120,13 +4263,23 @@
     });
     $("#weaveLayerHeightFollow").addEventListener("click", (event) => {
       event.preventDefault();
+      releaseOldTopRule();
       S.layerHeightFollows = true;
       beginMetric();
       applyNozzleFollows();
     });
-    $("#weaveFirstLayer").addEventListener("input", () => { S.firstLayerFollows = false; invalidateSlice(); });
-    $("#weaveSampleSpacing").addEventListener("input", () => { S.sampleSpacingAuto = false; invalidateSlice(); });
+    $("#weaveFirstLayer").addEventListener("input", () => {
+      releaseOldTopRule();
+      S.firstLayerFollows = false;
+      invalidateSlice();
+    });
+    $("#weaveSampleSpacing").addEventListener("input", () => {
+      releaseOldTopRule();
+      S.sampleSpacingAuto = false;
+      invalidateSlice();
+    });
     $("#weaveBeadWidth").addEventListener("input", () => {
+      releaseOldTopRule();
       S.beadWidthFollows = false;
       if (S.wavelengthFollows) {
         setControlValue(
@@ -4139,6 +4292,7 @@
     });
     $("#weaveBeadWidthFollow").addEventListener("click", (event) => {
       event.preventDefault();
+      releaseOldTopRule();
       S.beadWidthFollows = true;
       beginMetric();
       applyNozzleFollows();
@@ -4152,6 +4306,9 @@
     });
     $("#weaveRangeEnabled").addEventListener("change", () => {
       S.rangeAutoIslandStop = false;
+      // Off means the whole form, and it stays that way through every
+      // re-slice; on is the artist's own range, which always wins.
+      S.islandStopDeclined = !$("#weaveRangeEnabled").checked;
       const selected = rangePayload();
       if (selected && selected[0] > 1 && numberValue("#weaveBottomLayers", 0) > 0) {
         setControlValue("#weaveBottomLayers", 0);
@@ -4399,6 +4556,10 @@
         S.rangeTotal = null;
         S.islandEmergence = null;
         S.rangeAutoIslandStop = false;
+        S.islandStopDeclined = false;
+        S.topLayer = "nearest";
+        S.restoreAwaitingMesh = false;
+        S.settledNoRibs = false;
         S.crownFinish = null;
         S.flowColorAutoArmed = false;
         S.flowColorUserOverride = null;
@@ -4552,6 +4713,9 @@
     activateMode("weave");
     setWeaveProjectStatus("");
     S.file = new File([source.bytes], source.name, { type: "application/octet-stream" });
+    // The project brings its own model and its own job, so a print file still
+    // waiting for its model is not waiting any more.
+    S.restoreAwaitingMesh = false;
     S.inchesBannerEvaluated = false;
     $("#weaveInchesBanner").hidden = true;
     // One undo step: the writer is held while the whole project lands, and

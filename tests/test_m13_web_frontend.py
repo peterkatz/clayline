@@ -744,7 +744,7 @@ def test_each_interior_mode_hides_its_own_controls_until_it_is_chosen() -> None:
         assert f'"#{control}"' in WEAVE
     # Rib spacing of one coil or less is a dense fill under another name.
     assert 'id="weaveInfillSpacing" type="number" value="3" min="1.01"' in section
-    assert "Base layers" in section and "closed bed face" in section
+    assert "Base layers" in section and "floor skin" in section
     assert "Cap layers" in section and "roof skin" in section
 
     sync = _function("syncInteriorControls", "function syncControls")
@@ -840,25 +840,37 @@ def test_a_rib_spacing_the_engine_accepts_is_never_rewritten_on_its_way_to_the_c
 
 
 def test_rib_spacing_and_rib_angle_gray_when_the_skins_leave_no_rib() -> None:
-    """Base and cap between them claiming every printed layer makes every layer
-    a dense skin — the engine warns INFILL_NO_RIBS about exactly that — and
-    neither rib control shapes any clay.  Both gray, and the readout stops
-    asserting a rib pitch that will not be printed."""
+    """Base and cap skins claiming every printed layer makes every layer a dense
+    skin — the engine warns INFILL_NO_RIBS about exactly that — and neither rib
+    control shapes any clay.  Both gray, and the readout stops asserting a rib
+    pitch that will not be printed.  Only the engine can say so: the skins follow
+    the form's open air, so a sphere printed 1-4 under Base 2 and Cap 2 still ribs
+    layer 4, and counting Base + Cap against the printed layers claimed it did not."""
 
     from clayline.weave_models import FormWarningCode
 
-    assert FormWarningCode.INFILL_NO_RIBS
+    assert FormWarningCode.INFILL_NO_RIBS.value == "infill_no_ribs"
 
     sync = _function("syncInteriorControls", "function syncControls")
-    # Counted from the selected print range, which is at most the layers the
-    # engine's own skin arithmetic runs over — so the gray-out only ever fires
-    # where it is certainly true, and stays silent before a slice.
     count = _function("printedLayerCount", "function patternObject")
     assert "if (!Number.isInteger(S.rangeTotal)) return null;" in count
     assert "rangePayload() || [1, S.rangeTotal]" in count
     assert "const printed = printedLayerCount();" in sync
-    assert "interior.baseLayers + interior.capLayers >= printed" in sync
+    assert "&& S.settledNoRibs;" in sync
+    assert "interior.baseLayers + interior.capLayers >= printed" not in WEAVE
     assert 'interior.interior === "infill"' in sync
+    # The last settled result's own warning decides it, nothing earlier; a new slice
+    # and Reset forget it until the engine answers again.
+    result = _function("renderResult", "function syncAutomaticIslandRangeForPattern")
+    assert 'if (quality === "settle") {\n      S.settledNoRibs = (payload.warnings || [])' in result
+    assert '=== "infill_no_ribs"' in result
+    # applyCapabilities ends in syncControls, which redraws the Interior controls.
+    assert "syncControls();\n  }" in _function("applyCapabilities", "function traceFlowRange")
+    assert result.index("S.settledNoRibs =") < result.index("applyCapabilities(payload);")
+    facts = _function("renderSliceFacts", "function rereadParkedRange")
+    assert "S.settledNoRibs = false;" in facts
+    assert WEAVE.count("S.settledNoRibs = false;") == 2
+    assert "settledNoRibs: false," in WEAVE
 
     # The house mechanism, at both controls, with one sentence between them.
     assert '"#weaveInfillSpacing",\n      noRibs,' in sync
@@ -886,6 +898,45 @@ def test_rib_spacing_and_rib_angle_gray_when_the_skins_leave_no_rib() -> None:
     assert sync.index("no ribs to space") < sync.index("Ribs every ")
 
 
+def test_the_settled_answer_the_page_reads_carries_the_no_ribs_code() -> None:
+    # The page decides "no ribs" from the settled warnings alone, so the settled
+    # payload has to carry the engine's code as the plain string the page compares.
+    import trimesh
+
+    from clayline.webui.app import _load_weave_mesh_payload, _modulate_weave_payload
+
+    body = trimesh.creation.cylinder(radius=15.0, height=12.0, sections=48)
+    body.apply_translation((0.0, 0.0, 6.0))
+    mesh, _payload = _load_weave_mesh_payload(
+        body.export(file_type="stl"),
+        {"filename": "drum.stl", "up": "z", "scale": "1", "offset_x": "0", "offset_y": "0"},
+    )
+    sliced = mesh.slice(
+        nozzle=2.0, layer_height=1.0, first_layer_height=1.0, sample_spacing=1.0, bead_width=None
+    )
+    assert len(sliced.layers) == 12
+
+    def settled_codes(base: int, cap: int) -> set[str]:
+        _prepared, payload = _modulate_weave_payload(
+            sliced,
+            {
+                "quality": "settle",
+                "wave": "flat",
+                "bottom_layers": 0,
+                "interior": "infill",
+                "infill_base_layers": base,
+                "infill_cap_layers": cap,
+                "reproducible": True,
+                "prime_mm": 0.0,
+                "end_early_mm": 0.0,
+            },
+        )
+        return {warning["code"] for warning in payload["warnings"]}
+
+    assert "infill_no_ribs" in settled_codes(6, 6)
+    assert "infill_no_ribs" not in settled_codes(2, 2)
+
+
 def test_rib_angle_is_grayed_under_concentric_because_the_engine_discards_it() -> None:
     sync = _function("syncInteriorControls", "function syncControls")
     # Same machinery as Ramp under Cap 0 — a title attribute alone never
@@ -905,21 +956,45 @@ def test_the_ramp_count_is_worded_as_a_ceiling_because_that_is_what_it_is() -> N
     assert "This is a ceiling, not a promise" in section
     assert "the halving stops once the ribs reach the dense skin's own spacing" in section
     assert "shorter than the number you type" in section
-    assert "<small>at most, below the cap</small>" in section
+    assert "<small>at most, below each roof</small>" in section
     # The old absolute promise is gone from the control that made it.
     assert "halves each layer so the roof has something to land on" in section
     assert "spacing halves each layer.</" not in section
 
 
-def test_the_concentric_ridge_claim_agrees_with_the_cap_copy_below_it() -> None:
+def test_the_concentric_copy_says_it_stops_and_starts_and_sends_a_roof_to_lines() -> None:
     section = _interior_section()
-    # Cap ships at 0 and says so three lines down, so an open form's ribs and
-    # that ridge ARE the finished interior surface. The absolute is gone.
-    assert "invisible in the fired piece" not in section
-    assert "Under a cap that ridge is sealed inside the piece" in section
-    assert "on a form left open at the top it is part of the interior surface" in section
+    hint = section[section.index('id="weaveInfillPatternHint"') :]
+    hint = hint[: hint.index("</p>")]
+    # Said plainly, in the words a potter reads: no ridge claim, no developer words.
+    assert "stops and starts on every layer" in hint
+    assert "its rings shift wherever the form widens or narrows" in hint
+    assert "For a roof or a closed top, use Lines." in hint
+    assert "stay in one line from layer to layer and stack" in hint
+    assert "internal ridge" not in section
+    assert "Under a cap that ridge is sealed inside the piece" not in section
+    # Cap ships at 0 and says so: zero leaves the form open at the top.
     assert "Zero leaves the form open at the top" in section
     assert 'id="weaveInfillCapLayers" type="number" value="0"' in section
+
+
+def test_the_skin_controls_say_where_the_form_gets_dense_fill() -> None:
+    section = _interior_section()
+    # Cap and Base follow the form's own open air, not the first and last printed layers.
+    assert "open air above it" in section
+    assert "open air below it" in section
+    assert "steps inward by more than half a coil" in section
+    # Dense is per layer: a spot of open air makes the whole layer dense, and the
+    # words say so rather than promising dense fill only over that spot.
+    assert "The whole layer goes dense, not only the part under the open air." in section
+    assert "The whole layer goes dense, not only the part over the open air." in section
+    guide = (ROOT / "guide" / "weave.md").read_text(encoding="utf-8")
+    assert "the whole layer goes dense, not only the part with open air" in guide
+    assert "steps inward by more than half a coil goes dense too" in guide
+    assert "Zero leaves an open lattice base" in section
+    assert "Just below each roof skin, rib spacing halves each layer" in section
+    assert "last printed layers" not in section
+    assert "Dense fill on the first layers" not in section
 
 
 def test_a_filled_interior_grays_bottom_and_vase_mode_with_the_engines_reasons() -> None:
@@ -1510,8 +1585,12 @@ def test_a_reopened_project_keeps_the_last_layer_the_artist_chose() -> None:
     ) in slice_payload
     parked = _function("parkedRangePayload", "function rangePayload")
     # Only a restored settings snapshot parks a range with this flag; a
-    # restored G-code recipe parks one without it and is left alone.
-    assert "if (!parked || parked.enabled !== true) return null;" in parked
+    # restored G-code recipe parks one without it and is left alone.  The whole
+    # form goes as no numbers at all, so a slice that now has a top layer keeps it.
+    assert (
+        "if (!parked || parked.enabled !== true || parkedRangeIsWholeForm(parked)) return null;"
+        in parked
+    )
     assert "return [from, to];" in parked
 
     # And the slice that follows does not overwrite what was restored.
@@ -1575,3 +1654,41 @@ def test_no_new_project_string_speaks_to_a_developer() -> None:
         assert sentence in HTML or sentence in WEAVE
         for word in forbidden:
             assert word.lower() not in sentence.lower()
+
+
+def test_an_opened_print_file_keeps_its_rule_until_its_model_comes_or_the_job_changes() -> None:
+    restore = _function("restoreFromGcode", "function ensureRestoreProfileOption")
+    # Waiting for the file's own model whether none is loaded or the loaded one is not
+    # it: loading it keeps the file's top rule and its declined stop.
+    assert (
+        "S.restoreAwaitingMesh = Boolean(payload.needs_mesh) || source.match === false;" in restore
+    )
+    # A project brings its own model and job, so nothing is waiting after it opens.
+    open_project = _function("openWeaveProject", "function bindHistoryFieldCommits")
+    assert "S.restoreAwaitingMesh = false;" in open_project
+    assert open_project.index("S.restoreAwaitingMesh = false;") < open_project.index(
+        "applyWeaveSettings(project.settings"
+    )
+    assert WEAVE.count("S.restoreAwaitingMesh = false;") == 3  # model loaded, project, Reset
+
+    # The old "below" top lets go once the artist changes how the form is placed or
+    # sliced; a restore never calls it, because a restore sets the rule it brings.
+    release = _function("releaseOldTopRule", "function scheduleMesh")
+    assert 'S.topLayer = "nearest";' in release
+    assert "releaseOldTopRule();\n    invalidateExact();" in _function(
+        "scheduleMesh", "function invalidateSlice"
+    )
+    controls = _function("bindSliceControls", "function bindPatternControls")
+    for handler in (
+        '"#weaveNozzle").addEventListener("change", () => {\n      releaseOldTopRule();',
+        '"#weaveLayerHeight").addEventListener("input", () => {\n      releaseOldTopRule();',
+        '"#weaveFirstLayer").addEventListener("input", () => {\n      releaseOldTopRule();',
+        '"#weaveSampleSpacing").addEventListener("input", () => {\n      releaseOldTopRule();',
+        '"#weaveBeadWidth").addEventListener("input", () => {\n      releaseOldTopRule();',
+    ):
+        assert handler in controls
+    assert controls.count("releaseOldTopRule();") == 7  # and the two follow chips
+    for programmatic in ("invalidateSlice", "uploadMesh", "applyWeaveSettings"):
+        start = WEAVE.index(f"function {programmatic}")
+        body = WEAVE[start : WEAVE.index("\n  }\n", start)]
+        assert "releaseOldTopRule" not in body

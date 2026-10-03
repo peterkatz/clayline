@@ -2,6 +2,37 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.6.0 — 2026-10-03
+
+### New
+- **Pieces with tops.** Cap layers now lays a dense roof wherever the form
+  has open air above it: the very top, a floor partway up (like the bottom of
+  a bowl's hollow), or the layers of a dome as it closes in. Base layers does
+  the same for floors. A wall that steps inward by more than half a coil gets
+  dense fill under it too, so it lands on clay. The whole layer goes dense
+  where part of it needs a roof. Ramp layers now tighten the ribs under every
+  roof, not only the top one. Cap layers still starts at 0.
+- **A warning when a wall lands over the gaps between ribs.** If a wall steps
+  in past the wall below and has too little clay under it, Clayline names the
+  layers and how far off it lands.
+
+### Fixed
+- **A short split no longer stops the print.** A form that splits into
+  separate pieces for 3 layers or fewer, then joins again (a thin skirt beside
+  a dish, for example), now prints whole. The message names the split's real
+  layers. Vase mode still stops before any split.
+- **Turning "Print selected layers" off now stays off** when you slice again.
+- **A flat top prints to its full height.** A 30 mm form at 1.5 mm layers used
+  to stop at 28.5 mm. Print files saved by earlier versions still open exactly
+  as they were.
+- **A piece standing inside another piece's hole gets its fill.** Before, the
+  hole could be handed to the wrong piece and the whole layer printed as wall
+  alone. One piece that can't be filled no longer empties the rest of its layer,
+  and the warning only blames the surface pattern when the pattern is the cause.
+- **Concentric says what it does.** Its description now says it stops and
+  starts on every layer and that its rings shift where the form widens or
+  narrows; for a roof, use Lines.
+
 ## 0.5.1 — 2026-10-01
 
 ### Fixed

@@ -523,7 +523,7 @@ def test_cli_executes_zblend_and_returns_exact_torus_hint(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == (
-        "ERROR: Layers 8\N{EN DASH}29 split above one continuous wall \N{EM DASH} "
+        "ERROR: Layers 8\N{EN DASH}30 split above one continuous wall \N{EM DASH} "
         "turn off the level rim so the crown can follow the form's top.\n"
     )
 

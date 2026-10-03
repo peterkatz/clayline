@@ -26,7 +26,7 @@ from clayline.profiles import available_profiles, emission_defaults, load_profil
 from clayline.report import render_report_text
 from clayline.wave import load_pattern, preset_pattern
 from clayline.weave_api import sliced_form_stats
-from clayline.weave_models import FormWarning
+from clayline.weave_models import TOP_LAYER_NEAREST, FormWarning
 from clayline.workflow import (
     OutputRequest,
     PipelineRequest,
@@ -412,19 +412,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--infill-base",
         type=int,
         default=None,
-        help="number of solid base layers under an infill interior",
+        help=(
+            "dense fill over the bed and over any part of the form with open air below it, "
+            "this many layers thick (infill interior)"
+        ),
     )
     weave.add_argument(
         "--infill-cap",
         type=int,
         default=None,
-        help="number of solid cap layers over an infill interior",
+        help=(
+            "dense fill under any part of the form with open air above it, such as the top, "
+            "a shelf or a dome, this many layers thick; also under a wall that steps in "
+            "over the ribs (infill interior)"
+        ),
     )
     weave.add_argument(
         "--infill-ramp",
         type=int,
         default=None,
-        help="number of layers ramping infill ribs into a bridging wall",
+        help="number of rib layers under each roof skin that tighten toward it (infill interior)",
     )
     weave.add_argument(
         "--flow",
@@ -725,6 +732,9 @@ def _weave_command(args: argparse.Namespace) -> int:
         first_layer_height=first_layer_height,
         sample_spacing=sample_spacing,
         bead_width=bead_width,
+        # A print file 0.5.1 saved was cut with only the planes under the top,
+        # and is cut that way again, or it comes back a layer taller.
+        top_layer=TOP_LAYER_NEAREST if recipe is None else recipe.top_layer,
     )
     if args.dry_run:
         print(json.dumps(sliced_form_stats(sliced), indent=2, sort_keys=True))

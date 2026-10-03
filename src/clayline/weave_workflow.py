@@ -21,7 +21,7 @@ from clayline.preview import PreviewOptions, write_plan_png, write_toolpath_html
 from clayline.profiles import emission_defaults, load_profile
 from clayline.report import JobReport, build_report, write_report
 from clayline.wave import load_pattern
-from clayline.weave_models import Pattern, SlicedForm
+from clayline.weave_models import FormWarningCode, Pattern, SlicedForm
 from clayline.weave_range import (
     LAYER_RANGE_SEMANTICS,
     LayerRangeInput,
@@ -381,6 +381,7 @@ def prepare_weave_result(
         end_early_mm=effective_end_early_mm,
         reproducible=reproducible,
         job_id=stream.job_id,
+        top_layer=selected.top_layer,
     )
     parameters = {
         "bottom_layers": resolved_pattern.settings.bottom_layers,
@@ -470,19 +471,24 @@ def prepare_weave_result(
         if resolved_pattern.settings.interior == "solid":
             parameters["solid_pattern"] = resolved_pattern.settings.solid_pattern
         else:
-            # Base and cap are counted over the layers that carry material, so
-            # once they meet there is no sparse layer left and the whole rib
-            # description shapes nothing — the engine says so itself with
-            # INFILL_NO_RIBS.  Measured on cylinder.obj: with base and cap both
-            # covering the form, sweeping the spacing 3.0 to 8.0, the angle 45 to
-            # 13, the pattern lines to concentric and the ramp 3 to 9 each emits
-            # byte-identical moves.  ``printed`` is the honest denominator
-            # because that is what the builder counts.
-            printed = sum(1 for layer in selected.layers if layer.rings)
-            ribbed = (
-                resolved_pattern.settings.infill_base_layers
-                + resolved_pattern.settings.infill_cap_layers
-            ) < printed
+            # Once every printed layer is a skin there is no sparse layer left
+            # and the whole rib description shapes nothing.  Measured on
+            # cylinder.obj: with base and cap both covering the form, sweeping
+            # the spacing 3.0 to 8.0, the angle 45 to 13, the pattern lines to
+            # concentric and the ramp 3 to 9 each emits byte-identical moves.
+            #
+            # WHICH layers are skins is the interior's reading of the form, not
+            # a count: Cap and Base skin wherever the form has open air above
+            # or below an island, so a cone with Cap 29 of 30 printed layers is
+            # dense throughout, and a range of 4 with Base 2 and Cap 2 can still
+            # rib one layer.  Counting ``base + cap`` against the printed layers
+            # named rib settings on the first that shaped nothing.  The plan
+            # itself says when it holds no rib — INFILL_NO_RIBS, raised exactly
+            # when every planned layer is dense — and that statement rides the
+            # stream this header is written from, so it is what decides.
+            ribbed = not any(
+                warning.code == FormWarningCode.INFILL_NO_RIBS for warning in stream.warnings
+            )
             parameters["infill_base_layers"] = resolved_pattern.settings.infill_base_layers
             parameters["infill_cap_layers"] = resolved_pattern.settings.infill_cap_layers
             if ribbed:

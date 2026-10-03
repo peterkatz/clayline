@@ -186,7 +186,7 @@ def test_pineapple_island_stop_and_crown_use_the_real_app_route() -> None:
     assert emergence["layer"] == 63
     assert emergence["outer_count"] == 12
     assert emergence["default_applied"] is True
-    assert "split into 12 separate islands" in emergence["message"]
+    assert "split into 12 separate pieces" in emergence["message"]
     assert discrete["print_range"]["to"] == 62
     assert discrete["crown_finish"] is None
     assert _header_integer(discrete_gcode, "travel_motion_count") <= 8
