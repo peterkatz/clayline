@@ -2,6 +2,19 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.7.1 — 2026-10-03
+
+### Fixed
+- **Ignore hollows is where you'd look for it.** It now sits in the Interior
+  section, right under Hollow, Solid and Infill, and changing it slices the
+  form again by itself. When a model is hollow inside and the fill would stay
+  in its wall, the section says so beside the switch.
+- **The Interior section is easier to read.** Each choice is described in one
+  short line, with the longer explanation in the tooltip, and nothing is said
+  twice.
+- **You can see inside while you scrub.** The layers above the layer slider
+  are a little more see-through, so the inside of a form shows through them.
+
 ## 0.7.0 — 2026-10-03
 
 ### New

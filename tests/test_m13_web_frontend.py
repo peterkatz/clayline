@@ -454,9 +454,8 @@ def test_every_verifier_reported_nullified_weave_setting_is_disabled_with_a_reas
         "On — takes effect when Bottom layers is above 0. Crossing passes bond the base stronger.",
         "Off — takes effect only when Bottom layers is above 0.",
         "Taper wobble to zero across one final top-Z revolution.",
-        "Ramp layers have no effect while Cap layers is 0.",
-        "Rib angle has no effect while the rib pattern is Concentric — nested rings follow "
-        "the wall, not an angle.",
+        "No effect while Cap layers is 0.",
+        "No effect with Concentric.",
     ):
         assert reason in WEAVE
 
@@ -705,18 +704,15 @@ def test_interior_offers_three_choices_and_says_what_each_does_to_the_clay() -> 
     for value in ("hollow", "solid", "infill"):
         assert f'name="weaveInterior" value="{value}"' in section
     assert 'name="weaveInterior" value="hollow" checked' in section
-    assert "You choose it" in section
-
-    # Hollow is today's behaviour, said plainly.
-    assert "Hollow prints the wall and nothing inside it" in section
+    # One short line each, said where the choice is made (Pete, 2026-10-03: the
+    # section had become walls of text).
+    assert '<p class="section-copy">What the nozzle lays inside the wall.</p>' in section
+    assert "Just the wall, nothing inside." in section
+    sync = _function("syncInteriorControls", "function syncControls")
     # Solid admits its weight instead of selling itself.
-    assert "for small functional pieces like a teapot lid" in section
-    assert "A solid piece is heavy" in section
-    # This sentence is the reason infill exists; the artist has to read it.
-    assert (
-        "Sparse continuous ribs so a big piece dries as thin, even walls instead "
-        "of cracking the way solid clay would." in section
-    )
+    assert "Dense on every layer, for small pieces like a lid. Heavy: check the wet weight." in sync
+    # The reason infill exists, in one line.
+    assert "Sparse ribs that stack into supports, so a big piece dries evenly." in sync
 
 
 def test_each_interior_mode_hides_its_own_controls_until_it_is_chosen() -> None:
@@ -881,11 +877,7 @@ def test_rib_spacing_and_rib_angle_gray_when_the_skins_leave_no_rib() -> None:
     assert '"#weaveInfillSpacingHint",' in sync
     assert 'noRibs || interior.infillPattern === "concentric",' in sync
     assert "noRibs ? DISABLED_REASONS.infillNoRibs : DISABLED_REASONS.infillAngle," in sync
-    no_ribs_copy = (
-        "Base and cap layers together cover every printed layer, so no layer is ribbed "
-        "and neither rib spacing nor rib angle shapes anything. Lower Base layers or "
-        "Cap layers to leave a sparse body between them."
-    )
+    no_ribs_copy = "No effect: every layer is a dense skin."
     assert no_ribs_copy in WEAVE
     assert no_ribs_copy in HTML
     assert 'aria-describedby="weaveInfillSpacingHint"' in HTML
@@ -966,11 +958,11 @@ def test_the_concentric_copy_says_it_stops_and_starts_and_sends_a_roof_to_lines(
     section = _interior_section()
     hint = section[section.index('id="weaveInfillPatternHint"') :]
     hint = hint[: hint.index("</p>")]
-    # Said plainly, in the words a potter reads: no ridge claim, no developer words.
+    # Said plainly, in one line a potter reads; the longer reason rides in the tooltip.
     assert "stops and starts on every layer" in hint
-    assert "its rings shift wherever the form widens or narrows" in hint
-    assert "For a roof or a closed top, use Lines." in hint
-    assert "stay in one line from layer to layer and stack" in hint
+    assert "Lines stack into supports: use them under a top." in hint
+    assert "its rings shift wherever the form widens or narrows" in section
+    assert "stay in one line from layer to layer and stack" in section
     assert "internal ridge" not in section
     assert "Under a cap that ridge is sealed inside the piece" not in section
     # Cap ships at 0 and says so: zero leaves the form open at the top.
@@ -1134,12 +1126,9 @@ def test_the_sections_opening_promise_matches_what_choosing_a_fill_now_does() ->
     sections; the unqualified promise above them was what was wrong."""
 
     section = _interior_section()
+    # The opening line promises nothing; each clearing says so where it lives.
     assert "nothing switches on its own" not in section
-    assert "What the nozzle lays inside the wall. You choose it" in section
-    assert "nothing here chooses for you" in section
-    assert "Vase mode has to be off before Solid or Infill can be picked at all" in section
-    assert "Bottom layers, and profile blend if a loaded pattern carried it" in section
-    assert "Each says so where it lives." in section
+    assert '<p class="section-copy">What the nozzle lays inside the wall.</p>' in section
     # Every clearing the sentence admits to is really there, and vice versa:
     # the section may not name two while the code performs three.
     interior = _function("applyInteriorSettings", "function setInteriorControls")
@@ -1154,8 +1143,6 @@ def test_the_infill_repetition_claim_is_qualified_by_the_controls_beneath_it() -
 
     section = _interior_section()
     assert "Every layer repeats the same ribs" not in section
-    assert "Every ribbed layer repeats the same ribs" in section
-    assert "the base, cap and ramp layers you set below are dense or tightening" in section
     # The three controls that qualify it are the three named.
     for control in ("weaveInfillBaseLayers", "weaveInfillCapLayers", "weaveInfillRampLayers"):
         assert f'id="{control}"' in section
@@ -1699,17 +1686,15 @@ def test_an_opened_print_file_keeps_its_rule_until_its_model_comes_or_the_job_ch
         assert "releaseOldTopRule" not in body
 
 
-def test_ignore_hollows_is_a_slice_switch_that_is_off_and_unsaid_until_chosen() -> None:
-    # It sits in the Slice section with the nozzle and layer height, above the
-    # Advanced block, where an artist deciding how the model is read will see it.
-    slice_start = HTML.index('data-weave-section="slice"')
-    slice_section = HTML[slice_start : HTML.index("</section>", slice_start)]
-    row = slice_section[
-        slice_section.index('<label class="switch-row" id="weaveIgnoreHollowsRow">') :
-    ]
+def test_ignore_hollows_sits_with_interior_and_is_off_and_unsaid_until_chosen() -> None:
+    # Pete looked for it with the fill, not the slicing (2026-10-03): it sits right
+    # under the Hollow / Solid / Infill choice, and not in the Slice section.
+    section = _interior_section()
+    assert 'id="weaveIgnoreHollowsRow"' not in HTML[: HTML.index('data-weave-section="interior"')]
+    row = section[section.index('<label class="switch-row" id="weaveIgnoreHollowsRow"') :]
     row = row[: row.index("</label>") + len("</label>")]
-    assert slice_section.index('id="weaveFirstLayer"') < slice_section.index(row)
-    assert slice_section.index(row) < slice_section.index("<summary>Advanced</summary>")
+    assert section.index('id="weaveInteriorHint"') < section.index(row)
+    assert section.index(row) < section.index('id="weaveSolidBlock"')
     assert "<strong>Ignore hollows</strong>" in row
     # A switch like the others, off to begin with.
     assert 'id="weaveIgnoreHollows" type="checkbox" role="switch"' in row
@@ -1718,15 +1703,27 @@ def test_ignore_hollows_is_a_slice_switch_that_is_off_and_unsaid_until_chosen() 
     # In a potter's words, and true to what the switch does.
     hint = re.search(r'<small id="weaveIgnoreHollowsHint">(.*?)</small>', row)
     assert hint is not None
+    assert hint.group(1) == (
+        "Fill straight across hollows inside the model. Leave off for cups and vases."
+    )
+    # The full reason rides in the row's tooltip.
     for sentence in (
         "Walls follow only the outside of each layer.",
         "Hollows inside the model, and places where its surface crosses itself,",
         "a Solid or Infill interior runs straight across them.",
         "Leave it off for cups and vases.",
     ):
-        assert sentence in hint.group(1)
+        assert sentence in row
     for word in ("mesh", "engine", "polygon", "envelope", "lint"):
-        assert word not in hint.group(1)
+        assert word not in row
+    # A model that is hollow inside under a filled interior says so beside the switch.
+    assert 'id="weaveHollowNotice" hidden' in section
+    assert "This model is hollow inside, so the fill stays in its wall." in section
+    sync = _function("syncInteriorControls", "function syncControls")
+    assert (
+        '$("#weaveHollowNotice").hidden = !(fills && S.hollows !== "ignore" && hollowLayers > 0);'
+        in sync
+    )
 
     # The studio starts on "keep", asks for "ignore" only when it is on, and keeps
     # it in the saved job only when it is on.
@@ -1738,12 +1735,14 @@ def test_ignore_hollows_is_a_slice_switch_that_is_off_and_unsaid_until_chosen() 
     assert '...(S.hollows === "ignore" ? { hollows: "ignore" } : {}),' in _function(
         "weaveSettingsSnapshot", "function validWeaveSettings"
     )
-    # The switch changes the rings, so it throws the slice away like a new layer height.
+    # The switch changes the rings, so it throws the slice away and, sitting with
+    # Interior where nothing waits for Slice form, slices again by itself.
     handler = _function("bindSliceControls", "function bindPatternControls")
     handler = handler[handler.index('"#weaveIgnoreHollows"') :]
     handler = handler[: handler.index("    });") + len("    });")]
     assert 'setHollows($("#weaveIgnoreHollows").checked ? "ignore" : "keep");' in handler
-    assert handler.rstrip().endswith("invalidateSlice();\n    });")
+    assert "invalidateSlice();" in handler
+    assert handler.rstrip().endswith("if (S.mesh) runSlice();\n    });")
     # A saved job, a restored print file, and Reset all go through the one setter.
     assert "setHollows(slice.hollows);" in _function(
         "applyWeaveSettings", "function restoreWeaveSettings"
@@ -1757,11 +1756,12 @@ def test_ignore_hollows_is_a_slice_switch_that_is_off_and_unsaid_until_chosen() 
 
 def test_the_guide_says_when_to_ignore_hollows_and_when_not_to() -> None:
     guide = (ROOT / "guide" / "weave.md").read_text(encoding="utf-8")
-    row = guide[guide.index("| **Ignore hollows** |") :]
+    assert "| **Ignore hollows** |" not in guide
+    row = guide[guide.index("**Ignore hollows**, right under the Hollow, Solid and Infill") :]
     row = row[: row.index("\n")]
     assert "a hollow inside the model" in row
     assert "passes through itself" in row
     assert "Use it for a model that was hollowed out" in row
-    assert "Leave it off for cups, vases and anything meant to be open inside." in row
+    assert "leave it off for cups, vases and anything meant to be open inside." in row
     for word in ("mesh", "engine", "polygon", "envelope", "lint"):
         assert word not in row

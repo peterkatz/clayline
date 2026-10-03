@@ -64,13 +64,13 @@
     // is now in the box and how to get their own back.
     bottomCleared: "Bottom layers is now 0; choose Hollow to give the form a bottom of its own.",
     infillAngle:
-      "Rib angle has no effect while the rib pattern is Concentric — nested rings follow the wall, not an angle.",
+      "No effect with Concentric.",
     // The engine's INFILL_NO_RIBS warning, said at the two controls it makes
     // idle rather than only after the job is built. Base and cap skins that
     // between them claim every printed layer leave no sparse body at all, so
     // neither the rib spacing nor the rib angle shapes any clay.
     infillNoRibs:
-      "Base and cap layers together cover every printed layer, so no layer is ribbed and neither rib spacing nor rib angle shapes anything. Lower Base layers or Cap layers to leave a sparse body between them.",
+      "No effect: every layer is a dense skin.",
     // profile_blend is the one exclusion with NO control in this rail: it
     // rides in on a loaded or restored pattern's exact bytes, and the engine
     // refuses it beside a filled interior naming a knob the artist cannot see
@@ -84,7 +84,7 @@
       + "once every turn. Choose a hollow interior to climb in one coil again.",
     interiorNeedsLayers:
       "A solid or infill interior needs discrete layers. Turn Vase mode · spiral rise off to fill the interior.",
-    infillRamp: "Ramp layers have no effect while Cap layers is 0.",
+    infillRamp: "No effect while Cap layers is 0.",
   });
 
   // The tightest rib spacing this control offers, in coil widths. The engine
@@ -2761,10 +2761,16 @@
     $("#weaveSolidBlock").hidden = interior.interior !== "solid";
     $("#weaveInfillBlock").hidden = interior.interior !== "infill";
     $("#weaveInteriorHint").textContent = interior.interior === "solid"
-      ? "Solid fills every layer inside the wall and welds the fill to that layer's wall. Dense clay is heavy — read the wet weight in the report before you wedge it."
+      ? "Dense on every layer, for small pieces like a lid. Heavy: check the wet weight."
       : interior.interior === "infill"
-        ? "Infill lays sparse ribs that stack layer over layer, so a big piece dries as thin, even walls instead of cracking the way solid clay would."
-        : "Hollow prints the wall and nothing inside it — what Weave has always done.";
+        ? "Sparse ribs that stack into supports, so a big piece dries evenly."
+        : "Just the wall, nothing inside.";
+    // A filled interior on a model that is hollow inside fills only the wall
+    // around the hollow; the one switch that changes that sits right above.
+    const hollowLayers = new Set(
+      (S.slice?.centerline?.rings || []).filter((ring) => ring.hole).map((ring) => ring.layer),
+    ).size;
+    $("#weaveHollowNotice").hidden = !(fills && S.hollows !== "ignore" && hollowLayers > 0);
 
     // A rib spacing's real size comes from the sliced coil width, never from
     // the coil-width control, which may already hold the artist's next,
@@ -4307,6 +4313,9 @@
       releaseOldTopRule();
       setHollows($("#weaveIgnoreHollows").checked ? "ignore" : "keep");
       invalidateSlice();
+      // It lives with Interior, where nothing else waits for Slice form, so
+      // a form that was already loaded slices again by itself.
+      if (S.mesh) runSlice();
     });
     $("#weaveBeadWidth").addEventListener("input", () => {
       releaseOldTopRule();

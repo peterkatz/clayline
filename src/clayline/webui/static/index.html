@@ -498,10 +498,6 @@
                 <label class="field" title="Starting heuristic: 30% of the nozzle (5 mm → 1.5 mm). It follows nozzle changes until you type a measured value; clay and machine setup can require a different layer height."><span><span class="field-word">Layer height (mm)</span> <button type="button" class="follow-chip" id="weaveLayerHeightFollow" aria-pressed="true" title="Starting at 30% of the nozzle. Type a measured value to take over; click to follow again.">auto</button></span><input id="weaveLayerHeight" type="number" value="1.5" min="0.1" step="0.1"></label>
                 <label class="field"><span>First layer Z (mm)</span><input id="weaveFirstLayer" type="number" value="1.5" min="0.1" step="0.1"></label>
               </div>
-              <label class="switch-row" id="weaveIgnoreHollowsRow">
-                <span><strong>Ignore hollows</strong><small id="weaveIgnoreHollowsHint">Walls follow only the outside of each layer. Hollows inside the model, and places where its surface crosses itself, get no walls of their own, and a Solid or Infill interior runs straight across them. Leave it off for cups and vases.</small></span>
-                <input id="weaveIgnoreHollows" type="checkbox" role="switch" aria-describedby="weaveIgnoreHollowsHint">
-              </label>
               <details class="advanced-controls">
                 <summary>Advanced</summary>
                 <div class="control-grid two-up">
@@ -582,41 +578,44 @@
             <div class="section-index">05</div>
             <div class="section-body">
               <h2>Interior</h2>
-              <p class="section-copy">What the nozzle lays inside the wall. You choose it, and nothing here chooses for you: Vase mode has to be off before Solid or Infill can be picked at all. Choosing one does clear what a filled interior cannot print beside — Bottom layers, and profile blend if a loaded pattern carried it. Each says so where it lives.</p>
+              <p class="section-copy">What the nozzle lays inside the wall.</p>
               <fieldset class="segmented weave-seam-control weave-interior-control" id="weaveInteriorControl" aria-label="Interior fill" aria-describedby="weaveInteriorHint">
                 <label><input type="radio" name="weaveInterior" value="hollow" checked><span>Hollow</span></label>
                 <label><input type="radio" name="weaveInterior" value="solid"><span>Solid</span></label>
                 <label><input type="radio" name="weaveInterior" value="infill"><span>Infill</span></label>
               </fieldset>
-              <p class="field-hint" id="weaveInteriorHint">Hollow prints the wall and nothing inside it — what Weave has always done.</p>
+              <p class="field-hint" id="weaveInteriorHint">Just the wall, nothing inside.</p>
+              <label class="switch-row" id="weaveIgnoreHollowsRow" title="Walls follow only the outside of each layer. Hollows inside the model, and places where its surface crosses itself, get no walls of their own, and a Solid or Infill interior runs straight across them. Changing it slices the form again. Leave it off for cups and vases.">
+                <span><strong>Ignore hollows</strong><small id="weaveIgnoreHollowsHint">Fill straight across hollows inside the model. Leave off for cups and vases.</small></span>
+                <input id="weaveIgnoreHollows" type="checkbox" role="switch" aria-describedby="weaveIgnoreHollowsHint">
+              </label>
+              <p class="dependent-control-hint" id="weaveHollowNotice" hidden>This model is hollow inside, so the fill stays in its wall. Turn on Ignore hollows to fill across it.</p>
               <p class="dependent-control-hint" id="weaveInteriorLockHint" hidden>A solid or infill interior needs discrete layers. Turn Vase mode · spiral rise off to fill the interior.</p>
               <p class="dependent-control-hint" id="weaveInteriorProfileBlendHint" hidden>This pattern was fitted with profile blend, which rides the wall up and down in Z while a filled interior lays its fill flat. Profile blend is off for this print; choose Hollow to have it back.</p>
               <div class="weave-control-block" id="weaveSolidBlock" hidden>
                 <div class="scope-subhead"><span>Solid</span><strong>dense on every layer</strong></div>
-                <p class="field-hint">Fills every layer densely and welds it to that layer's wall — for small functional pieces like a teapot lid. A solid piece is heavy; the report's wet weight is the honest number before you mix the clay.</p>
-                <fieldset class="segmented" id="weaveSolidPatternControl" aria-label="Solid fill pattern" aria-describedby="weaveSolidPatternHint">
+                <fieldset class="segmented" id="weaveSolidPatternControl" aria-label="Solid fill pattern" aria-describedby="weaveSolidPatternHint" title="Crossing alternates the middle layers 45° and 135°, which bonds stronger. Spiral rings every layer instead, and reads as thrown pottery. Either way the bed face and the show face are spiralled.">
                   <label><input type="radio" name="weaveSolidPattern" value="crossing" checked><span>Crossing</span></label>
                   <label><input type="radio" name="weaveSolidPattern" value="spiral"><span>Spiral</span></label>
                 </fieldset>
-                <p class="field-hint" id="weaveSolidPatternHint">Crossing alternates the middle layers 45° and 135°, which bonds stronger. Spiral rings every layer instead, and reads as thrown pottery. Either way the bed face and the show face are spiralled.</p>
+                <p class="field-hint" id="weaveSolidPatternHint">Crossing bonds stronger. Spiral reads as thrown pottery.</p>
               </div>
               <div class="weave-control-block" id="weaveInfillBlock" hidden>
                 <div class="scope-subhead"><span>Infill</span><strong>sparse continuous ribs</strong></div>
-                <p class="field-hint">Sparse continuous ribs so a big piece dries as thin, even walls instead of cracking the way solid clay would. Every ribbed layer repeats the same ribs, so those beads stack into continuous internal walls — the base, cap and ramp layers you set below are dense or tightening instead, by your own choice.</p>
-                <fieldset class="segmented" id="weaveInfillPatternControl" aria-label="Infill rib pattern" aria-describedby="weaveInfillPatternHint">
+                <fieldset class="segmented" id="weaveInfillPatternControl" aria-label="Infill rib pattern" aria-describedby="weaveInfillPatternHint" title="Lines run straight across the form at one angle, turning around on the wall so each rib welds to it; they stay in one line from layer to layer and stack. Concentric follows the wall inward in rings, but it stops and starts on every layer, and its rings shift wherever the form widens or narrows, so they don't stack.">
                   <label><input type="radio" name="weaveInfillPattern" value="lines" checked><span>Lines</span></label>
                   <label><input type="radio" name="weaveInfillPattern" value="concentric"><span>Concentric</span></label>
                 </fieldset>
-                <p class="field-hint" id="weaveInfillPatternHint">Lines run straight across the form at one angle, turning around on the wall so each rib welds to it; they stay in one line from layer to layer and stack. Concentric follows the wall inward in rings, but it stops and starts on every layer, and its rings shift wherever the form widens or narrows, so they don't stack. For a roof or a closed top, use Lines.</p>
+                <p class="field-hint" id="weaveInfillPatternHint">Lines stack into supports: use them under a top. Concentric stops and starts on every layer.</p>
                 <div class="control-grid two-up">
-                  <label class="field" title="Centre-to-centre rib spacing, counted in coil widths so it survives a nozzle change. It must be more than 1 — ribs a coil apart or closer touch, which is a dense fill under another name. What you type is what prints; nothing is rounded for you."><span>Rib spacing</span><input id="weaveInfillSpacing" type="number" value="3" min="1.01" step="0.1" aria-describedby="weaveInfillSpacingHint"><small>coil widths</small><small class="dependent-control-hint" id="weaveInfillSpacingHint" hidden>Base and cap layers together cover every printed layer, so no layer is ribbed and neither rib spacing nor rib angle shapes anything. Lower Base layers or Cap layers to leave a sparse body between them.</small></label>
-                  <label class="field" title="Which way the straight ribs run across the bed. The same angle on every layer is what lets the ribs stack."><span>Rib angle (°)</span><input id="weaveInfillAngle" type="number" value="45" step="5" aria-describedby="weaveInfillAngleHint"><small class="dependent-control-hint" id="weaveInfillAngleHint" hidden>Rib angle has no effect while the rib pattern is Concentric — nested rings follow the wall, not an angle.</small></label>
+                  <label class="field" title="Centre-to-centre rib spacing, counted in coil widths so it survives a nozzle change. It must be more than 1 — ribs a coil apart or closer touch, which is a dense fill under another name. What you type is what prints; nothing is rounded for you."><span>Rib spacing</span><input id="weaveInfillSpacing" type="number" value="3" min="1.01" step="0.1" aria-describedby="weaveInfillSpacingHint"><small>coil widths</small><small class="dependent-control-hint" id="weaveInfillSpacingHint" hidden>No effect: every layer is a dense skin.</small></label>
+                  <label class="field" title="Which way the straight ribs run across the bed. The same angle on every layer is what lets the ribs stack."><span>Rib angle (°)</span><input id="weaveInfillAngle" type="number" value="45" step="5" aria-describedby="weaveInfillAngleHint"><small class="dependent-control-hint" id="weaveInfillAngleHint" hidden>No effect with Concentric.</small></label>
                 </div>
                 <p class="physical-readout" id="weaveInfillSpacingReadout">Slice the form to read rib spacing — the sliced coil width sets it.</p>
                 <div class="control-grid two-up">
                   <label class="field" title="Dense fill over the bed and over any part of the form with open air below it, such as the underside of a shelf or a flare, this many layers thick. The whole layer goes dense, not only the part over the open air. Zero leaves an open lattice base."><span>Base layers</span><input id="weaveInfillBaseLayers" type="number" value="0" min="0" step="1" inputmode="numeric"><small>floor skin</small></label>
                   <label class="field" title="Dense fill under any part of the form that has open air above it, the top and any shelf or dome on the way up, this many layers thick. The whole layer goes dense, not only the part under the open air. A layer under a wall that steps inward by more than half a coil goes dense too, so that wall has something to stand on. Zero leaves the form open at the top."><span>Cap layers</span><input id="weaveInfillCapLayers" type="number" value="0" min="0" step="1" inputmode="numeric"><small>roof skin</small></label>
-                  <label class="field" title="Just below each roof skin, rib spacing halves each layer so the roof has something to land on. Existing ribs stay exactly where they are; the new lines land midway. This is a ceiling, not a promise: the halving stops once the ribs reach the dense skin's own spacing, and stops early if the form has fewer sparse layers below the roof — so the ramp is often shorter than the number you type."><span>Ramp layers</span><input id="weaveInfillRampLayers" type="number" value="3" min="0" step="1" inputmode="numeric" aria-describedby="weaveInfillRampHint"><small>at most, below each roof</small><small class="dependent-control-hint" id="weaveInfillRampHint" hidden>Ramp layers have no effect while Cap layers is 0.</small></label>
+                  <label class="field" title="Just below each roof skin, rib spacing halves each layer so the roof has something to land on. Existing ribs stay exactly where they are; the new lines land midway. This is a ceiling, not a promise: the halving stops once the ribs reach the dense skin's own spacing, and stops early if the form has fewer sparse layers below the roof — so the ramp is often shorter than the number you type."><span>Ramp layers</span><input id="weaveInfillRampLayers" type="number" value="3" min="0" step="1" inputmode="numeric" aria-describedby="weaveInfillRampHint"><small>at most, below each roof</small><small class="dependent-control-hint" id="weaveInfillRampHint" hidden>No effect while Cap layers is 0.</small></label>
                 </div>
               </div>
             </div>
