@@ -1687,8 +1687,81 @@ def test_an_opened_print_file_keeps_its_rule_until_its_model_comes_or_the_job_ch
         '"#weaveBeadWidth").addEventListener("input", () => {\n      releaseOldTopRule();',
     ):
         assert handler in controls
-    assert controls.count("releaseOldTopRule();") == 7  # and the two follow chips
+    # and the two follow chips, and the Ignore hollows switch
+    assert controls.count("releaseOldTopRule();") == 8
+    assert (
+        '"#weaveIgnoreHollows").addEventListener("change", () => {\n      releaseOldTopRule();'
+        in controls
+    )
     for programmatic in ("invalidateSlice", "uploadMesh", "applyWeaveSettings"):
         start = WEAVE.index(f"function {programmatic}")
         body = WEAVE[start : WEAVE.index("\n  }\n", start)]
         assert "releaseOldTopRule" not in body
+
+
+def test_ignore_hollows_is_a_slice_switch_that_is_off_and_unsaid_until_chosen() -> None:
+    # It sits in the Slice section with the nozzle and layer height, above the
+    # Advanced block, where an artist deciding how the model is read will see it.
+    slice_start = HTML.index('data-weave-section="slice"')
+    slice_section = HTML[slice_start : HTML.index("</section>", slice_start)]
+    row = slice_section[
+        slice_section.index('<label class="switch-row" id="weaveIgnoreHollowsRow">') :
+    ]
+    row = row[: row.index("</label>") + len("</label>")]
+    assert slice_section.index('id="weaveFirstLayer"') < slice_section.index(row)
+    assert slice_section.index(row) < slice_section.index("<summary>Advanced</summary>")
+    assert "<strong>Ignore hollows</strong>" in row
+    # A switch like the others, off to begin with.
+    assert 'id="weaveIgnoreHollows" type="checkbox" role="switch"' in row
+    assert "checked" not in row.split('id="weaveIgnoreHollows"', 1)[1]
+    assert 'aria-describedby="weaveIgnoreHollowsHint"' in row
+    # In a potter's words, and true to what the switch does.
+    hint = re.search(r'<small id="weaveIgnoreHollowsHint">(.*?)</small>', row)
+    assert hint is not None
+    for sentence in (
+        "Walls follow only the outside of each layer.",
+        "Hollows inside the model, and places where its surface crosses itself,",
+        "a Solid or Infill interior runs straight across them.",
+        "Leave it off for cups and vases.",
+    ):
+        assert sentence in hint.group(1)
+    for word in ("mesh", "engine", "polygon", "envelope", "lint"):
+        assert word not in hint.group(1)
+
+    # The studio starts on "keep", asks for "ignore" only when it is on, and keeps
+    # it in the saved job only when it is on.
+    assert '    hollows: "keep",\n' in WEAVE
+    assert 'if (S.hollows === "ignore") request.hollows = "ignore";' in _function(
+        "slicePayload", "function parkedRangeIsWholeForm"
+    )
+    assert WEAVE.count("request.hollows") == 1
+    assert '...(S.hollows === "ignore" ? { hollows: "ignore" } : {}),' in _function(
+        "weaveSettingsSnapshot", "function validWeaveSettings"
+    )
+    # The switch changes the rings, so it throws the slice away like a new layer height.
+    handler = _function("bindSliceControls", "function bindPatternControls")
+    handler = handler[handler.index('"#weaveIgnoreHollows"') :]
+    handler = handler[: handler.index("    });") + len("    });")]
+    assert 'setHollows($("#weaveIgnoreHollows").checked ? "ignore" : "keep");' in handler
+    assert handler.rstrip().endswith("invalidateSlice();\n    });")
+    # A saved job, a restored print file, and Reset all go through the one setter.
+    assert "setHollows(slice.hollows);" in _function(
+        "applyWeaveSettings", "function restoreWeaveSettings"
+    )
+    assert 'hollows: saved.hollows === "ignore" ? "ignore" : "keep",' in _function(
+        "settingsSnapshotFromRestore", "async function restoreFromGcode"
+    )
+    reset = WEAVE[WEAVE.index('$("#weaveResetButton").addEventListener') :]
+    assert 'setHollows("keep");' in reset[: reset.index("weaveStateWriter?.clear();")]
+
+
+def test_the_guide_says_when_to_ignore_hollows_and_when_not_to() -> None:
+    guide = (ROOT / "guide" / "weave.md").read_text(encoding="utf-8")
+    row = guide[guide.index("| **Ignore hollows** |") :]
+    row = row[: row.index("\n")]
+    assert "a hollow inside the model" in row
+    assert "passes through itself" in row
+    assert "Use it for a model that was hollowed out" in row
+    assert "Leave it off for cups, vases and anything meant to be open inside." in row
+    for word in ("mesh", "engine", "polygon", "envelope", "lint"):
+        assert word not in row

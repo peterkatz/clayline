@@ -7,15 +7,19 @@ the CLI and public API keep their existing full-form defaults.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from clayline.weave_models import SlicedForm
+from clayline.models import Severity
+from clayline.weave_models import FormWarning, FormWarningCode, LayerSpan, SlicedForm
 
-# A split that joins up again within this many layers (a thin skirt beside a
-# dish) is not worth stopping the print for: the thread drags between the
-# pieces for a layer or two and the wall is one again.  A longer split, or
-# one still there at the top, is a real one.
-TRANSIENT_SPLIT_LAYERS = 3
+# A split that ends below the top never stops the print: a skirt beside a
+# dish, an ear or a nose standing apart for a few layers while the body
+# carries on above it.  Stopping there threw away everything above to save
+# the moves between the pieces — Pete's hollow head lost its whole crown to a
+# nine-layer bump.  Only a split that lasts to the top, where the pieces ARE
+# the form's top (prongs, a crown of leaves), stops it.  ``None`` means no
+# length limit; Vase mode passes 0, the first split of any length.
+TRANSIENT_SPLIT_LAYERS: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +70,7 @@ def _outer_walls_closed(sliced: SlicedForm, layer_index: int) -> bool:
 def find_island_emergence(
     sliced: SlicedForm,
     *,
-    transient_layers: int = TRANSIENT_SPLIT_LAYERS,
+    transient_layers: int | None = TRANSIENT_SPLIT_LAYERS,
 ) -> IslandEmergence | None:
     """Find the first post-base split that lasts.
 
@@ -75,8 +79,9 @@ def find_island_emergence(
     remains a single outer contour and does not look like an island split.
 
     A run of layers with more outer rings than the base is a split only when
-    it outlasts ``transient_layers`` or reaches the top layer; a shorter run
-    that returns to the base count is skipped and the scan goes on.  The
+    it reaches the top layer (or outlasts ``transient_layers``, when that is a
+    number); a run that returns to the base count is skipped and the scan goes
+    on.  The
     return has to be to a closed wall: crown tips that slice as open contours
     do not rejoin anything, and the layer after a crown's leaves is often one
     more open tip, not the form's wall coming back.
@@ -87,7 +92,7 @@ def find_island_emergence(
     stops at the first extra piece too.
     """
 
-    if transient_layers < 0:
+    if transient_layers is not None and transient_layers < 0:
         raise ValueError("transient_layers must be zero or more")
 
     counts = [outer_ring_count(sliced, index) for index in range(len(sliced.layers))]
@@ -110,7 +115,7 @@ def find_island_emergence(
         reaches_top = last == len(counts) - 1
         if (
             reaches_top
-            or last - index + 1 > transient_layers
+            or (transient_layers is not None and last - index + 1 > transient_layers)
             or not _outer_walls_closed(sliced, last + 1)
         ):
             return IslandEmergence(
@@ -124,9 +129,66 @@ def find_island_emergence(
     return None
 
 
+def pieces_apart_runs(sliced: SlicedForm) -> tuple[tuple[int, int, int], ...]:
+    """Every run of layers holding more separate pieces than the form starts with.
+
+    Each run is ``(first layer index, last layer index, most pieces on it)``.
+    These are the layers where the nozzle has to lift and move from one piece
+    to the next, whether or not the studio stops the print at them.
+    """
+
+    counts = [outer_ring_count(sliced, index) for index in range(len(sliced.layers))]
+    base = next((count for count in counts if count), None)
+    if base is None:
+        return ()
+    runs: list[tuple[int, int, int]] = []
+    index = 0
+    while index < len(counts):
+        if counts[index] <= base:
+            index += 1
+            continue
+        last = index
+        while last + 1 < len(counts) and counts[last + 1] > base:
+            last += 1
+        runs.append((index, last, max(counts[index : last + 1])))
+        index = last + 1
+    return tuple(runs)
+
+
+def with_pieces_apart_warnings(sliced: SlicedForm) -> SlicedForm:
+    """Name, in the print's own warnings, every run of layers in separate pieces.
+
+    A split the print goes through costs a lift and a move between the pieces
+    on each of its layers, and the potter is told where, once, by layer.
+    """
+
+    if any(warning.code is FormWarningCode.PIECES_APART for warning in sliced.warnings):
+        return sliced
+    notes = []
+    for first, last, pieces in pieces_apart_runs(sliced):
+        span = f"Layers {first + 1}\N{EN DASH}{last + 1}" if last > first else f"Layer {first + 1}"
+        notes.append(
+            FormWarning(
+                code=FormWarningCode.PIECES_APART,
+                severity=Severity.WARNING,
+                message=(
+                    f"{span}: the form stands in {pieces} separate pieces here, so the "
+                    "nozzle lifts and moves between them on "
+                    f"{'each of those layers' if last > first else 'that layer'}."
+                ),
+                layer_span=LayerSpan(first, last),
+            )
+        )
+    if not notes:
+        return sliced
+    return replace(sliced, warnings=(*sliced.warnings, *notes))
+
+
 __all__ = [
     "TRANSIENT_SPLIT_LAYERS",
     "IslandEmergence",
     "find_island_emergence",
     "outer_ring_count",
+    "pieces_apart_runs",
+    "with_pieces_apart_warnings",
 ]

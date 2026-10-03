@@ -21,6 +21,7 @@ from clayline.preview import PreviewOptions, write_plan_png, write_toolpath_html
 from clayline.profiles import emission_defaults, load_profile
 from clayline.report import JobReport, build_report, write_report
 from clayline.wave import load_pattern
+from clayline.weave_emergence import with_pieces_apart_warnings
 from clayline.weave_models import FormWarningCode, Pattern, SlicedForm
 from clayline.weave_range import (
     LAYER_RANGE_SEMANTICS,
@@ -285,6 +286,8 @@ def prepare_weave_result(
         selected = trim_leading_empty_layers(selected)
     except ValueError as error:
         raise WeaveWorkflowError(str(error)) from error
+    # The layers this print goes through in separate pieces, named once.
+    selected = with_pieces_apart_warnings(selected)
     bottom_hint = bottom_disabled_hint(selected)
     if bottom_hint is not None and resolved_pattern.settings.bottom_layers:
         raise WeaveWorkflowError(f"Bottom cannot be enabled: {bottom_hint}")
@@ -382,6 +385,7 @@ def prepare_weave_result(
         reproducible=reproducible,
         job_id=stream.job_id,
         top_layer=selected.top_layer,
+        hollows=selected.hollows,
     )
     parameters = {
         "bottom_layers": resolved_pattern.settings.bottom_layers,

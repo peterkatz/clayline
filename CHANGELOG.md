@@ -2,6 +2,26 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.7.0 — 2026-10-03
+
+### New
+- **Ignore hollows.** A new switch in the Slice section. Switched on, each
+  layer gets a wall around its outside only: a hollow inside the model, and
+  places where its surface passes through itself, get no walls of their own,
+  and a Solid or Infill interior runs straight across them. Use it for a model
+  that was hollowed out, or whose surface crosses itself, when you want it
+  printed as one piece of clay. Leave it off for cups, vases and anything meant
+  to be open inside.
+
+### Fixed
+- **A small piece standing apart no longer cuts off the top of the form.** The
+  print only stops before a split when the separate pieces carry on all the way
+  to the top, like prongs or a crown of leaves. A piece that ends below the top
+  prints with the rest, and a warning names the layers where the nozzle lifts
+  and moves between the pieces. Vase mode still stops before any split.
+- **A hollow inside the model is no longer mistaken for clay** where the
+  model's outside surface crosses itself.
+
 ## 0.6.0 — 2026-10-03
 
 ### New

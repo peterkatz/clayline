@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "src" / "clayline" / "webui" / "static"
 MODULE = STATIC / "studio-state.js"
+WEAVE = (STATIC / "weave.js").read_text(encoding="utf-8")
 
 
 def _run_node(script: str) -> dict[str, object]:
@@ -329,6 +330,117 @@ def test_weave_restore_action_slices_again_when_only_the_top_layer_rule_differs(
         """
     )
     assert result == ["slice", "slice", "slice", "settle", "settle", "slice"]
+
+
+def test_weave_restore_action_slices_again_when_only_ignore_hollows_differs() -> None:
+    # Ignoring hollows changes the rings, so a saved job that differs from the one on
+    # the table only in that switch has to slice again, not settle on the old rings.
+    # Every save that says nothing about it kept the hollows.
+    result = _run_node(
+        f"""
+        const ui = require({json.dumps(str(MODULE))});
+        const base = {{
+          placement: {{up_axis: "z", scale: 1, offset_x: 0}},
+          slice: {{
+            profile: "potterbot-xl", nozzle: 5, layer_height: 1.5,
+            first_layer_height: 1.5, sample_spacing: 1, bead_width: 5,
+          }},
+          pattern_json: "flat",
+          export: {{flow_multiplier: 1}},
+        }};
+        const withHollows = (snapshot, value) => ({{
+          ...snapshot, slice: {{...snapshot.slice, hollows: value}},
+        }});
+        const open = {{hasFile: true, hasSlice: true}};
+        console.log(JSON.stringify([
+          ui.weaveRestoreAction(base, withHollows(base, "ignore"), open),
+          ui.weaveRestoreAction(withHollows(base, "ignore"), base, open),
+          ui.weaveRestoreAction(withHollows(base, "ignore"), withHollows(base, "keep"), open),
+          ui.weaveRestoreAction(base, withHollows(base, "keep"), open),
+          ui.weaveRestoreAction(withHollows(base, "ignore"), withHollows(base, "ignore"), open),
+          ui.weaveRestoreAction(
+            base, withHollows(base, "ignore"), {{hasFile: false, hasSlice: false}},
+          ),
+          ui.weaveRestoreAction(base, withHollows(base, "nonsense"), open),
+        ]));
+        """
+    )
+    assert result == ["slice", "slice", "slice", "settle", "settle", "slice", "settle"]
+
+
+def _weave_snippet(start: str, end: str) -> str:
+    begin = WEAVE.index(start)
+    return WEAVE[begin : WEAVE.index(end, begin)]
+
+
+def test_ignore_hollows_goes_into_the_request_and_the_saved_job_only_when_it_is_on() -> None:
+    # The page's own lines run under node: the setter, the request line, the line
+    # that writes the saved job, the one a saved job is read back with, and the
+    # one a print file's settings are read with.
+    setter = _weave_snippet("function setHollows", "\n  }\n") + "\n  }"
+    request_line = 'if (S.hollows === "ignore") request.hollows = "ignore";'
+    save_line = '...(S.hollows === "ignore" ? { hollows: "ignore" } : {}),'
+    read_line = "setHollows(slice.hollows);"
+    restore_line = 'hollows: saved.hollows === "ignore" ? "ignore" : "keep",'
+    for line in (request_line, save_line, read_line, restore_line):
+        assert WEAVE.count(line) == 1
+    result = _run_node(
+        f"""
+        const control = {{checked: false}};
+        const $ = () => control;
+        const S = {{hollows: "keep"}};
+        {setter}
+        const request = () => {{ const request = {{nozzle: 3.5}}; {request_line} return request; }};
+        const saved = () => ({{nozzle: 3.5, {save_line} }});
+        const readSaved = (slice) => {{ {read_line} }};
+        const readPrintFile = (saved) => ({{ {restore_line} }});
+        const state = () => [S.hollows, control.checked];
+        const out = {{}};
+
+        out.fresh = [state(), request(), saved()];
+        setHollows("ignore");
+        out.on = [state(), request(), saved()];
+        // Saved on, then the page is cleared and the saved slice is read back.
+        const snapshot = JSON.parse(JSON.stringify(saved()));
+        setHollows("keep");
+        out.cleared = state();
+        readSaved(snapshot);
+        out.reopened = [state(), request()];
+        // A save from before the switch existed carries no key and reopens as "keep".
+        readSaved({{nozzle: 3.5}});
+        out.older = [state(), request()];
+        // Garbage never switches it on, and the switch follows the state.
+        setHollows("ignore");
+        setHollows("yes");
+        out.garbage = state();
+        // A print file that ignored hollows says so; one that says nothing kept them.
+        out.printFile = [
+          readPrintFile({{hollows: "ignore"}}),
+          readPrintFile({{}}),
+          readPrintFile({{hollows: "keep"}}),
+          readPrintFile({{hollows: "nonsense"}}),
+        ];
+        console.log(JSON.stringify(out));
+        """
+    )
+    assert result == {
+        "fresh": [["keep", False], {"nozzle": 3.5}, {"nozzle": 3.5}],
+        "on": [
+            ["ignore", True],
+            {"nozzle": 3.5, "hollows": "ignore"},
+            {"nozzle": 3.5, "hollows": "ignore"},
+        ],
+        "cleared": ["keep", False],
+        "reopened": [["ignore", True], {"nozzle": 3.5, "hollows": "ignore"}],
+        "older": [["keep", False], {"nozzle": 3.5}],
+        "garbage": ["keep", False],
+        "printFile": [
+            {"hollows": "ignore"},
+            {"hollows": "keep"},
+            {"hollows": "keep"},
+            {"hollows": "keep"},
+        ],
+    }
 
 
 def test_item_7_wiring_uses_full_mode_snapshots_without_weave_cache_identity() -> None:

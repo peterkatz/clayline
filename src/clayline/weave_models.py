@@ -36,6 +36,15 @@ TOP_LAYER_NEAREST = "nearest"
 TOP_LAYER_BELOW = "below"
 TOP_LAYER_RULES = (TOP_LAYER_NEAREST, TOP_LAYER_BELOW)
 
+# What a slice does with the hollows inside a form (2026-10-03, Pete: "can we
+# have a setting that ignores internal hollows? ... just treat the outer
+# envelope as the skin").  Keep prints every wall the model has, inner ones
+# too; ignore prints only each piece's outside, and the interior chosen for
+# the piece fills straight across where the hollows were.
+HOLLOWS_KEEP = "keep"
+HOLLOWS_IGNORE = "ignore"
+HOLLOWS_RULES = (HOLLOWS_KEEP, HOLLOWS_IGNORE)
+
 
 class SeamPolicy(StrEnum):
     """Artist-facing wall seam policy frozen for the Stage-B engine."""
@@ -120,6 +129,7 @@ class FormWarningCode(StrEnum):
     # Said out loud per band like INFILL_DRIFT, and measured on the route the
     # emitter actually took, because the welds below are clay it can land on.
     WALL_OVER_RIBS = "wall_over_ribs"
+    PIECES_APART = "pieces_apart"
 
 
 @dataclass(frozen=True, slots=True)
@@ -400,12 +410,18 @@ class SlicedForm:
     # the stack 0.5.1 cut and says "below", so its id and print file are the
     # ones 0.5.1 wrote.
     top_layer: str = TOP_LAYER_BELOW
+    # What this stack did with the form's hollows: "keep" walls every one,
+    # "ignore" walls only each piece's outside.  The potter's choice, cut again
+    # exactly with it.
+    hollows: str = HOLLOWS_KEEP
 
     def __post_init__(self) -> None:
         if not self.profile_name.strip():
             raise ValueError("a sliced form must retain its placement profile name")
         if self.top_layer not in TOP_LAYER_RULES:
             raise ValueError(f"sliced-form top_layer must be one of {', '.join(TOP_LAYER_RULES)}")
+        if self.hollows not in HOLLOWS_RULES:
+            raise ValueError(f"sliced-form hollows must be one of {', '.join(HOLLOWS_RULES)}")
         if not self.layers:
             raise ValueError("a sliced form needs at least one slice layer")
         if self.layer_height <= 0 or self.first_layer_height <= 0:
@@ -846,6 +862,9 @@ def _validate_optional_sha256(value: str, label: str) -> None:
 
 
 __all__ = [
+    "HOLLOWS_IGNORE",
+    "HOLLOWS_KEEP",
+    "HOLLOWS_RULES",
     "TOP_LAYER_BELOW",
     "TOP_LAYER_NEAREST",
     "TOP_LAYER_RULES",

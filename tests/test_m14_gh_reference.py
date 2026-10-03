@@ -24,6 +24,9 @@ def test_real_twist_tumbler_reference_is_within_frozen_stats_tolerances() -> Non
     assert comparison["clayline"]["warning_counts"] == {
         "island_change": 1,
         "open_ring": 12,
+        # Its last two layers stand in six open pieces, printed whole here, so the
+        # nozzle moving between them is named once (0.7.0).
+        "pieces_apart": 1,
         # Honest guard (2026-07-18): the mapped GH texture runs a 5.59 mm
         # wavelength on a 6.25 mm bead, so the coil smooths it - info, true.
         "wave_finer_than_bead": 1,

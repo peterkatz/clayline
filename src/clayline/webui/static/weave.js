@@ -194,6 +194,11 @@
     // and keeps it while that job is on the table, model included, so it
     // slices to the layers it was saved with.
     topLayer: "nearest",
+    // How each layer's outlines become walls. "keep" gives every outline the
+    // model has its own wall, hollows inside it included. "ignore" walls only
+    // the outside of each layer: a hollow, or a place where the surface
+    // crosses itself, gets no wall and the Interior runs straight across it.
+    hollows: "keep",
     // A print file's settings landed before its model, or over a model that is
     // not the one it names: the next model loaded is that job's own, so it
     // keeps the file's print-range choice and top rule.
@@ -522,6 +527,9 @@
     // this slice has, and no stop in it, because the artist printed through.
     if (S.islandStopDeclined || parkedWholeFormSelected()) request.island_stop = false;
     if (S.topLayer === "below") request.top_layer = "below";
+    // Said only when it is on, so a request from an artist who never touched it
+    // is the request it always was.
+    if (S.hollows === "ignore") request.hollows = "ignore";
     // Vase mode's one continuous spiral cannot print past a split of any
     // length, so the server reads the form strictly while it is on.
     if ($("#weaveZBlend").checked) request.z_blend = true;
@@ -860,6 +868,9 @@
         // Saved only for a job restored from a 0.5.1 print file, so every
         // other project file is written exactly as before.
         ...(S.topLayer === "below" ? { top_layer: "below" } : {}),
+        // Saved only when it is on, so every other project file is written
+        // exactly as before and one saved before this existed reopens as "keep".
+        ...(S.hollows === "ignore" ? { hollows: "ignore" } : {}),
         first_layer_follows: S.firstLayerFollows,
         sample_spacing_auto: S.sampleSpacingAuto,
         layer_height_follows_nozzle: S.layerHeightFollows,
@@ -947,6 +958,7 @@
       ? slice.island_stop_declined === true
       : slice.range_enabled === false && !autoIslandStop && Number.isInteger(slice.range_total);
     S.topLayer = slice.top_layer === "below" ? "below" : "nearest";
+    setHollows(slice.hollows);
     if (S.slice && Number.isInteger(S.rangeTotal)) {
       S.pendingRange = null;
       $("#weaveRangeEnabled").disabled = false;
@@ -1403,6 +1415,15 @@
   // a restore, which sets the rule it brings.
   function releaseOldTopRule() {
     S.topLayer = "nearest";
+  }
+
+  // The one place the hollows rule is set, so the switch always shows what the
+  // next slice will do. Anything but "ignore" (an older save has no word on it)
+  // is the rule every job has always had.
+  function setHollows(value) {
+    S.hollows = value === "ignore" ? "ignore" : "keep";
+    const control = $("#weaveIgnoreHollows");
+    if (control) control.checked = S.hollows === "ignore";
   }
 
   function scheduleMesh() {
@@ -3803,6 +3824,8 @@
         island_stop_declined: total !== null && from === 1 && to === total,
         // A file 0.5.1 saved was sliced with only the layers under the top.
         top_layer: saved.top_layer === "below" ? "below" : "nearest",
+        // A file that ignored hollows says so; one that says nothing kept them.
+        hollows: saved.hollows === "ignore" ? "ignore" : "keep",
         // The file's numbers are the job's numbers: none of them follow the
         // nozzle any more.
         first_layer_follows: false,
@@ -4278,6 +4301,13 @@
       S.sampleSpacingAuto = false;
       invalidateSlice();
     });
+    // How the walls are read is part of the slice: the rings change, so the
+    // slice is thrown away and rebuilt, exactly as for a new layer height.
+    $("#weaveIgnoreHollows").addEventListener("change", () => {
+      releaseOldTopRule();
+      setHollows($("#weaveIgnoreHollows").checked ? "ignore" : "keep");
+      invalidateSlice();
+    });
     $("#weaveBeadWidth").addEventListener("input", () => {
       releaseOldTopRule();
       S.beadWidthFollows = false;
@@ -4558,6 +4588,7 @@
         S.rangeAutoIslandStop = false;
         S.islandStopDeclined = false;
         S.topLayer = "nearest";
+        setHollows("keep");
         S.restoreAwaitingMesh = false;
         S.settledNoRibs = false;
         S.crownFinish = null;

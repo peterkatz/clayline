@@ -404,6 +404,9 @@ def create_app(
             if restore_recipe is not None and "top_layer" not in payload:
                 # The saved job's own top-layer rule, unless the page says one.
                 payload = {**payload, "top_layer": restore_recipe.top_layer}
+            if restore_recipe is not None and "hollows" not in payload:
+                # Likewise the saved job's hollows setting.
+                payload = {**payload, "hollows": restore_recipe.hollows}
             started = time.perf_counter()
             sliced, result = await asyncio.to_thread(
                 _slice_weave_mesh_payload, mesh, payload, restore_profile
@@ -1286,7 +1289,13 @@ def _slice_weave_mesh_payload(
 ) -> tuple[Any, dict[str, Any]]:
     from clayline.weave_api import sliced_form_stats
     from clayline.weave_emergence import find_island_emergence
-    from clayline.weave_models import TOP_LAYER_NEAREST, TOP_LAYER_RULES, SeamPolicy
+    from clayline.weave_models import (
+        HOLLOWS_KEEP,
+        HOLLOWS_RULES,
+        TOP_LAYER_NEAREST,
+        TOP_LAYER_RULES,
+        SeamPolicy,
+    )
     from clayline.weave_range import (
         layer_range_payload,
         select_layer_range,
@@ -1331,6 +1340,11 @@ def _slice_weave_mesh_payload(
     top_layer = _string(payload, "top_layer", TOP_LAYER_NEAREST)
     if top_layer not in TOP_LAYER_RULES:
         raise UiRequestError(f"top_layer must be one of {', '.join(TOP_LAYER_RULES)}")
+    # "keep" prints every wall the model has; "ignore" prints only the outside
+    # of each piece, and the interior fills straight across the hollows.
+    hollows = _string(payload, "hollows", HOLLOWS_KEEP)
+    if hollows not in HOLLOWS_RULES:
+        raise UiRequestError(f"hollows must be one of {', '.join(HOLLOWS_RULES)}")
     sliced = mesh.slice(
         nozzle=nozzle,
         layer_height=layer_height,
@@ -1338,6 +1352,7 @@ def _slice_weave_mesh_payload(
         sample_spacing=sample_spacing,
         bead_width=bead_width,
         top_layer=top_layer,
+        hollows=hollows,
     )
     requested_range = payload.get("layer_range")
     # The page says when Vase mode is on: its one continuous spiral cannot
@@ -1835,6 +1850,10 @@ def _weave_settings_snapshot(prepared_result: Any, payload: dict[str, Any]) -> d
             "range_from": layer_from,
             "range_to": layer_to,
             "range_total": sliced.source_layer_total,
+            # Written the way the page saves them, only when they differ from
+            # a fresh slice, so a failure report replays the stack that failed.
+            **({"top_layer": "below"} if sliced.top_layer == "below" else {}),
+            **({"hollows": "ignore"} if sliced.hollows == "ignore" else {}),
         },
         "export": {
             "flow_multiplier": settings.flow_multiplier,
@@ -2027,6 +2046,8 @@ def _restore_weave_gcode_payload(
             # "below" for a file 0.5.1 or earlier saved: the page slices that
             # job with only the planes under the top, as it was saved.
             "top_layer": recipe.top_layer,
+            # "ignore" when the saved job printed only the outside of the model.
+            "hollows": recipe.hollows,
         },
     }
 

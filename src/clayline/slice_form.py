@@ -10,10 +10,15 @@ from dataclasses import dataclass
 
 import numpy as np
 import shapely
-from shapely.geometry import Polygon
+from shapely.geometry import LineString, Polygon
+from shapely.geometry import Point as ShapelyPoint
+from shapely.geometry.base import BaseGeometry
 
 from clayline.models import Point, Severity
 from clayline.weave_models import (
+    HOLLOWS_IGNORE,
+    HOLLOWS_KEEP,
+    HOLLOWS_RULES,
     TOP_LAYER_BELOW,
     TOP_LAYER_NEAREST,
     TOP_LAYER_RULES,
@@ -68,6 +73,7 @@ def slice_mesh_form(
     sample_spacing: float | None = None,
     bead_width: float = 5.0,
     top_layer: str = TOP_LAYER_NEAREST,
+    hollows: str = HOLLOWS_KEEP,
 ) -> SlicedForm:
     """Slice a placed mesh into immutable, pattern-independent wall bands.
 
@@ -82,6 +88,15 @@ def slice_mesh_form(
     same holes, the same open outlines); ``"below"`` keeps only the planes under
     the top, which is how 0.5.1 and earlier sliced, and is what their saved
     print files restore with.
+
+    hollows is what happens to the hollows inside the form.  ``"keep"`` (the
+    default) walls every outline the form has, the inner ones too.
+    ``"ignore"`` walls only the outside of each piece on a layer: every closed
+    outline's area is joined into one, a self-crossing outline's too, and only
+    the outer edge of each joined piece is kept.  Separate pieces stay
+    separate, and an unclosed outline lying inside a piece goes with the
+    hollow it stood in.  It is clay: the piece is printed as its outer skin,
+    and its interior fills straight across where the hollows were.
     """
 
     import trimesh
@@ -97,6 +112,8 @@ def slice_mesh_form(
         raise ValueError(
             f"top_layer must be one of {', '.join(TOP_LAYER_RULES)}, not {top_layer!r}"
         )
+    if hollows not in HOLLOWS_RULES:
+        raise ValueError(f"hollows must be one of {', '.join(HOLLOWS_RULES)}, not {hollows!r}")
     resolved_spacing = (
         min(bead_width / 2.0, 1.0)
         if sample_spacing is None
@@ -158,6 +175,10 @@ def slice_mesh_form(
             warnings_before_top_layer = len(warnings)
         world_segments = _segments_to_world_xy(segments, transform)
         raw_paths = _assemble_section_paths(world_segments, tolerance=join_tolerance)
+        if hollows == HOLLOWS_IGNORE:
+            raw_paths = _outer_envelope_paths(
+                raw_paths, stamp_area=math.pi * (bead_width / 2.0) ** 2
+            )
         rings = _classify_rings(raw_paths)
         kept: list[_RawRing] = []
         for candidate_index, ring in enumerate(rings):
@@ -288,6 +309,7 @@ def slice_mesh_form(
         sample_spacing=resolved_spacing,
         bead_width=bead_width,
         top_layer=effective_top_layer,
+        hollows=hollows,
     )
     return SlicedForm(
         id=sliced_id,
@@ -316,6 +338,7 @@ def slice_mesh_form(
         source_layer_start=0,
         source_layer_total=len(layers),
         top_layer=effective_top_layer,
+        hollows=hollows,
     )
 
 
@@ -553,7 +576,7 @@ def _remove_consecutive_duplicates(points: np.ndarray, *, tolerance: float) -> n
 
 def _classify_rings(paths: list[tuple[np.ndarray, bool]]) -> list[_RawRing]:
     rings: list[_RawRing] = []
-    polygons: list[Polygon | None] = []
+    polygons: list[BaseGeometry | None] = []
     for source_points, closed in paths:
         points = source_points.copy()
         virtual_area = _signed_area(points, close_open=True)
@@ -578,11 +601,14 @@ def _classify_rings(paths: list[tuple[np.ndarray, bool]]) -> list[_RawRing]:
             # least 4 coordinates" surfaced raw). Guard it so the ring falls
             # through to the same honest degenerate-tip handling as every
             # other unclassifiable ring.
-            if len(points) - 1 >= 3:
-                polygon = Polygon(points[:-1])
-                polygons.append(polygon if polygon.is_valid and not polygon.is_empty else None)
-            else:
-                polygons.append(None)
+            #
+            # An outline that crosses itself (a model that is not closed
+            # everywhere can cut that way, Pete's hollow head 2026-10-03) is
+            # still the edge of the clay: it is judged by the area it really
+            # encloses.  Left out of the count, the hollow standing inside it
+            # had no outline around it and was read as a second piece of solid
+            # clay, and the interior was laid straight across the hollow.
+            polygons.append(_enclosed_area(points))
         rings.append(
             _RawRing(
                 points=points,
@@ -613,6 +639,133 @@ def _classify_rings(paths: list[tuple[np.ndarray, bool]]) -> list[_RawRing]:
         )
     )
     return rings
+
+
+def _enclosed_area(points: np.ndarray) -> BaseGeometry | None:
+    """The area one closed outline encloses, or None when it encloses none.
+
+    ``points`` repeats its first point last.  An outline that crosses itself
+    is repaired with ``make_valid``'s "structure" method, and only its
+    polygonal parts are kept, however deeply they are nested.  Structure, not
+    the default: the default reads a stretch the outline encloses twice — a
+    bar drawn through a disc in one pass — as empty, and cut a measured 3230
+    mm2 outline into five pieces totalling 2633, with walls inside the clay.
+    """
+
+    return _outline_area(points)[0]
+
+
+def _outline_area(points: np.ndarray) -> tuple[BaseGeometry | None, bool]:
+    """:func:`_enclosed_area`, and whether the outline had to be repaired for it."""
+
+    if len(points) - 1 < 3:
+        return None, False
+    polygon = Polygon(points[:-1])
+    if polygon.is_valid:
+        return (None if polygon.is_empty else polygon), False
+    parts = _polygon_parts(shapely.make_valid(polygon, method="structure"))
+    if not parts:
+        return None, True
+    repaired = shapely.union_all(parts)
+    return (None if repaired.is_empty or repaired.area <= 0.0 else repaired), True
+
+
+def _polygon_parts(geometry: BaseGeometry) -> list[Polygon]:
+    """Every polygon in ``geometry``, at any depth of collection."""
+
+    if geometry.is_empty:
+        return []
+    if isinstance(geometry, Polygon):
+        return [geometry]
+    parts = getattr(geometry, "geoms", None)
+    if parts is None:
+        return []
+    return [polygon for part in parts for polygon in _polygon_parts(part)]
+
+
+def _outer_envelope_paths(
+    paths: list[tuple[np.ndarray, bool]],
+    *,
+    stamp_area: float = 0.0,
+) -> list[tuple[np.ndarray, bool]]:
+    """One layer's outlines with its hollows left out: each piece's outside only.
+
+    The areas every closed outline encloses, outer and hollow alike, are
+    joined; each joined piece keeps only its outer edge.  A piece that is
+    exactly one outline the layer already had keeps that outline's own points,
+    so a wall with nothing inside it is cut exactly as ``"keep"`` cuts it; an
+    outline that crosses itself never does, its repaired edge stands in.  An
+    unclosed outline, or a closed one that encloses nothing, is dropped when at
+    least half of it lies inside a piece (it belonged to a hollow) and kept as
+    it is otherwise.
+
+    A piece that only the REPAIR made — no outline the layer had — and that is
+    smaller than one bead's stamp is a crumb of the crossing, a few microns
+    across, and goes without a word.  Kept, each one was dropped downstream
+    with "only 0.00 mm around" (20 of them on Pete's hollow head).  A small
+    piece the model really has still goes through the thin-ring floor and is
+    named there.
+    """
+
+    areas: list[BaseGeometry] = []
+    simple: list[tuple[np.ndarray, Polygon]] = []
+    loose: list[tuple[np.ndarray, bool]] = []
+    for points, closed in paths:
+        area, repaired = _outline_area(points) if closed else (None, False)
+        if area is None:
+            loose.append((points, closed))
+            continue
+        areas.append(area)
+        if not repaired and isinstance(area, Polygon):
+            simple.append((points, area))
+    if not areas:
+        return paths
+
+    pieces = _filled_pieces(areas)
+    kept: list[tuple[np.ndarray, bool]] = []
+    for piece in pieces:
+        own = next(
+            (
+                points
+                for points, area in simple
+                if math.isclose(area.area, piece.area, rel_tol=1e-9) and area.equals(piece)
+            ),
+            None,
+        )
+        if own is not None:
+            kept.append((own, True))
+        elif piece.area >= stamp_area:
+            kept.append((np.asarray(piece.exterior.coords, dtype=np.float64)[:, :2].copy(), True))
+
+    envelope = shapely.union_all(pieces)
+    for points, closed in loose:
+        if len(points) < 2:
+            continue
+        line = LineString(points)
+        if line.length > 0.0:
+            inside = line.intersection(envelope).length >= 0.5 * line.length
+        else:
+            inside = envelope.covers(ShapelyPoint(points[0]))
+        if not inside:
+            kept.append((points, closed))
+    return kept
+
+
+def _filled_pieces(areas: list[BaseGeometry]) -> list[Polygon]:
+    """The separate pieces ``areas`` join into, each with its hollows filled.
+
+    Filling one piece can swallow another standing in its hollow (a separate
+    dish inside a ring), so the filled pieces are joined again until nothing
+    more merges.
+    """
+
+    shape = shapely.union_all(areas)
+    while True:
+        pieces = [Polygon(part.exterior) for part in _polygon_parts(shape)]
+        joined = shapely.union_all(pieces)
+        if len(_polygon_parts(joined)) == len(pieces):
+            return pieces
+        shape = joined
 
 
 def _degenerate_ring_floor(ring: _RawRing, bead_width: float) -> tuple[bool, str]:
@@ -886,6 +1039,7 @@ def _slice_id(
     sample_spacing: float,
     bead_width: float,
     top_layer: str = TOP_LAYER_BELOW,
+    hollows: str = HOLLOWS_KEEP,
 ) -> str:
     payload = {
         "form_id": form_id,
@@ -898,6 +1052,10 @@ def _slice_id(
     # same keeps the id it had.
     if top_layer != TOP_LAYER_BELOW:
         payload["top_layer"] = top_layer
+    # Likewise named only when the hollows are left out, so every stack that
+    # keeps them keeps the id 0.6.0 gave it.
+    if hollows != HOLLOWS_KEEP:
+        payload["hollows"] = hollows
     digest = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()

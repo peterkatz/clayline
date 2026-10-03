@@ -498,6 +498,10 @@
                 <label class="field" title="Starting heuristic: 30% of the nozzle (5 mm → 1.5 mm). It follows nozzle changes until you type a measured value; clay and machine setup can require a different layer height."><span><span class="field-word">Layer height (mm)</span> <button type="button" class="follow-chip" id="weaveLayerHeightFollow" aria-pressed="true" title="Starting at 30% of the nozzle. Type a measured value to take over; click to follow again.">auto</button></span><input id="weaveLayerHeight" type="number" value="1.5" min="0.1" step="0.1"></label>
                 <label class="field"><span>First layer Z (mm)</span><input id="weaveFirstLayer" type="number" value="1.5" min="0.1" step="0.1"></label>
               </div>
+              <label class="switch-row" id="weaveIgnoreHollowsRow">
+                <span><strong>Ignore hollows</strong><small id="weaveIgnoreHollowsHint">Walls follow only the outside of each layer. Hollows inside the model, and places where its surface crosses itself, get no walls of their own, and a Solid or Infill interior runs straight across them. Leave it off for cups and vases.</small></span>
+                <input id="weaveIgnoreHollows" type="checkbox" role="switch" aria-describedby="weaveIgnoreHollowsHint">
+              </label>
               <details class="advanced-controls">
                 <summary>Advanced</summary>
                 <div class="control-grid two-up">

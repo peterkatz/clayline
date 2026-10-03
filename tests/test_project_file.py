@@ -156,6 +156,8 @@ def test_write_and_read_round_trip_both_modes_in_the_page() -> None:
               range_to: 143,
               range_total: 160,
               range_auto_island_stop: false,
+              // How the walls are read is part of the job too.
+              hollows: "ignore",
             },
           };
           const mesh = utf8.encode("v 0 0 0\\nv 1 0 0\\nv 0 1 0\\nf 1 2 3\\n");
@@ -229,6 +231,7 @@ def test_write_and_read_round_trip_both_modes_in_the_page() -> None:
         "range_to": 143,
         "range_total": 160,
         "range_auto_island_stop": False,
+        "hollows": "ignore",
     }
     assert (
         result["mesh_sha256"] == hashlib.sha256(b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").hexdigest()

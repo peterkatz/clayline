@@ -18,7 +18,10 @@ from clayline.weave_emergence import (
     TRANSIENT_SPLIT_LAYERS,
     find_island_emergence,
     outer_ring_count,
+    pieces_apart_runs,
+    with_pieces_apart_warnings,
 )
+from clayline.weave_models import FormWarningCode
 from clayline.webui.app import (
     UiRequestError,
     _load_weave_mesh_payload,
@@ -64,14 +67,16 @@ def _run(base: int, extra_layers: int, *, rest: int = 6) -> list[int]:
     return [base] * 2 + [base + 1] * extra_layers + [base] * rest
 
 
-@pytest.mark.parametrize("extra_layers", [1, 2, 3])
-def test_a_split_that_rejoins_within_three_layers_is_not_a_stop(extra_layers: int) -> None:
-    assert TRANSIENT_SPLIT_LAYERS == 3
+@pytest.mark.parametrize("extra_layers", [1, 2, 3, 4, 9])
+def test_a_split_that_ends_below_the_top_is_not_a_stop_however_long(extra_layers: int) -> None:
+    # Pete's hollow head: a bump stands apart for nine layers and the head carries on
+    # above it.  Stopping below it threw the whole crown away.
+    assert TRANSIENT_SPLIT_LAYERS is None
     assert find_island_emergence(_stub_form(_run(1, extra_layers))) is None
 
 
-def test_a_split_longer_than_three_layers_is_a_stop_and_names_where_it_ends() -> None:
-    emergence = find_island_emergence(_stub_form(_run(1, 4)))
+def test_a_numbered_allowance_still_stops_a_longer_split_and_names_where_it_ends() -> None:
+    emergence = find_island_emergence(_stub_form(_run(1, 4)), transient_layers=3)
 
     assert emergence is not None
     assert (emergence.layer_number, emergence.last_layer_number) == (3, 6)
@@ -88,9 +93,9 @@ def test_a_split_still_there_at_the_top_is_a_stop_however_short(extra_layers: in
     assert emergence.last_layer_number == len(counts)
 
 
-def test_the_scan_skips_a_short_split_and_stops_at_the_next_real_one() -> None:
-    # 1 piece, a two-layer skirt, 1 piece, then a five-layer split that rejoins.
-    counts = [1, 1, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1]
+def test_the_scan_skips_a_split_that_ends_and_stops_at_one_that_lasts_to_the_top() -> None:
+    # 1 piece, a two-layer skirt, 1 piece, then a five-layer split that never rejoins.
+    counts = [1, 1, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2]
     emergence = find_island_emergence(_stub_form(counts))
 
     assert emergence is not None
@@ -124,7 +129,8 @@ def test_steel_drum_shape_prints_every_layer_by_default() -> None:
 
 def test_growing_pieces_inside_a_run_still_count_as_one_run() -> None:
     counts = [1, 1, 2, 3, 2, 3, 1, 1]
-    emergence = find_island_emergence(_stub_form(counts))
+    assert find_island_emergence(_stub_form(counts)) is None
+    emergence = find_island_emergence(_stub_form(counts), transient_layers=3)
 
     assert emergence is not None
     assert (emergence.layer_number, emergence.last_layer_number) == (3, 6)
@@ -169,28 +175,46 @@ def test_a_short_skirt_in_a_real_slice_leaves_the_whole_form_printing() -> None:
     assert payload["print_range"]["to"] == payload["print_range"]["total"] == len(full.layers)
 
 
-def test_a_long_skirt_names_its_real_span_and_stops_before_it() -> None:
+def test_a_long_skirt_that_ends_below_the_top_prints_whole_and_is_named() -> None:
     mesh = _mesh(4.0, 14.0)  # slice planes at z = 5, 7, 9, 11, 13: layers 3-7
     counts = _sliced_counts(mesh)
     assert counts[:9] == [1, 1, 2, 2, 2, 2, 2, 1, 1]
 
     full, payload = _slice_weave_mesh_payload(mesh, dict(SLICE))
+
+    assert payload["island_emergence"] is None
+    assert payload["print_range"]["to"] == payload["print_range"]["total"] == len(full.layers)
+    # The layers the nozzle moves between pieces on are named in the print's warnings.
+    assert pieces_apart_runs(full) == ((2, 6, 2),)
+    named = [
+        warning.message
+        for warning in with_pieces_apart_warnings(full).warnings
+        if warning.code is FormWarningCode.PIECES_APART
+    ]
+    assert named == [
+        "Layers 3\N{EN DASH}7: the form stands in 2 separate pieces here, so the nozzle "
+        "lifts and moves between them on each of those layers."
+    ]
+
+
+def test_pieces_that_last_to_the_top_name_their_span_and_stop_before_it() -> None:
+    mesh = _mesh(4.0, COLUMN_HEIGHT)  # slice planes from z = 5 to the top: layers 3-15
+    full, payload = _slice_weave_mesh_payload(mesh, dict(SLICE))
     emergence = payload["island_emergence"]
 
-    total = len(full.layers)
-    assert total > 7  # the form goes on well past the split
+    assert len(full.layers) == 15
     assert payload["print_range"]["to"] == 2
     facts = {key: emergence[key] for key in emergence if key not in {"message", "override_message"}}
     assert facts == {
         "layer": 3,
-        "last_layer": 7,
+        "last_layer": 15,
         "outer_count": 2,
         "base_outer_count": 1,
         "default_stop_to_layer": 2,
         "default_applied": True,
     }
     assert emergence["message"] == (
-        "Layers 3\N{EN DASH}7 split into 2 separate pieces \N{EM DASH} the printer can't cut "
+        "Layers 3\N{EN DASH}15 split into 2 separate pieces \N{EM DASH} the printer can't cut "
         "the thread between them, so printing stops at layer 2. Raise 'To layer' to print "
         "past them."
     )
@@ -203,22 +227,21 @@ def test_a_long_skirt_names_its_real_span_and_stops_before_it() -> None:
         ([1, 2], False),  # stops short of the split
         ([1, 3], True),  # reaches its first layer
         ([5, 9], True),  # starts inside it
-        ([7, 12], True),  # starts on its last layer
-        ([8, 12], False),  # starts after it has joined up again
+        ([15, 15], True),  # its last layer alone
     ],
 )
 def test_the_override_sentence_follows_whether_the_range_reaches_the_split(
     layer_range: list[int], names_the_split: bool
 ) -> None:
     _full, payload = _slice_weave_mesh_payload(
-        _mesh(4.0, 14.0), {**SLICE, "layer_range": layer_range}
+        _mesh(4.0, COLUMN_HEIGHT), {**SLICE, "layer_range": layer_range}
     )
     emergence = payload["island_emergence"]
 
     assert emergence["default_applied"] is False
     if names_the_split:
         assert emergence["override_message"] == (
-            "Layers 3\N{EN DASH}7 split into 2 separate pieces. This selected range includes "
+            "Layers 3\N{EN DASH}15 split into 2 separate pieces. This selected range includes "
             "them, so the thread will drag between the pieces."
         )
     else:
@@ -251,7 +274,7 @@ def test_a_single_split_layer_at_the_top_is_worded_in_the_singular() -> None:
 
 
 def test_declining_the_stop_prints_the_whole_form_and_still_says_what_it_includes() -> None:
-    mesh = _mesh(4.0, 14.0)
+    mesh = _mesh(4.0, COLUMN_HEIGHT)
 
     _full, proposed = _slice_weave_mesh_payload(mesh, dict(SLICE))
     assert proposed["island_emergence"]["default_applied"] is True
@@ -263,7 +286,7 @@ def test_declining_the_stop_prints_the_whole_form_and_still_says_what_it_include
     assert declined["print_range"]["to"] == declined["print_range"]["total"] == len(full.layers)
     assert emergence["default_applied"] is False
     assert emergence["layer"] == 3
-    assert emergence["last_layer"] == 7
+    assert emergence["last_layer"] == 15
     # The whole form is selected, so the honest sentence is the override one.
     assert emergence["override_message"] is not None
 
@@ -277,11 +300,11 @@ def test_declining_the_stop_prints_the_whole_form_and_still_says_what_it_include
 
 def test_island_stop_must_be_true_or_false() -> None:
     with pytest.raises(UiRequestError, match="island_stop must be true or false"):
-        _slice_weave_mesh_payload(_mesh(4.0, 14.0), {**SLICE, "island_stop": "no"})
+        _slice_weave_mesh_payload(_mesh(4.0, COLUMN_HEIGHT), {**SLICE, "island_stop": "no"})
 
 
 def test_modulation_does_not_apply_the_stop_the_artist_declined() -> None:
-    mesh = _mesh(4.0, 14.0)
+    mesh = _mesh(4.0, COLUMN_HEIGHT)
     sliced = mesh.slice(**SLICE)
     base = {
         "quality": "settle",
@@ -323,7 +346,7 @@ def test_a_declined_stop_survives_every_re_slice_through_the_real_route() -> Non
         async with _client() as client:
             mesh = await client.post(
                 "/api/weave/mesh?filename=skirted-column.stl",
-                content=_skirted_column(4.0, 14.0),
+                content=_skirted_column(4.0, COLUMN_HEIGHT),
                 headers={**origin, "content-type": "application/octet-stream"},
             )
             assert mesh.status_code == 200, mesh.text
@@ -412,10 +435,13 @@ def test_a_project_saved_before_the_decline_key_reads_a_switched_off_range_as_de
 
 
 def test_the_guide_says_a_short_split_does_not_stop_the_print() -> None:
-    assert "joins up again within three layers" in GUIDE
+    assert "A split that ends below the top" in GUIDE
+    assert "a warning names the layers where the nozzle lifts and moves between the pieces" in (
+        GUIDE
+    )
     assert "it stays off when you slice again" in GUIDE
     # Vase mode is the exception, said where the rule is.
-    assert "unless Vase mode is on: its one unbroken coil can't print past a split" in GUIDE
+    assert "The exception is Vase mode: its one unbroken coil can't print past a split" in GUIDE
 
 
 def test_the_strict_rule_stops_at_the_first_split_of_any_length() -> None:

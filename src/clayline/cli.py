@@ -26,7 +26,12 @@ from clayline.profiles import available_profiles, emission_defaults, load_profil
 from clayline.report import render_report_text
 from clayline.wave import load_pattern, preset_pattern
 from clayline.weave_api import sliced_form_stats
-from clayline.weave_models import TOP_LAYER_NEAREST, FormWarning
+from clayline.weave_models import (
+    HOLLOWS_IGNORE,
+    HOLLOWS_KEEP,
+    TOP_LAYER_NEAREST,
+    FormWarning,
+)
 from clayline.workflow import (
     OutputRequest,
     PipelineRequest,
@@ -262,6 +267,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=_defaults.DEFAULT_WEAVE_SAMPLE_SPACING_MM,
         help="maximum arc-length sample spacing in mm (default: min(bead width / 2, 1))",
+    )
+    weave.add_argument(
+        "--ignore-hollows",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "print only the outside of the model: hollows inside it get no walls, "
+            "and a filled interior runs straight across them (default: print every wall)"
+        ),
     )
     weave.add_argument(
         "--layer-range",
@@ -726,6 +740,11 @@ def _weave_command(args: argparse.Namespace) -> int:
         args.bead_width,
         None if recipe is None or nozzle_override else recipe.bead_width,
     )
+    ignore_hollows = restored(
+        "--ignore-hollows",
+        args.ignore_hollows,
+        None if recipe is None else recipe.hollows == HOLLOWS_IGNORE,
+    )
     sliced = form.slice(
         nozzle=args.nozzle,
         layer_height=layer_height,
@@ -735,6 +754,7 @@ def _weave_command(args: argparse.Namespace) -> int:
         # A print file 0.5.1 saved was cut with only the planes under the top,
         # and is cut that way again, or it comes back a layer taller.
         top_layer=TOP_LAYER_NEAREST if recipe is None else recipe.top_layer,
+        hollows=HOLLOWS_IGNORE if ignore_hollows else HOLLOWS_KEEP,
     )
     if args.dry_run:
         print(json.dumps(sliced_form_stats(sliced), indent=2, sort_keys=True))

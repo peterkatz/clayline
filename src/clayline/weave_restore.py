@@ -17,7 +17,7 @@ from clayline.models import Bounds, Point, Profile
 from clayline.profiles import load_profile_unregistered
 from clayline.wave import pattern_from_json, pattern_to_json
 from clayline.weave_api import load_mesh
-from clayline.weave_models import TOP_LAYER_BELOW, MeshForm, Pattern, UpAxis
+from clayline.weave_models import HOLLOWS_KEEP, TOP_LAYER_BELOW, MeshForm, Pattern, UpAxis
 from clayline.weave_range import LAYER_RANGE_SEMANTICS
 from clayline.weave_restore_codec import (
     PATTERN_PARAMETER,
@@ -73,6 +73,9 @@ class WeaveRestoreRecipe:
     # and were cut "below" (only the planes under the top), so that is what
     # they are cut with again; a new job that put a top layer on says "nearest".
     top_layer: str = TOP_LAYER_BELOW
+    # What the slice did with the form's hollows.  Files 0.6.0 and earlier
+    # saved do not say, and kept them; a job that left them out says "ignore".
+    hollows: str = HOLLOWS_KEEP
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +210,7 @@ def _recipe_from_decoded(decoded: DecodedWeaveRestore) -> WeaveRestoreRecipe:
         reproducible=decoded.reproducible,
         job_id=decoded.job_id,
         top_layer=decoded.top_layer,
+        hollows=decoded.hollows,
     )
 
 
@@ -372,6 +376,7 @@ def restore_weave_result(
         sample_spacing=recipe.sample_spacing,
         bead_width=recipe.bead_width,
         top_layer=recipe.top_layer,
+        hollows=recipe.hollows,
     )
     if len(sliced.layers) != recipe.source_layer_total:
         detail = (

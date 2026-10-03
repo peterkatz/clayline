@@ -24,6 +24,9 @@ from clayline.models import Bounds, ExtrusionMode, Point, Profile, TravelPolicy
 from clayline.profiles import validate_profile
 from clayline.wave import pattern_from_json, pattern_to_json
 from clayline.weave_models import (
+    HOLLOWS_IGNORE,
+    HOLLOWS_KEEP,
+    HOLLOWS_RULES,
     TOP_LAYER_BELOW,
     TOP_LAYER_NEAREST,
     TOP_LAYER_RULES,
@@ -83,8 +86,10 @@ _SLICE_KEYS = {
 }
 # The top-layer rule, present only when a top layer was put on ("nearest").  A
 # capsule without it is cut "below", which is how every file 0.5.1 and earlier
-# saved was sliced, so those files restore exactly as they did.
-_SLICE_OPTIONAL_KEYS = {"top_layer"}
+# saved was sliced, so those files restore exactly as they did.  The hollows
+# setting, present only when the hollows were left out ("ignore"): a capsule
+# without it kept them, as every file 0.6.0 and earlier saved did.
+_SLICE_OPTIONAL_KEYS = {"top_layer", "hollows"}
 _EMISSION_KEYS = {
     "flow_multiplier_hex",
     "wet_density_g_cm3_hex",
@@ -156,6 +161,9 @@ class DecodedWeaveRestore:
     scale_z: float = 1.0
     # How the form's top was sliced; "below" when the capsule does not say.
     top_layer: str = TOP_LAYER_BELOW
+    # What the slice did with the form's hollows; "keep" when the capsule does
+    # not say.
+    hollows: str = HOLLOWS_KEEP
 
 
 def pattern_header_projection(pattern: Pattern) -> str:
@@ -309,12 +317,15 @@ def encode_restore_capsule(
     scale_y: float = 1.0,
     scale_z: float = 1.0,
     top_layer: str = TOP_LAYER_BELOW,
+    hollows: str = HOLLOWS_KEEP,
 ) -> str:
     """Encode one strict canonical capsule ready for bounded framing."""
 
     validate_profile(profile, source="restore capsule profile")
     if top_layer not in TOP_LAYER_RULES:
         raise ValueError(f"restore capsule top_layer {top_layer!r} is not a known rule")
+    if hollows not in HOLLOWS_RULES:
+        raise ValueError(f"restore capsule hollows {hollows!r} is not a known setting")
     source_payload: dict[str, Any] = {
         "mesh_name": source_mesh_name,
         "mesh_sha256": source_mesh_sha256,
@@ -356,6 +367,10 @@ def encode_restore_capsule(
     # one 0.5.1 cut keeps the capsule 0.5.1 wrote, byte for byte.
     if top_layer != TOP_LAYER_BELOW:
         slice_payload["top_layer"] = top_layer
+    # Written only when the hollows were left out, so every job that kept them
+    # keeps the capsule 0.6.0 wrote, byte for byte.
+    if hollows != HOLLOWS_KEEP:
+        slice_payload["hollows"] = hollows
     payload = {
         "schema": _SCHEMA,
         "version": _VERSION,
@@ -417,6 +432,9 @@ def decode_restore_capsule(encoded: str) -> DecodedWeaveRestore:
         # "below" is said by leaving the key out, so anything else here is not
         # a capsule Clayline wrote.
         raise ValueError("restore slice.top_layer must be 'nearest' when present")
+    if "hollows" in sliced and sliced["hollows"] != HOLLOWS_IGNORE:
+        # "keep" is said by leaving the key out, as top_layer's "below" is.
+        raise ValueError("restore slice.hollows must be 'ignore' when present")
     emission = _object(payload["emission"], "restore emission")
     _exact_keys(emission, _EMISSION_KEYS, "restore emission")
     job = _object(payload["job_id"], "restore job id")
@@ -515,6 +533,7 @@ def decode_restore_capsule(encoded: str) -> DecodedWeaveRestore:
         reproducible=_boolean(emission["reproducible"], "emission.reproducible"),
         job_id=job_id,
         top_layer=sliced.get("top_layer", TOP_LAYER_BELOW),
+        hollows=sliced.get("hollows", HOLLOWS_KEEP),
     )
     canonical = encode_restore_capsule(
         source_mesh_name=decoded.source_mesh_name,
@@ -545,6 +564,7 @@ def decode_restore_capsule(encoded: str) -> DecodedWeaveRestore:
         scale_y=decoded.scale_y,
         scale_z=decoded.scale_z,
         top_layer=decoded.top_layer,
+        hollows=decoded.hollows,
     )
     if canonical != encoded:
         raise ValueError("restore capsule is not in canonical form")

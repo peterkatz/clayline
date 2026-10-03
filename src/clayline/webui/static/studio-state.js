@@ -206,6 +206,10 @@
     // than settling on a stack one layer taller than the one it was saved with.
     const topLayer = (slice) => (slice.top_layer === "below" ? "below" : "nearest");
     if (topLayer(current.slice) !== topLayer(next.slice)) return "slice";
+    // Whether hollows are ignored changes the rings themselves. Every save that
+    // says nothing about it kept them, so an absent key reads as "keep".
+    const hollows = (slice) => (slice.hollows === "ignore" ? "ignore" : "keep");
+    if (hollows(current.slice) !== hollows(next.slice)) return "slice";
     return hasSlice ? "settle" : "invalidate";
   }
 
