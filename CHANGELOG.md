@@ -2,6 +2,12 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.7.2 — 2026-10-03
+
+### Fixed
+- **The layers above the layer slider are lighter still,** so the inside of a
+  form shows through them more clearly while you scrub.
+
 ## 0.7.1 — 2026-10-03
 
 ### Fixed

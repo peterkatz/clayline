@@ -67,10 +67,10 @@
   const PULSE_COLOR = 0xa14c23; // reuses WARNING_COLOR — no new hue
   // The layers above the scrubber, ghosted.  Each coil is faint, but dozens
   // stack between the eye and the inside of a form: at 0.12 twenty of them
-  // read as 92% solid, a cloud Pete could not look into (2026-10-03).  At
-  // 0.07 the same twenty are 77%: still the cloud he likes, with the inside
-  // showing through.
-  const GHOST_OPACITY = 0.07;
+  // read as 92% solid, a cloud Pete could not look into (2026-10-03).  0.07
+  // (77%) was "still maybe just a bit too thick"; at 0.05 the same twenty are
+  // 64%: still the cloud he likes, with the inside showing through.
+  const GHOST_OPACITY = 0.05;
   const OMITTED_TOP_GHOST_OPACITY = 0.34;
   const PULSE_DURATION_MS = 650;
   const OVERLAY_NOZZLE_SIZE = 6;
