@@ -745,6 +745,9 @@
           scheduleReadout();
         },
         onCommit(label) { commit(label); },
+        // A cancelled drag put the drawing back as it was: it ends its
+        // gesture, recording nothing new, so the next change is a step again.
+        onCancel() { host.endGesture(); },
         // What the Fill button shows: the pattern the pointer is armed
         // with, or else the fill of the area under it.
         onFillState(state) { syncFillButton(state); },

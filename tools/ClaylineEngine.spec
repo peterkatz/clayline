@@ -7,13 +7,13 @@ from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 PROJECT_ROOT = Path(SPECPATH).resolve().parent
 
-# pyinstaller-hooks-contrib ships hooks for both PIL and pillow_heif, but the
-# reference lightbox's HEIC fallback (/api/convert-image) is easy to lose
-# silently if a hook regresses: libheif is a compiled dylib pillow_heif loads
-# at runtime, not a pure-Python import, so it is collected here explicitly
-# rather than trusted to hiddenimports alone.
-datas = collect_data_files("clayline") + collect_data_files("pillow_heif")
-binaries = collect_dynamic_libs("pillow_heif")
+# The reference lightbox's HEIC fallback (/api/convert-image) is easy to lose
+# silently if a hook regresses: libheif is a compiled dylib pi_heif loads at
+# runtime, not a pure-Python import, so it is collected here explicitly rather
+# than trusted to hiddenimports alone. pi_heif is the decode-only build of
+# pillow_heif, so no GPL HEVC encoder (libx265) lands in the app.
+datas = collect_data_files("clayline") + collect_data_files("pi_heif")
+binaries = collect_dynamic_libs("pi_heif")
 
 analysis = Analysis(
     [str(PROJECT_ROOT / "tools" / "clayline_engine.py")],
@@ -28,7 +28,7 @@ analysis = Analysis(
         "PIL.JpegImagePlugin",
         "PIL.PngImagePlugin",
         "PIL.WebPImagePlugin",
-        "pillow_heif",
+        "pi_heif",
     ],
     hookspath=[],
     hooksconfig={},

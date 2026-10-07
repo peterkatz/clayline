@@ -50,3 +50,8 @@
   fill to run on from, and the square with a line in from its side 1 mm from
   the corner its line starts on (spur-by-corner.svg), which a run-on would
   cross.
+- photo/solid-64x48.heic and photo/sideways-64x48-orientation6.heic are tiny
+  synthetic HEIC samples (one flat colour, 64 × 48 pixels; the second tagged
+  EXIF orientation 6) for the reference photo's HEIC fallback. They were
+  encoded once on 2026-10-05 with pillow-heif 1.5.0 at quality 80 and committed,
+  because the app now uses decode-only pi-heif and the tests cannot encode HEIC.

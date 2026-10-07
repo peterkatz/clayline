@@ -76,6 +76,9 @@ class WeaveRestoreRecipe:
     # What the slice did with the form's hollows.  Files 0.6.0 and earlier
     # saved do not say, and kept them; a job that left them out says "ignore".
     hollows: str = HOLLOWS_KEEP
+    # Whether clay kept flowing on crossings.  Files 0.7.2 and earlier saved do
+    # not say, and stopped it on every crossing, so that is how they rebuild.
+    keep_clay_flowing: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +161,7 @@ def parse_weave_gcode(value: str | bytes | Path) -> WeaveRestoreRecipe:
         source_layer_total=total,
         flow_multiplier=_number(facts, "flow_multiplier", minimum=0.0, exclusive=True),
         start_charge_e=_optional_charge(facts),
+        keep_clay_flowing=_keep_clay_flowing(facts),
         wet_density_g_cm3=_number(
             facts,
             "wet_density_g_cm3",
@@ -211,6 +215,7 @@ def _recipe_from_decoded(decoded: DecodedWeaveRestore) -> WeaveRestoreRecipe:
         job_id=decoded.job_id,
         top_layer=decoded.top_layer,
         hollows=decoded.hollows,
+        keep_clay_flowing=decoded.keep_clay_flowing,
     )
 
 
@@ -283,6 +288,13 @@ def _validate_capsule_projection(
         raise ValueError(
             "G-code readable header 'parameter.source_rotation_y_deg' disagrees with its "
             "restore capsule"
+        )
+    # Keep clay flowing on crossings: present only when on, mirroring the capsule.
+    if decoded.keep_clay_flowing:
+        expected["keep_clay_flowing"] = "true"
+    elif "keep_clay_flowing" in facts:
+        raise ValueError(
+            "G-code readable header 'keep_clay_flowing' disagrees with its restore capsule"
         )
     # Bed-axis stretch: present only when not 1.0, mirroring the capsule.
     for key, factor in (
@@ -396,6 +408,7 @@ def restore_weave_result(
         reproducible=recipe.reproducible,
         prime_mm=recipe.prime_mm,
         end_early_mm=recipe.end_early_mm,
+        keep_clay_flowing=recipe.keep_clay_flowing,
         job_id=recipe.job_id,
     )
     return RestoredWeaveResult(result=result, mesh_warning=warning)
@@ -451,6 +464,17 @@ def _optional_charge(facts: dict[str, str]) -> float | None:
     if "start_charge_e" not in facts:
         return None
     return _number(facts, "start_charge_e", minimum=0.0)
+
+
+def _keep_clay_flowing(facts: dict[str, str]) -> bool:
+    """Whether clay kept flowing on crossings; a header that does not say stopped it."""
+
+    raw = facts.get("keep_clay_flowing")
+    if raw is None:
+        return False
+    if raw != "true":
+        raise ValueError("G-code header keep_clay_flowing must be true when present")
+    return True
 
 
 def _number(

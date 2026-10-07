@@ -63,7 +63,7 @@ Use **Restore pattern from G-code…** under 06 Weave pattern: only the pattern 
 Clayline needs a Mac with Apple silicon running macOS 14 or later. On an Intel Mac or an older system it won't run.
 
 **My settings went back to the defaults.**
-The round arrow at the top of the workflow resets settings for that mode. Each mode's reset leaves the other mode alone. **Undo** at the top of the window steps back through settings changes.
+The round arrow at the top of the workflow resets settings for that mode. Each mode's reset leaves the other mode alone. **Undo** at the top of the window, Command-Z, or Edit › Undo takes back your last change: a setting, a move of the model on the bed, a new model, or a Reset. Undo back to a form you had already sliced and its slice comes straight back.
 
 **Something else.**
 Report it at [github.com/peterkatz/clayline](https://github.com/peterkatz/clayline) under Issues, with the drawing or model and the settings you used. A question rather than a problem goes under [Questions](https://github.com/peterkatz/clayline/discussions/categories/q-a) there, and gets its answer where others can find it.

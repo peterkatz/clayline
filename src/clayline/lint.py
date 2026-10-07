@@ -46,6 +46,12 @@ _MATERIAL_Z0 = re.compile(r"\bmatz0=(-?(?:\d+(?:\.\d*)?|\.\d+))\b")
 _MATERIAL_Z1 = re.compile(r"\bmatz1=(-?(?:\d+(?:\.\d*)?|\.\d+))\b")
 _TERRAIN_KIND = re.compile(r"\bterrain=([a-z_]+)\b")
 _THERMAL_OR_FAN = {"M104", "M105", "M106", "M107", "M109", "M140", "M190"}
+# The crossing motions a job with ``keep_clay_flowing=true`` turns into clay.
+_CROSSING_KINDS = frozenset({"travel_lift", "travel_xy", "travel_approach"})
+# The emitter writes X, Y, Z and E to six decimals and computes each E word
+# from the exact path, so a crossing measured back from the file is held to
+# what that rounding allows and nothing more (see ``_crossing_e_tolerance``).
+_OUTPUT_QUANTUM = 1e-6
 # Six-decimal XYZ output plus independently recomputed capsule tangencies can
 # move a derived clearance boundary by a few hundredths of a micron.  Keep the
 # replay quantum at 0.1 micron: far below machine/material resolution, but high
@@ -340,6 +346,17 @@ def lint_gcode(
     )
     expected_first_z = _header_float(header, "first_layer_z_mm")
     header_end_early = _header_float(header, "end_early_mm", fallback=0.0)
+    # Keep clay flowing on crossings: the header says so only when it is on, and
+    # then every crossing between two lines carries one full bead per mm.  With
+    # the key absent nothing below behaves any differently.
+    keep_clay_flowing = _keep_clay_flowing_header(header, issue)
+    crossing_bead = _full_bead_e_per_mm(header, profile, issue) if keep_clay_flowing else None
+    # A crossing onto the first layer carries that layer's fuller bead.
+    first_layer_flow_factor = _header_float(
+        header, "parameter.first_layer_flow_factor", fallback=1.0
+    )
+    dry_crossing_lines: list[int] = []
+    flowing_crossing_feeds: list[tuple[int, float | None]] = []
     corrected_thread_protection = (
         header.get("parameter.thread_protection_model") == "extra-clay-slowdown-v1"
     )
@@ -760,6 +777,72 @@ def lint_gcode(
             else:
                 delta_e = words["E"]
                 state.e += words["E"]
+        flowing_crossing = (
+            keep_clay_flowing
+            and block == "body"
+            and not pressure
+            and kind in _CROSSING_KINDS
+            and delta_e is not None
+            and delta_e > 1e-9
+        )
+        if keep_clay_flowing and block == "body" and not pressure and kind in _CROSSING_KINDS:
+            moved = all(value is not None for value in (*old, *target))
+            length = math.dist(old, target) if moved else 0.0
+            deferred = _E_DEFERRED.search(comment)
+            # A crossing fragment shorter than one E step carries its clay
+            # forward on the next E word, exactly as a print fragment does.
+            carried_forward = deferred is not None and deferred.group(1) == "true"
+            if delta_e is None:
+                # Dry only if another line follows: the job's first approach
+                # comes before any clay, and nothing crosses after the last line.
+                if seen_deposition and length > 1e-9 and not carried_forward:
+                    dry_crossing_lines.append(line_number)
+            elif crossing_bead is not None:
+                layer_match = _LAYER.search(comment)
+                first_layer = layer_match is not None and int(layer_match.group(1)) == 0
+                e_per_mm = crossing_bead[0] * (first_layer_flow_factor if first_layer else 1.0)
+                expected_e = length * e_per_mm
+                tolerance = _crossing_e_tolerance(e_per_mm, expected_e, crossing_bead[1])
+                if abs(delta_e - expected_e) > tolerance:
+                    issue(
+                        "crossing_flow",
+                        f"crossing carries E {delta_e:.6g}; a full bead over its "
+                        f"{length:.6g} mm is {expected_e:.6g}",
+                        line_number,
+                    )
+            if delta_e is not None or carried_forward:
+                # E per second is the other half of the flow: the crossing
+                # runs at the feed of the line it leads to (checked there).
+                flowing_crossing_feeds.append((line_number, words.get("F")))
+        if keep_clay_flowing and block == "body" and not pressure and kind == "print":
+            line_feed = words.get("F")
+            for crossing_line, crossing_feed in flowing_crossing_feeds:
+                if (
+                    crossing_feed is None
+                    or line_feed is None
+                    or not math.isclose(crossing_feed, line_feed, rel_tol=1e-9, abs_tol=1e-9)
+                ):
+                    issue(
+                        "crossing_flow",
+                        f"crossing runs at F{_feed_text(crossing_feed)} but the line it leads "
+                        f"to prints at F{_feed_text(line_feed)}",
+                        crossing_line,
+                    )
+            flowing_crossing_feeds.clear()
+            if "note=prime ramp" in comment:
+                issue(
+                    "crossing_flow",
+                    "a line starts on a prime ramp although keep_clay_flowing=true",
+                    line_number,
+                )
+        if keep_clay_flowing and block == "body" and delta_e is not None and delta_e > 1e-9:
+            for dry_line in dry_crossing_lines:
+                issue(
+                    "crossing_flow",
+                    "the clay stops on a crossing although keep_clay_flowing=true",
+                    dry_line,
+                )
+            dry_crossing_lines.clear()
         if block == "body" and delta_e is not None:
             if delta_e < -1e-7:
                 issue("body_retraction", "body E must never decrease or retract", line_number)
@@ -793,9 +876,12 @@ def lint_gcode(
                 # but its raised tip is not a new material-surface datum. Keep
                 # the last actual print height so ordinary dry XY still has to
                 # begin above deposited clay, even after a later approach.
-                if state.z is not None and kind != "thread_release":
+                # Clay laid on a flowing crossing is clay, but the nozzle that
+                # lays it is lifted above the work: like a release, it does not
+                # raise the printed-height datum the next dry XY move is held to.
+                if state.z is not None and kind != "thread_release" and not flowing_crossing:
                     last_print_z = state.z
-                if line_page is not None and kind != "thread_release":
+                if line_page is not None and kind != "thread_release" and not flowing_crossing:
                     # THREAD_RELEASE is deposited thread-handling path, but it
                     # is also the first portion of run separation.  Do not
                     # reset the inter-page clearance datum at its raised tip:
@@ -825,7 +911,7 @@ def lint_gcode(
                                     line_number,
                                 )
                     extrusion_page = line_page
-                if kind != "thread_release":
+                if kind != "thread_release" and not flowing_crossing:
                     max_z_since_extrusion = state.z
         if block == "body" and kind == "thread_release" and (delta_e is None or delta_e <= 1e-9):
             issue(
@@ -842,8 +928,13 @@ def lint_gcode(
                 "e_deferred marker must have the exact value true",
                 line_number,
             )
+        # With keep_clay_flowing=true a crossing lays clay too, so a crossing
+        # fragment below one E step defers its clay the same way.
+        deferring_kinds = (
+            {"print", "carry", *_CROSSING_KINDS} if keep_clay_flowing else {"print", "carry"}
+        )
         if e_deferred and (
-            block != "body" or pressure or kind not in {"print", "carry"} or delta_e is not None
+            block != "body" or pressure or kind not in deferring_kinds or delta_e is not None
         ):
             issue(
                 "e_deferred",
@@ -918,6 +1009,12 @@ def lint_gcode(
                 issue("end_early", "extrusion resumed after an E-less stroke tail", line_number)
             if not deposits_logically:
                 stroke_tail_started = True
+                if keep_clay_flowing:
+                    issue(
+                        "crossing_flow",
+                        "a line stops pushing clay before its end although keep_clay_flowing=true",
+                        line_number,
+                    )
             stroke_last_print_had_e = deposits_logically
 
         xy_changed = _xy_changed(old, target)
@@ -2183,6 +2280,71 @@ def _xy_changed(
         before is None or after is None or not math.isclose(before, after, abs_tol=1e-9)
         for before, after in zip(old[:2], new[:2], strict=True)
     )
+
+
+def _keep_clay_flowing_header(header: dict[str, str], issue: Any) -> bool:
+    """Read ``keep_clay_flowing``: absent is off, ``true`` is on, anything else is refused.
+
+    A flowing job lays no prime ramp and no end-early tail, so its header must
+    say 0 for both; a header claiming otherwise describes a different file.
+    """
+
+    raw = header.get("keep_clay_flowing")
+    if raw is None:
+        return False
+    if raw != "true":
+        issue("header", f"keep_clay_flowing={raw!r}; the key is written only as true")
+        return False
+    for key in ("prime_mm", "end_early_mm"):
+        value = _header_float(header, key)
+        if value is not None and value != 0.0:
+            issue("header", f"keep_clay_flowing=true lays no ramp or tail, but {key}={value:g}")
+    return True
+
+
+def _full_bead_e_per_mm(
+    header: dict[str, str], profile: Profile, issue: Any
+) -> tuple[float, float] | None:
+    """E per mm of one full bead, from the header's own bead, layer and flow.
+
+    Returns that rate and its relative uncertainty: the header writes each of
+    the three numbers to six decimals, so each can be off by half a step.
+    """
+
+    bead = _header_float(header, "bead_width_mm")
+    layer = _header_float(header, "layer_height_mm")
+    flow = _header_float(header, "flow_multiplier")
+    if bead is None or layer is None or flow is None or min(bead, layer, flow) <= 0.0:
+        issue("crossing_flow", "keep_clay_flowing=true needs a positive bead, layer and flow")
+        return None
+    filament_area = math.pi * (profile.virtual_filament_diameter / 2.0) ** 2
+    half_step = _OUTPUT_QUANTUM / 2.0
+    relative = half_step / bead + half_step / layer + half_step / flow
+    return bead * layer * flow / filament_area, relative
+
+
+def _crossing_e_tolerance(e_per_mm: float, expected_e: float, relative: float) -> float:
+    """How far a flowing crossing's E may sit from a full bead by rounding alone.
+
+    - Length: each end of the move is written to six decimals on three axes,
+      so the length read back can differ from the exact one by up to
+      √3 steps, at ``e_per_mm`` E each.
+    - E: the advance is the difference of two rounded totals (one step), and
+      may also carry a fragment smaller than one step deferred from just
+      before it (one more).
+    - The bead itself, read from the six-decimal header (``relative``), plus
+      float noise.
+
+    Anything past this is a crossing laid at the wrong rate, however short.
+    """
+
+    length_slack = math.sqrt(3.0) * _OUTPUT_QUANTUM * e_per_mm
+    e_slack = 2.0 * _OUTPUT_QUANTUM
+    return length_slack + e_slack + (relative + 1e-9) * abs(expected_e)
+
+
+def _feed_text(feed: float | None) -> str:
+    return "none" if feed is None else f"{feed:g}"
 
 
 def _header_float(header: dict[str, str], key: str, fallback: float | None = None) -> float | None:

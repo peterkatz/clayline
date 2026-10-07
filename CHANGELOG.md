@@ -2,6 +2,34 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.8.0 — 2026-10-06
+
+### New
+- **Undo that works.** Command-Z, the Undo button and Edit › Undo take back
+  exactly your last change, every time: moving, turning or sizing the model on
+  the bed, a number you typed, a choice from a list, loading another model,
+  Reset, and bringing back settings from a print file. Undo back to a form you
+  had already sliced and its slice comes straight back, without slicing again.
+- **Keep clay flowing on crossings.** A new switch in Weave's Printer section,
+  on by default. The printer keeps pushing clay at the print rate while the
+  nozzle lifts, crosses and comes back down, so the next line starts at full
+  pressure instead of thin, and lines start and end at full flow. It uses more
+  clay where the nozzle crosses. Switch it off to stop the push on every
+  crossing as before. Print files saved before this release still print
+  exactly as they were saved.
+
+### Fixed
+- **Far fewer crossings on a form that splits for a few layers.** A filled
+  form that stands in two pieces somewhere now prints every stretch where it is
+  one piece as one unbroken line. Before, a split anywhere made the nozzle lift
+  and cross the piece on every layer of the whole form. Where the line can't
+  reach the next part of the fill along the clay, the nozzle crosses, and a
+  warning says how often.
+- **A click on the model no longer nudges it.** The model only moves once you
+  drag it a few pixels.
+- **iPhone photos** still open as reference photos; the app reads them with a
+  smaller built-in reader.
+
 ## 0.7.2 — 2026-10-03
 
 ### Fixed

@@ -49,6 +49,7 @@ from clayline.weave_models import (
     SeamPolicy,
     SlicedForm,
     SliceLayer,
+    WallBand,
 )
 from clayline.weave_zblend import (
     SLOPE_MAX_RATIO,
@@ -783,16 +784,108 @@ def build_form_move_stream(
             nominal_label=f"Weave mesh — {sliced.source_path.name}",
         )
 
-    # Why the thread declined a whole form, when it declined one for a reason
-    # that is not simply scope.  Scope — hollow, a seam the artist placed, more
-    # than one ring a layer — is silent by design; a form the route TRIED and
-    # could not hold is not.
-    declined: list[str] = []
+    # What the thread had to say about the stretches it ran through, and about
+    # any stretch it tried and could not hold.  Scope — hollow, a seam the artist
+    # placed, more than one ring a layer — is silent by design; a stretch the
+    # route TRIED and could not hold is not.
+    thread_warnings: list[FormWarning] = []
 
-    def continuous_thread_paths() -> (
-        tuple[list[list[_RingPath]], dict[tuple[int, int], np.ndarray], list[_ThreadBreak]] | None
-    ):
-        """The deposited thread for a filled one-island form, in segments.
+    def one_piece(band: WallBand) -> bool:
+        """One closed ring on every layer of the band: one piece, all the way up it."""
+
+        if band.ring_count != 1 or not band.tracks:
+            return False
+        return all(by_address[address].closed for address in band.tracks[0].rings)
+
+    def thread_groups() -> tuple[tuple[bool, tuple[WallBand, ...]], ...]:
+        """The form's bands in print order, grouped by whether one thread runs through them.
+
+        A stretch is every band in a row that is one piece all the way up.  The
+        thread runs through each stretch on its own; the bands between them —
+        two pieces side by side, a ring around a hole, an open contour — keep
+        the layer-first order they always had.  The join between a stretch and
+        its neighbour is an ordinary crossing between pieces.  A form that is
+        one piece all the way up is a single stretch, printed exactly as it
+        always was.  Before this, one band of two pieces anywhere handed every
+        layer of the form to the travelling route, so Pete's head job lifted
+        and crossed the piece on 89 layers that were one piece.
+        """
+
+        bands = tuple(sliced.wall_bands)
+        # CHAINED only, for v1.  This route seats each wall's seam where that
+        # layer's ribs ended, because it welds and then climbs from that same
+        # column — which is exactly what a chained seam already asks for.  A
+        # PINNED seam is placed by the artist and must be left where they put
+        # it, so the weld back to it becomes a lap rather than a step; a
+        # SCATTER seam moves every layer by design.  Both are printable, and
+        # both need their own answer.  Pete's 2026-08-04 scope ruling defers
+        # every-seam-policy coverage: deferred, not deleted.
+        if not interior_filled or pattern.settings.seam is not SeamPolicy.CHAINED:
+            return ((False, bands),)
+        groups: list[tuple[bool, list[WallBand]]] = []
+        for band in bands:
+            threaded = one_piece(band)
+            if groups and groups[-1][0] is threaded:
+                groups[-1][1].append(band)
+            else:
+                groups.append((threaded, [band]))
+        return tuple((threaded, tuple(members)) for threaded, members in groups)
+
+    def clay_below(ring: Ring) -> tuple[np.ndarray | None, tuple[np.ndarray, ...]]:
+        """The wall and the clay the layer under ``ring`` actually laid.
+
+        A stretch that starts above two pieces has no thread below it to
+        inherit: the layer below was printed piece by piece and is already in
+        ``moves``.  So the clay this layer's links are proved against is read
+        back from exactly what was printed there, run by run, and the wall it
+        stands on is the ring below that this one covers most.  If it covers
+        none, there is no wall to stand on and every link on the layer cuts,
+        by name — never a bead struck across the open fill.
+        """
+
+        below = ring.provenance.layer_index - 1
+        paths: list[list[tuple[float, float]]] = []
+        run: str | None = None
+        for move in moves:
+            if (
+                move.kind is not MoveKind.PRINT
+                or move.layer_index != below
+                or move.x is None
+                or move.y is None
+            ):
+                run = None
+                continue
+            if run != move.stroke_id:
+                paths.append([])
+                run = move.stroke_id
+            paths[-1].append((move.x, move.y))
+        deposition = tuple(np.asarray(path, dtype=np.float64) for path in paths if len(path) >= 2)
+        upper = material_extent(
+            np.asarray(modulated_by_address[ring.provenance].points, dtype=np.float64)
+        )
+        wall: np.ndarray | None = None
+        covered = 0.0
+        if upper is not None:
+            for candidate in sliced.layers[below].rings:
+                if not candidate.closed or candidate.is_hole:
+                    continue
+                points = np.asarray(
+                    modulated_by_address[candidate.provenance].points, dtype=np.float64
+                )
+                region = material_extent(points)
+                if region is None:
+                    continue
+                overlap = float(region.intersection(upper).area)
+                if overlap > covered:
+                    wall, covered = points, overlap
+        return wall, deposition
+
+    def continuous_thread_paths(
+        bands: Sequence[WallBand],
+        *,
+        whole_form: bool,
+    ) -> tuple[list[list[_RingPath]], dict[tuple[int, int], np.ndarray], list[_ThreadBreak]] | None:
+        """The deposited thread through one stretch of one-piece layers, in segments.
 
         A piece that wants sparse structural webbing is printed the way a
         potter coils one: the head never leaves the clay.  Each layer finishes
@@ -806,45 +899,36 @@ def build_form_move_stream(
         them and constructs the coil that reaches the winner.
 
         The thread comes back as SEGMENTS, and normally there is exactly one:
-        the whole form, printed without the head ever leaving the clay.  A layer
-        whose entry or weld cannot be proved ENDS a segment and begins the next,
-        and names itself in the returned breaks.  That costs one travel, at that
-        layer, said out loud — where before a single unopenable layer handed the
-        entire form back to the travelling route without a word.  Nothing here
-        may respond to a hard layer by dragging the head across the piece: the
-        break is the whole of the concession, and it is bounded to one layer.
+        the whole stretch, printed without the head ever leaving the clay.  A
+        layer whose entry or weld cannot be proved ENDS a segment and begins
+        the next, and names itself in the returned breaks.  That costs one
+        travel, at that layer, said out loud — where before a single unopenable
+        layer handed the entire form back to the travelling route without a
+        word.  Nothing here may respond to a hard layer by dragging the head
+        across the piece: the break is the whole of the concession, and it is
+        bounded to one layer.
 
-        ``None`` is reserved for a form this route does not cover at all — a
-        hollow interior, a seam policy other than chained, several rings a
-        layer.  That is scope, not a failure to plan, and the historical
-        per-layer sequencing prints those exactly as it always has.
+        A stretch that starts above two pieces opens where its own fill
+        begins, after the crossing that reaches it, the way the first layer of
+        a print does; the links on that first layer are proved against what the
+        layer below actually printed (:func:`clay_below`).
+
+        ``None`` is reserved for a stretch this route does not cover — fill on
+        a layer that belongs to some other island — and for a stretch the
+        thread tried and could not hold, which says so.  Those print exactly as
+        they always have, layer by layer.
         """
 
-        # CHAINED only, for v1.  This route seats each wall's seam where that
-        # layer's ribs ended, because it welds and then climbs from that same
-        # column — which is exactly what a chained seam already asks for.  A
-        # PINNED seam is placed by the artist and must be left where they put
-        # it, so the weld back to it becomes a lap rather than a step; a
-        # SCATTER seam moves every layer by design.  Both are printable, and
-        # both need their own answer.  Pete's 2026-08-04 scope ruling defers
-        # every-seam-policy coverage: deferred, not deleted.
-        if not interior_filled or pattern.settings.seam is not SeamPolicy.CHAINED:
+        rings: list[Ring] = [
+            by_address[address] for band in bands for address in band.tracks[0].rings
+        ]
+        # Every layer of the stretch, filled, exactly once.  Anything else and
+        # the thread would have a hole in it that only a travel could close.
+        if whole_form and len(rings) != len(sliced.layers):
             return None
-
-        rings: list[Ring] = []
-        for band in sliced.wall_bands:
-            tracks = tuple(
-                tuple(by_address[address] for address in track.rings) for track in band.tracks
-            )
-            if band.ring_count != 1 or not tracks:
-                return None
-            if not all(ring.closed for ring in tracks[0]):
-                return None
-            rings.extend(tracks[0])
-        # Every layer of the form, filled, exactly once.  Anything else and the
-        # thread would have a hole in it that only a travel could close.
-        if len(rings) != len(sliced.layers) or fill_layers < len(sliced.layers):
+        if any(ring.provenance.layer_index >= fill_layers for ring in rings):
             return None
+        first_layer = rings[0].provenance.layer_index
 
         segments: list[list[_RingPath]] = [[]]
         breaks: list[_ThreadBreak] = []
@@ -852,6 +936,14 @@ def build_form_move_stream(
         climb_xy: tuple[float, float] | None = None
         lower_wall: np.ndarray | None = None
         lower_deposition: tuple[np.ndarray, ...] = ()
+        # Where the head stands when the stretch begins, if it begins above two
+        # pieces.  It only chooses which end of the first layer to start from,
+        # so the crossing in is as short as the fill allows; it is never a
+        # climb column, because the head arrives by travel, not by climbing.
+        head_xy: tuple[float, float] | None = None
+        if first_layer > 0:
+            lower_wall, lower_deposition = clay_below(rings[0])
+            head_xy = None if current is None else (current.x, current.y)
 
         def cut(record: _ThreadBreak) -> None:
             """End the thread here, name why, and let the next layer start one."""
@@ -864,10 +956,11 @@ def build_form_move_stream(
             layer_index = ring.provenance.layer_index
             island_index = ring.provenance.island_index
             modulated = modulated_by_address[ring.provenance]
+            opening_head, head_xy = head_xy, None
             fills = tuple(fill_islands_by_layer.get(layer_index, {}).get(island_index, ()))
             # At most one island.  Its ribs may arrive as several pieces — a
             # concavity or a hole splits a raster — and those pieces are linked
-            # to each other below by the same ride that opens the layer.
+            # to each other below by the same constructions that open the layer.
             if len(fills) != len(fill_by_layer.get(layer_index, ())):
                 # Fill on this layer belongs to an island this route does not
                 # own.  That is the multi-island scope, not a hard layer.
@@ -909,7 +1002,8 @@ def build_form_move_stream(
             opening_of = (
                 # The first layer opens wherever its own fill begins: there is
                 # no column below it yet, and its approach is the one startup
-                # travel every print is allowed.
+                # travel every print is allowed — or, above two pieces, the
+                # crossing that reaches this stretch.
                 None
                 if climb_xy is None or lower_wall is None or region is None or not prove_links
                 else partial(
@@ -922,6 +1016,7 @@ def build_form_move_stream(
                     lower_deposition=lower_deposition,
                     current_region=region,
                     bead_width=sliced.bead_width,
+                    wall_ride=whole_form,
                 )
             )
 
@@ -937,7 +1032,7 @@ def build_form_move_stream(
                         ring,
                         modulated,
                         pattern,
-                        climb_xy,
+                        climb_xy if climb_xy is not None else opening_head,
                         source_layer_index=layer_index + sliced.source_layer_start,
                     ),
                     pattern_scale=(
@@ -988,25 +1083,50 @@ def build_form_move_stream(
             deposited: list[_PathPoint] = []
             position = climb_xy
             while pending:
-                piece = (
-                    min(
+                if position is not None:
+                    piece = min(
                         pending,
                         key=lambda candidate: min(
                             math.dist(position, (candidate.points[0].x, candidate.points[0].y)),
                             math.dist(position, (candidate.points[-1].x, candidate.points[-1].y)),
                         ),
                     )
-                    if position is not None
-                    else pending[0]
-                )
+                elif opening_head is not None:
+                    piece = min(
+                        pending,
+                        key=lambda candidate: min(
+                            math.dist(opening_head, (candidate.points[0].x, candidate.points[0].y)),
+                            math.dist(
+                                opening_head, (candidate.points[-1].x, candidate.points[-1].y)
+                            ),
+                        ),
+                    )
+                else:
+                    piece = pending[0]
                 pending.remove(piece)
                 piece_points = np.asarray(
                     [(point.x, point.y) for point in piece.points], dtype=np.float64
                 )
-                reach = (
-                    None
-                    if position is None or lower_wall is None or region is None or not prove_links
-                    else choose_layer_entry(
+                if position is None or region is None or not prove_links:
+                    reach = None
+                elif lower_wall is None:
+                    # Only the bed has no wall under it, and a link there lies
+                    # on the bed.  Anywhere else nothing below was found to
+                    # carry the bead, so the link is refused rather than laid
+                    # across the open fill.
+                    reach = (
+                        None
+                        if layer_index == 0
+                        else GateFailure(
+                            "lower_clay_support",
+                            False,
+                            True,
+                            "nothing printed on the layer below reaches under this layer "
+                            "to carry a joining bead",
+                        )
+                    )
+                else:
+                    reach = choose_layer_entry(
                         layer_index=layer_index,
                         island_index=island_index,
                         climb_xy=position,
@@ -1016,8 +1136,15 @@ def build_form_move_stream(
                         lower_deposition=lower_deposition,
                         current_region=region,
                         bead_width=sliced.bead_width,
+                        # A ride lays clay on the wall line that the wall then
+                        # prints again, so a stretch never rides: it breaks.  A
+                        # form that is one piece all the way up still rides as
+                        # it always has (its bytes are pinned); that its rides
+                        # print its wall twice as well is reported, not changed
+                        # here.
+                        wall_ride=whole_form,
                     )
-                )
+                broke = isinstance(reach, GateFailure)
                 if isinstance(reach, GateFailure):
                     # No proved coil reaches this piece from where the head
                     # stands.  The thread stops just short of it and starts
@@ -1044,9 +1171,27 @@ def build_form_move_stream(
                         )
                     )
                     reach = None
+                # Above two pieces the head arrives by crossing, so the first
+                # piece starts from whichever of its ends is nearer.  So does a
+                # piece a stretch had to break to reach: the crossing is the
+                # whole cost of the break, and it should be the short one.
+                # Reversing a trail lays the same clay the other way round.
+                arrival = (
+                    opening_head
+                    if position is None
+                    else position
+                    if broke and not whole_form
+                    else None
+                )
+                reverse_opening = (
+                    reach is None
+                    and arrival is not None
+                    and math.dist(arrival, (piece.points[-1].x, piece.points[-1].y))
+                    < math.dist(arrival, (piece.points[0].x, piece.points[0].y))
+                )
                 ordered = (
                     tuple(reversed(piece.points))
-                    if reach is not None and reach.reversed_fill
+                    if (reach is not None and reach.reversed_fill) or reverse_opening
                     else piece.points
                 )
                 if not deposited:
@@ -1131,217 +1276,244 @@ def build_form_move_stream(
         # well.  Concentric ribs on cone.obj land here — they end deep inside
         # the wall with only ring gaps to reach across, and break 48 times in 49
         # layers.  That pattern needs its own construction, and until it has one
-        # the historical route prints it better.  This is the ONLY whole-form
-        # decision left after planning, it is taken on a count that was actually
-        # measured, and it says so out loud.
-        if len(breaks) * 2 > len(rings):
-            declined.append(
-                f"{len(breaks)} of {len(rings)} layers could not be opened along the clay"
+        # the historical route prints it better.  This is the ONLY decision
+        # about a whole form left after planning, it is taken on a count that
+        # was actually measured, and it says so out loud.
+        #
+        # A stretch keeps its pieces however often it breaks.  It never rides
+        # the wall, so it breaks wherever the fill does not start within a coil
+        # of where the line arrives — and each break is one crossing, where the
+        # layer-by-layer route crosses at least once on EVERY layer.  Measured
+        # on Pete's head job: handing the stretches that broke on more than half
+        # their layers back to that route printed 117 crossings and 6.2 m of
+        # them; keeping their pieces, 91 and 3.3 m.
+        if whole_form and len(breaks) * 2 > len(rings):
+            reason = f"{len(breaks)} of {len(rings)} layers could not be opened along the clay"
+            thread_warnings.append(
+                FormWarning(
+                    code=FormWarningCode.INTERIOR_THREAD_BROKEN,
+                    severity=Severity.WARNING,
+                    message=(
+                        f"This form printed with a lift at every layer instead of as one "
+                        f"continuous line: {reason}, so the continuous route would have "
+                        f"stopped more often than it ran."
+                    ),
+                )
             )
             return None
 
         return segments, welds, breaks
 
-    continuous_thread = continuous_thread_paths()
-    thread_warnings: list[FormWarning] = []
-    if continuous_thread is not None:
-        thread_segments, thread_welds, thread_breaks = continuous_thread
-        resolved_welds.update(thread_welds)
-        thread_id = f"weave-thread-{sliced.id}"
-        for index, segment in enumerate(thread_segments):
-            add_run(
-                segment,
-                label="continuous-thread",
-                # One lump of clay, one id.  A form that printed unbroken keeps
-                # the single id it always had; a form that broke names each
-                # piece separately rather than calling two threads one.
-                thread_id=(thread_id if len(thread_segments) == 1 else f"{thread_id}-{index:03d}"),
-            )
-        thread_warnings.extend(_thread_break_warnings(thread_breaks))
-    elif declined:
-        thread_warnings.append(
-            FormWarning(
-                code=FormWarningCode.INTERIOR_THREAD_BROKEN,
-                severity=Severity.WARNING,
-                message=(
-                    f"This form printed with a lift at every layer instead of as one "
-                    f"continuous line: {declined[0]}, so the continuous route would have "
-                    f"stopped more often than it ran."
-                ),
-            )
-        )
-
+    thread_id = f"weave-thread-{sliced.id}"
+    threads_laid = 0
+    stretches = thread_groups()
+    whole_form = len(stretches) == 1 and stretches[0][0]
     processed_fill_layers: set[int] = set()
-    for band in sliced.wall_bands:
-        if continuous_thread is not None:
-            break
-        rings_by_track = tuple(
-            tuple(by_address[address] for address in track.rings) for track in band.tracks
-        )
-        continuous = (
-            band.ring_count == 1
-            and bool(rings_by_track)
-            and all(ring.closed for ring in rings_by_track[0])
-            and pattern.settings.seam is not SeamPolicy.SCATTER
-        )
-        if continuous:
-            previous_seam: tuple[float, float] | None = None
-            ring_paths: list[_RingPath] = []
-            for ring in rings_by_track[0]:
-                modulated = modulated_by_address[ring.provenance]
-                # A layer with sparse fill asks for its seam to sit where its
-                # last rib ended, so the weld between them is one step outward
-                # instead of a lap of the form.  Every other layer chains off
-                # the wall below exactly as it always has: the anchor is None
-                # for a hollow vessel, for a bottom, and for a dense interior,
-                # whose weld crosses its own clay from any seam.
-                anchor = interior.seam_anchor(
-                    ring.provenance.layer_index,
-                    ring.provenance.island_index,
-                )
-                seam_index = _seam_index(
-                    ring,
-                    modulated,
-                    pattern,
-                    previous_seam if anchor is None else anchor,
-                    source_layer_index=ring.provenance.layer_index + sliced.source_layer_start,
-                )
-                path = _ring_path(
-                    ring,
-                    modulated,
-                    pattern,
-                    seam_index,
-                    pattern_scale=(
-                        1.0
-                        if layer_pattern_scales is None
-                        else layer_pattern_scales.get(ring.provenance.layer_index, 0.0)
+    for threaded, group_bands in stretches:
+        thread = continuous_thread_paths(group_bands, whole_form=whole_form) if threaded else None
+        if thread is not None:
+            thread_segments, thread_welds, thread_breaks = thread
+            resolved_welds.update(thread_welds)
+            for segment in thread_segments:
+                add_run(
+                    segment,
+                    label="continuous-thread",
+                    # One lump of clay, one id.  A form that printed unbroken
+                    # keeps the single id it always had; a form that broke, or
+                    # that has more than one stretch, names each piece
+                    # separately rather than calling two threads one.
+                    thread_id=(
+                        thread_id
+                        if whole_form and len(thread_segments) == 1
+                        else f"{thread_id}-{threads_laid:03d}"
                     ),
-                    profile_z_offsets=profile_z_by_address.get(ring.provenance),
                 )
-                ring_paths.append(path)
-                previous_seam = (path.points[0].x, path.points[0].y)
-            # Band-relative, deliberately: ``ring_paths[offset]`` is the offset-th
-            # layer OF THIS BAND, not of the form.  While only bottoms filled,
-            # every filled band started at layer 0 and the two coincided; an
-            # interior fills every band, so a band that starts higher would have
-            # looked up the wrong layer's fill and printed it at the wrong Z.
-            consumed = min(max(0, fill_layers - band.span.first_layer), len(ring_paths))
-            for offset in range(consumed):
-                layer_index = band.span.first_layer + offset
-                walls = ring_paths[offset:] if offset == consumed - 1 else (ring_paths[offset],)
-                leftover = add_fill_then_wall(
-                    layer_index,
-                    walls,
-                    label=f"band-{band.index:03d}-layer-{layer_index:03d}",
-                    walls_are_one_run=True,
+                threads_laid += 1
+            thread_warnings.extend(
+                _thread_break_warnings(
+                    thread_breaks,
+                    stretch=(
+                        None
+                        if whole_form
+                        else LayerSpan(
+                            first_layer=group_bands[0].span.first_layer,
+                            last_layer=group_bands[-1].span.last_layer,
+                        )
+                    ),
+                    lines=sum(1 for segment in thread_segments if segment),
                 )
-                if leftover:
-                    raise FormStackError(
-                        f"layer {layer_index + 1} left {len(leftover)} continuous band "
-                        "revolutions unprinted"
-                    )
-                processed_fill_layers.add(layer_index)
-            if consumed == 0:
-                add_run(ring_paths, label=f"band-{band.index:03d}-track-000")
+            )
             continue
-
-        # Multi-ring and open geometry is sequenced layer-first.  That keeps
-        # every deposited Z monotonic and gives each ring its own paste-safe
-        # run/travel boundary.
-        for layer_index in range(band.span.first_layer, band.span.last_layer + 1):
-            if layer_index in processed_fill_layers:
-                continue
-            layer = sliced.layers[layer_index]
-            pending = [(ring, modulated_by_address[ring.provenance]) for ring in layer.rings]
-            ordered: list[_RingPath] = []
-            endpoint = None if current is None else (current.x, current.y)
-            while pending:
-                selected = _nearest_modulated_ring(pending, endpoint)
-                pending.remove(selected)
-                ring, modulated = selected
-                seam_index = _seam_index(
-                    ring,
-                    modulated,
-                    pattern,
-                    # This route never chained — with no previous seam a chained
-                    # policy simply started every ring at sample zero — so the
-                    # rib's end is the first anchor it has ever had.  A layer
-                    # with no sparse fill still gets None and still starts at
-                    # zero, which is what the byte-pinned multi-ring goldens
-                    # hold.
-                    interior.seam_anchor(
+        for band in group_bands:
+            rings_by_track = tuple(
+                tuple(by_address[address] for address in track.rings) for track in band.tracks
+            )
+            continuous = (
+                band.ring_count == 1
+                and bool(rings_by_track)
+                and all(ring.closed for ring in rings_by_track[0])
+                and pattern.settings.seam is not SeamPolicy.SCATTER
+            )
+            if continuous:
+                previous_seam: tuple[float, float] | None = None
+                ring_paths: list[_RingPath] = []
+                for ring in rings_by_track[0]:
+                    modulated = modulated_by_address[ring.provenance]
+                    # A layer with sparse fill asks for its seam to sit where its
+                    # last rib ended, so the weld between them is one step outward
+                    # instead of a lap of the form.  Every other layer chains off
+                    # the wall below exactly as it always has: the anchor is None
+                    # for a hollow vessel, for a bottom, and for a dense interior,
+                    # whose weld crosses its own clay from any seam.
+                    anchor = interior.seam_anchor(
                         ring.provenance.layer_index,
                         ring.provenance.island_index,
-                    ),
-                    source_layer_index=ring.provenance.layer_index + sliced.source_layer_start,
-                )
-                reverse_open = (
-                    not ring.closed
-                    and endpoint is not None
-                    and _distance_sq(modulated.points[-1], endpoint)
-                    < _distance_sq(modulated.points[0], endpoint)
-                )
-                path = _ring_path(
-                    ring,
-                    modulated,
-                    pattern,
-                    seam_index,
-                    pattern_scale=(
-                        1.0
-                        if layer_pattern_scales is None
-                        else layer_pattern_scales.get(ring.provenance.layer_index, 0.0)
-                    ),
-                    reverse_open=reverse_open,
-                    profile_z_offsets=profile_z_by_address.get(ring.provenance),
-                )
-                ordered.append(path)
-                endpoint = (path.points[-1].x, path.points[-1].y)
-            if layer_index < fill_layers:
-                if not ordered:
-                    if interior_filled and not fill_by_layer.get(layer_index):
-                        # The top of a taper: the slice plane has passed the tip,
-                        # so this layer has neither a wall ring nor any fill to
-                        # weld to one.  Nothing to print is not a failure — the
-                        # interior builder already skipped it for the same
-                        # reason, and the same form prints hollow without
-                        # complaint.
-                        continue
-                    noun = "interior" if interior_filled else "bottom"
-                    raise FormStackError(
-                        f"{noun} layer {layer_index + 1} has no printable wall ring"
                     )
-                if interior_filled:
-                    # Every ring of the layer goes in, because the per-island
-                    # weld has to see all of them to pair each island's fill with
-                    # its own wall.
-                    add_fill_then_wall(
+                    seam_index = _seam_index(
+                        ring,
+                        modulated,
+                        pattern,
+                        previous_seam if anchor is None else anchor,
+                        source_layer_index=ring.provenance.layer_index + sliced.source_layer_start,
+                    )
+                    path = _ring_path(
+                        ring,
+                        modulated,
+                        pattern,
+                        seam_index,
+                        pattern_scale=(
+                            1.0
+                            if layer_pattern_scales is None
+                            else layer_pattern_scales.get(ring.provenance.layer_index, 0.0)
+                        ),
+                        profile_z_offsets=profile_z_by_address.get(ring.provenance),
+                    )
+                    ring_paths.append(path)
+                    previous_seam = (path.points[0].x, path.points[0].y)
+                # Band-relative, deliberately: ``ring_paths[offset]`` is the offset-th
+                # layer OF THIS BAND, not of the form.  While only bottoms filled,
+                # every filled band started at layer 0 and the two coincided; an
+                # interior fills every band, so a band that starts higher would have
+                # looked up the wrong layer's fill and printed it at the wrong Z.
+                consumed = min(max(0, fill_layers - band.span.first_layer), len(ring_paths))
+                for offset in range(consumed):
+                    layer_index = band.span.first_layer + offset
+                    walls = ring_paths[offset:] if offset == consumed - 1 else (ring_paths[offset],)
+                    leftover = add_fill_then_wall(
                         layer_index,
-                        ordered,
-                        label=f"layer-{layer_index:05d}-interior-and-wall",
+                        walls,
+                        label=f"band-{band.index:03d}-layer-{layer_index:03d}",
                         walls_are_one_run=True,
                     )
-                    ordered = []
-                else:
-                    # Every ring of the layer goes in, for the same reason the
-                    # interior gets them all: the bottom cannot pick each
-                    # region's own wall unless it can see them.  What it does
-                    # not consume comes straight back and prints below with the
-                    # historical separate-run labels, in the same order.
-                    ordered = list(
+                    if leftover:
+                        raise FormStackError(
+                            f"layer {layer_index + 1} left {len(leftover)} continuous band "
+                            "revolutions unprinted"
+                        )
+                    processed_fill_layers.add(layer_index)
+                if consumed == 0:
+                    add_run(ring_paths, label=f"band-{band.index:03d}-track-000")
+                continue
+
+            # Multi-ring and open geometry is sequenced layer-first.  That keeps
+            # every deposited Z monotonic and gives each ring its own paste-safe
+            # run/travel boundary.
+            for layer_index in range(band.span.first_layer, band.span.last_layer + 1):
+                if layer_index in processed_fill_layers:
+                    continue
+                layer = sliced.layers[layer_index]
+                pending = [(ring, modulated_by_address[ring.provenance]) for ring in layer.rings]
+                ordered: list[_RingPath] = []
+                endpoint = None if current is None else (current.x, current.y)
+                while pending:
+                    selected = _nearest_modulated_ring(pending, endpoint)
+                    pending.remove(selected)
+                    ring, modulated = selected
+                    seam_index = _seam_index(
+                        ring,
+                        modulated,
+                        pattern,
+                        # This route never chained — with no previous seam a chained
+                        # policy simply started every ring at sample zero — so the
+                        # rib's end is the first anchor it has ever had.  A layer
+                        # with no sparse fill still gets None and still starts at
+                        # zero, which is what the byte-pinned multi-ring goldens
+                        # hold.
+                        interior.seam_anchor(
+                            ring.provenance.layer_index,
+                            ring.provenance.island_index,
+                        ),
+                        source_layer_index=ring.provenance.layer_index + sliced.source_layer_start,
+                    )
+                    reverse_open = (
+                        not ring.closed
+                        and endpoint is not None
+                        and _distance_sq(modulated.points[-1], endpoint)
+                        < _distance_sq(modulated.points[0], endpoint)
+                    )
+                    path = _ring_path(
+                        ring,
+                        modulated,
+                        pattern,
+                        seam_index,
+                        pattern_scale=(
+                            1.0
+                            if layer_pattern_scales is None
+                            else layer_pattern_scales.get(ring.provenance.layer_index, 0.0)
+                        ),
+                        reverse_open=reverse_open,
+                        profile_z_offsets=profile_z_by_address.get(ring.provenance),
+                    )
+                    ordered.append(path)
+                    endpoint = (path.points[-1].x, path.points[-1].y)
+                if layer_index < fill_layers:
+                    if not ordered:
+                        if interior_filled and not fill_by_layer.get(layer_index):
+                            # The top of a taper: the slice plane has passed the tip,
+                            # so this layer has neither a wall ring nor any fill to
+                            # weld to one.  Nothing to print is not a failure — the
+                            # interior builder already skipped it for the same
+                            # reason, and the same form prints hollow without
+                            # complaint.
+                            continue
+                        noun = "interior" if interior_filled else "bottom"
+                        raise FormStackError(
+                            f"{noun} layer {layer_index + 1} has no printable wall ring"
+                        )
+                    if interior_filled:
+                        # Every ring of the layer goes in, because the per-island
+                        # weld has to see all of them to pair each island's fill with
+                        # its own wall.
                         add_fill_then_wall(
                             layer_index,
                             ordered,
-                            label=f"layer-{layer_index:05d}-bottom-and-wall",
-                            walls_are_one_run=False,
+                            label=f"layer-{layer_index:05d}-interior-and-wall",
+                            walls_are_one_run=True,
                         )
+                        ordered = []
+                    else:
+                        # Every ring of the layer goes in, for the same reason the
+                        # interior gets them all: the bottom cannot pick each
+                        # region's own wall unless it can see them.  What it does
+                        # not consume comes straight back and prints below with the
+                        # historical separate-run labels, in the same order.
+                        ordered = list(
+                            add_fill_then_wall(
+                                layer_index,
+                                ordered,
+                                label=f"layer-{layer_index:05d}-bottom-and-wall",
+                                walls_are_one_run=False,
+                            )
+                        )
+                    processed_fill_layers.add(layer_index)
+                for path in ordered:
+                    ring = path.ring
+                    add_run(
+                        (path,),
+                        label=(
+                            f"layer-{layer_index:05d}-island-{ring.provenance.island_index:03d}"
+                        ),
                     )
-                processed_fill_layers.add(layer_index)
-            for path in ordered:
-                ring = path.ring
-                add_run(
-                    (path,),
-                    label=(f"layer-{layer_index:05d}-island-{ring.provenance.island_index:03d}"),
-                )
 
     # Asked LAST, and asked with the routes this sequencer actually took.  Two
     # of the interior's warning families are about the weld, and the weld is not
@@ -1385,14 +1557,117 @@ def _measured_text(value: float | str | bool | None) -> str:
     return f"{value:.3f} mm"
 
 
-def _thread_break_warnings(breaks: Sequence[_ThreadBreak]) -> tuple[FormWarning, ...]:
+#: What stopped the line, in a potter's words, one clause per kind of stop.  A
+#: stretch's warning counts each kind; the order is the order they are listed.
+_BREAK_CLAUSES: tuple[tuple[frozenset[str], str], ...] = (
+    (
+        frozenset({"wall_ride_prints_wall_twice", "direct_connector_length"}),
+        "the next part of the fill starts more than one coil width from where the line "
+        "arrives, and going round on the wall to reach it would print that part of the "
+        "wall twice",
+    ),
+    (
+        frozenset({"swept_wall_containment", "current_material_containment"}),
+        "the way there would step outside the wall's line",
+    ),
+    (frozenset({"lower_clay_support"}), "the way there would hang coil over open fill"),
+    (
+        frozenset({"interior_weld_route"}),
+        "there is no way along the clay from the fill out to the wall",
+    ),
+    (frozenset({"linked_rib_pieces"}), "the fill comes in too many parts to join up"),
+    (frozenset({"material_extent"}), "the wall does not close into an outline"),
+)
+
+
+def _stretch_break_warnings(
+    breaks: Sequence[_ThreadBreak],
+    stretch: LayerSpan,
+    lines: int,
+) -> tuple[FormWarning, ...]:
+    """One warning for a stretch whose line stops, saying what that costs.
+
+    Every number in it is counted from the breaks themselves: how many lines
+    the stretch prints as, how many times the nozzle lifts and crosses, on which
+    layers, and why — one clause per kind of stop, with how often it happened.
+    One warning per stretch rather than per layer, because a potter reads it as
+    one fact about that part of the form.
+    """
+
+    if not breaks:
+        return ()
+    per_layer: dict[int, int] = {}
+    for record in breaks:
+        per_layer[record.layer_index] = per_layer.get(record.layer_index, 0) + 1
+    layers = ", ".join(
+        f"{layer + 1}" + ("" if count == 1 else " (twice)" if count == 2 else f" ({count} times)")
+        for layer, count in sorted(per_layer.items())
+    )
+    times = {1: "once", 2: "twice"}.get(len(breaks), f"{len(breaks)} times")
+    counted: list[tuple[int, str]] = []
+    named: set[str] = set()
+    for gates, clause in _BREAK_CLAUSES:
+        count = sum(1 for record in breaks if record.gate in gates)
+        named |= gates
+        if count:
+            counted.append((count, clause))
+    for detail in dict.fromkeys(record.detail for record in breaks if record.gate not in named):
+        counted.append((sum(1 for record in breaks if record.detail == detail), detail))
+    if len(breaks) == 1 or len(counted) == 1:
+        lead = "" if len(breaks) == 1 else "Each time, "
+        clauses = [f"{lead}{counted[0][1]}"]
+    else:
+        clauses = [
+            f"{'On' if position == 0 else 'on'} {count}{' of them' if position == 0 else ''}, "
+            f"{clause}"
+            for position, (count, clause) in enumerate(counted)
+        ]
+    first, last = stretch.first_layer + 1, stretch.last_layer + 1
+    because = "; ".join(clauses)
+    because = because[:1].upper() + because[1:]
+    where = f"on {'layer' if len(per_layer) == 1 else 'layers'} {layers}"
+    message = (
+        f"Layers {first} to {last} print as {lines} lines instead of one: the nozzle lifts "
+        f"and crosses {times}, {where}, where the line cannot reach the next part of the "
+        f"fill along the clay. {because}."
+        if lines > 1
+        # Only a stop before the stretch's first clay leaves it one line, and
+        # that stop costs nothing the crossing onto the stretch did not.
+        else f"Layers {first} to {last} print as one line, but {where} the line starts "
+        f"without being checked against the clay. {because}."
+    )
+    return (
+        FormWarning(
+            code=FormWarningCode.INTERIOR_THREAD_BROKEN,
+            severity=Severity.WARNING,
+            message=message,
+            layer_span=stretch,
+        ),
+    )
+
+
+def _thread_break_warnings(
+    breaks: Sequence[_ThreadBreak],
+    *,
+    stretch: LayerSpan | None = None,
+    lines: int = 1,
+) -> tuple[FormWarning, ...]:
     """Name every layer the thread could not open, with the measurement.
 
     One warning per break, one-based, in layer order.  Silence here was the
     whole of the old defect: a form could lose its thread on one layer and
     report nothing but a travel count.
+
+    ``stretch`` is the run of one-piece layers the thread was printing, when
+    that is not the whole form, and ``lines`` how many lines it printed as.
+    A stretch says what each layer's stops cost, counted, and in the potter's
+    words (:func:`_stretch_break_warnings`).  A whole form keeps the wording it
+    has always had.
     """
 
+    if stretch is not None:
+        return _stretch_break_warnings(breaks, stretch, lines)
+    rest = "the rest of the form still prints as one line"
     warnings: list[FormWarning] = []
     for record in sorted(breaks, key=lambda item: (item.layer_index, item.island_index)):
         measured = _measured_text(record.measured)
@@ -1408,7 +1683,7 @@ def _thread_break_warnings(breaks: Sequence[_ThreadBreak]) -> tuple[FormWarning,
                 message=(
                     f"Layer {record.layer_index + 1} could not be opened from the clay below "
                     f"without leaving it, so the thread stops there and starts again: one lift "
-                    f"at this layer, and the rest of the form still prints as one line. "
+                    f"at this layer, and {rest}. "
                     f"{record.detail.capitalize()}{against}."
                 ),
                 ring=RingProvenance(record.layer_index, record.island_index),

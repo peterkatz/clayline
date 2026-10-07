@@ -497,6 +497,10 @@
       // must not leave the pointer saying it still has the stroke.
       canvas.style.cursor = cursorFor();
       if (g.moved && actions.onDocChanged) actions.onDocChanged();
+      // The gesture is over even though nothing was committed: the host must
+      // hear that, or the gate it raised for the drag stays shut and no later
+      // change is ever recorded (Escape, a lost window, a tool change).
+      if (actions.onCancel) actions.onCancel();
       publish();
     }
 

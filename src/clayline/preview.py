@@ -26,6 +26,7 @@ from clayline.emit import (
     EmissionPoint,
     EmissionSettings,
     PreparedEmission,
+    is_flowing_crossing,
     prepare_emission,
 )
 from clayline.models import (
@@ -80,7 +81,9 @@ class PreviewSegment:
 
     start: EmissionPoint
     end: EmissionPoint
-    kind: Literal["print", "release", "tail", "travel"]
+    # ``crossing`` is a crossing that lays clay (Keep clay flowing on
+    # crossings): clay in the picture and the volume, a travel in the counts.
+    kind: Literal["print", "release", "tail", "travel", "crossing"]
     source_index: int
     source_event: EmissionMotion
     start_event: EmissionMotion | None
@@ -184,6 +187,12 @@ class PreviewData:
     @property
     def travel_segments(self) -> tuple[PreviewSegment, ...]:
         return tuple(segment for segment in self.segments if segment.kind == "travel")
+
+    @property
+    def crossing_segments(self) -> tuple[PreviewSegment, ...]:
+        """Crossings that lay clay because the ram keeps pushing through them."""
+
+        return tuple(segment for segment in self.segments if segment.kind == "crossing")
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,6 +312,22 @@ def build_preview_data(
                         kind = "print" if event.extrude else "tail"
                     run_index = active_run
                     stroke_order = stroke_orders[display_key]
+                elif is_flowing_crossing(event):
+                    # Clay on its way to the next line: drawn in that line's
+                    # colour, but it starts no print run of its own.
+                    active_key = None
+                    active_run = None
+                    kind = "crossing"
+                    run_index = None
+                    crossing_key = deposition_run_key(source_move)
+                    stroke_order = stroke_orders.setdefault(
+                        (
+                            (event.page, crossing_key)
+                            if "deposition_run_id" in dict(source_move.metadata)
+                            else (event.page, event.stroke)
+                        ),
+                        len(stroke_orders),
+                    )
                 else:
                     active_key = None
                     active_run = None
@@ -383,6 +408,8 @@ def build_deposition_parts(
     data = _as_data(source, profile, settings=settings, prepared=prepared)
     resolved_settings = data.prepared_trace.settings
     nominal_area = resolved_settings.bead_width * resolved_settings.layer_height
+    # Print segments plus any crossing that lays clay, in emission order.  A
+    # job with no flowing crossing yields exactly its print segments' parts.
     return tuple(
         DepositionPart(
             source_segment=segment,
@@ -392,9 +419,12 @@ def build_deposition_parts(
             bead_width_mm=segment.area_mm2 / resolved_settings.layer_height,
             bead_height_mm=resolved_settings.layer_height,
         )
-        for segment in data.print_segments
-        if segment.extrudes and segment.area_mm2 > 0
+        for segment in data.segments
+        if segment.kind in _DEPOSIT_SEGMENT_KINDS and segment.extrudes and segment.area_mm2 > 0
     )
+
+
+_DEPOSIT_SEGMENT_KINDS = frozenset({"print", "release", "tail", "crossing"})
 
 
 def render_plan_svg(
@@ -1081,7 +1111,7 @@ class _PlanLine:
     color: str
     width: float
     dashed: bool
-    kind: Literal["print", "tail", "travel"]
+    kind: Literal["print", "release", "tail", "travel", "crossing"]
     source_index: int
 
 
@@ -1251,6 +1281,12 @@ def _build_plan_scene(
             color = "#DC2626"
             width = 2.0
             dashed = True
+        elif segment.kind == "crossing":
+            # Clay laid while crossing to the next line, in that line's colour.
+            assert segment.stroke_order is not None
+            color = _ORDER_COLORS[segment.stroke_order % len(_ORDER_COLORS)]
+            width = 2.5
+            dashed = False
         else:
             color = "#6B7280"
             width = 2.0

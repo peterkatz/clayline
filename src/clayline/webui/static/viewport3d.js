@@ -720,12 +720,19 @@
     else if (gizmoDrag.kind === "scale") emitReadout({ kind: "scale", factor: 1, heightMm: gizmoDrag.startHeightMm });
   }
 
+  // A press on the model only becomes a move once the pointer has travelled
+  // this far, the same 3 px Draw uses (draw-core DRAG_PX): a click with a
+  // little hand jitter selects the model and moves nothing.
+  const MOVE_THRESHOLD_PX = 3;
+
   function beginMoveDrag(event, rect) {
     const startPoint = intersectBedPlaneAtEvent(event, rect) || new THREE.Vector3(0, 0, 0);
     gizmoDrag = {
       kind: "move",
       pointerId: event.pointerId,
       startPoint,
+      downX: event.clientX,
+      downY: event.clientY,
       dxMm: 0,
       dyMm: 0,
       moved: false,
@@ -735,13 +742,17 @@
 
   function updateMoveDrag(event, rect) {
     if (!meshObject) return;
+    if (!gizmoDrag.moved) {
+      const travel = Math.hypot(event.clientX - gizmoDrag.downX, event.clientY - gizmoDrag.downY);
+      if (!(travel > MOVE_THRESHOLD_PX)) return;
+      gizmoDrag.moved = true;
+    }
     const point = intersectBedPlaneAtEvent(event, rect);
     if (!point) return;
     const dx = point.x - gizmoDrag.startPoint.x;
     const dy = point.y - gizmoDrag.startPoint.y;
     gizmoDrag.dxMm = dx;
     gizmoDrag.dyMm = dy;
-    if (Math.hypot(dx, dy) > 0.5) gizmoDrag.moved = true;
     meshObject.position.set(dx, dy, 0);
     meshObject.quaternion.identity();
     meshObject.scale.set(1, 1, 1);

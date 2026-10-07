@@ -118,6 +118,19 @@
   const S = {
     activeMode: "tiles",
     file: null,
+    // Which model file on the undo shelf S.file is. Every history step names
+    // the model it was made on, so Undo past a model load brings the earlier
+    // model back with its own placement.
+    modelToken: null,
+    // The slice on screen came back from the undo cache, not a fresh slice:
+    // if the engine has let go of it, Clayline slices again by itself.
+    sliceFromCache: false,
+    // A model, its slice, or its final path is landing for an Undo or Redo:
+    // what the engine says about it must not rewrite the restored settings.
+    landingFromHistory: false,
+    // A project is landing: its one undo step is written when it has all
+    // landed, so nothing may be written into the step before it meanwhile.
+    holdBookkeeping: false,
     defaults: null,
     profiles: new Map(),
     textures: new Map(),
@@ -230,6 +243,21 @@
   let weaveStateWriter = null;
   let weaveHistory = null;
   let weaveHistoryGestureActive = false;
+  // Undo keeps the model files of the last few steps in memory, never on disk,
+  // so a model load is one step like any other (Pete 2026-10-06).
+  const WEAVE_MODEL_LIMIT = 3;
+  // Earlier models stay undoable only while the files held for them come to
+  // no more than this. A large scan is often 100-200 MB, and the shelf holds
+  // every file in memory on a laptop that may already be short of it; the
+  // model on the table is always kept.
+  const WEAVE_MODEL_BYTES = 300 * 1024 * 1024;
+  let weaveModelShelf = null;
+  // Slices made this session, by the model, placement and slice settings that
+  // made them, so an Undo or Redo back to one brings it straight back.
+  let weaveSliceShelf = null;
+  let weaveMeshShelf = null;
+  const weaveSlicedKeys = new Set();
+  let expiredRecoveries = 0;
 
   function clonePoints(points) {
     return points.map(([u, value], index) => ({ id: `${index}-${u}`, u, value }));
@@ -407,6 +435,7 @@
     setControlValue("#weaveExtrusionPhase", root.extrusion_phase_offset);
     setControlValue("#weaveBottomLayers", root.bottom_layers);
     $("#weaveBottomAlternate").checked = root.bottom_alternate !== false;
+    $("#weaveKeepFlowing").checked = root.keep_clay_flowing !== false;
     setInteriorControls(root);
     $("#weaveLayerSkipEnabled").checked = Boolean(root.layer_skip_enabled);
     setControlValue("#weaveLayerSkipStart", root.layer_skip_start ?? 0);
@@ -670,6 +699,7 @@
       profile: $("#weaveProfile").value,
       flow_multiplier: numberValue("#weaveFlow", 1),
       start_charge_e: optionalNumberValue("#weaveStartCharge"),
+      keep_clay_flowing: $("#weaveKeepFlowing").checked,
       // The print file carries no timestamp, ever: the same job writes the
       // same file, so two prints of one form can be compared byte for byte.
       reproducible: true,
@@ -880,6 +910,9 @@
       export: {
         flow_multiplier: numberValue("#weaveFlow", 1),
         start_charge_e: optionalNumberValue("#weaveStartCharge"),
+        // Saved only when it is off: on is the studio's way, so every project
+        // and snapshot saved before the switch existed reopens with it on.
+        ...($("#weaveKeepFlowing").checked ? {} : { keep_clay_flowing: false }),
         // Both are constants now that the studio names the file after the
         // form and never stamps it with the hour. They stay in the envelope
         // so every project file and stored snapshot still opens unchanged.
@@ -906,15 +939,153 @@
     }
   }
 
-  function applyWeaveSettings(snapshot, { settle = false } = {}) {
+  // One undo step: the settings snapshot (what a project file and the stored
+  // settings hold) plus two things only the session knows: which model file it
+  // was made on and which texture chip was lit. Neither ever reaches storage.
+  function weaveHistoryEntry(snapshot = weaveSettingsSnapshot()) {
+    return {
+      ...snapshot,
+      slice: withParkedRange(snapshot.slice),
+      model: S.modelToken || null,
+      texture: S.texturePreset || null,
+    };
+  }
+
+  // A print range waiting for its slice shows switched off, because there is
+  // no layer count yet to hold it against, but it is still the step's own
+  // range. The step keeps it as it was chosen, so landing on that step again
+  // and again, and slicing after, always brings it back.
+  function withParkedRange(slice) {
+    const parked = S.pendingRange;
+    if (!parked || !slice) return slice;
+    return {
+      ...slice,
+      range_enabled: parked.enabled !== false,
+      range_total: Number.isInteger(parked.total) ? parked.total : null,
+    };
+  }
+
+  // What decides whether vase mode can be on, besides the slice itself: the
+  // layers that are printed.
+  function printRangeOf(entry) {
+    const slice = entry?.slice || {};
+    return JSON.stringify([
+      slice.range_enabled ? [slice.range_from, slice.range_to] : null,
+      slice.range_auto_island_stop === true,
+    ]);
+  }
+
+  function settingsOfEntry(entry) {
+    const { model: _model, texture: _texture, ...settings } = entry;
+    return settings;
+  }
+
+  // What a slice depends on: the model, how it sits on the bed, and the slice
+  // numbers. The same rule an edit uses to drop the slice on screen, so a slice
+  // is reused exactly where an edit would have kept it. The nozzle is not in it:
+  // a new nozzle keeps the slice unless the layer height or coil width follows
+  // it, and those are in it.
+  const SLICE_KEY_FIELDS = [
+    "profile", "layer_height", "first_layer_height", "sample_spacing", "bead_width",
+  ];
+
+  function meshKeyOf(entry) {
+    return JSON.stringify({
+      model: entry.model || null,
+      placement: entry.placement,
+      profile: entry.slice?.profile ?? null,
+    });
+  }
+
+  function sliceKeyOf(entry) {
+    const slice = entry.slice || {};
+    return JSON.stringify({
+      mesh: meshKeyOf(entry),
+      slice: SLICE_KEY_FIELDS.map((key) => slice[key] ?? null),
+      top: slice.top_layer === "below" ? "below" : "nearest",
+      hollows: slice.hollows === "ignore" ? "ignore" : "keep",
+    });
+  }
+
+  // The print range a slice fills in for itself: its layer count, and the
+  // island stop it proposes. They belong to the step the slice was made for,
+  // so they are written into that step and never make one of their own. A
+  // number the potter is still typing is theirs, not the slice's.
+  const SLICE_BOOKKEEPING_KEYS = [
+    "range_enabled", "range_from", "range_to", "range_total", "range_auto_island_stop",
+  ];
+
+  function amendRebuiltSettings() {
+    if (!weaveHistory || S.holdBookkeeping) return;
+    const live = weaveSettingsSnapshot();
+    weaveHistory.amend((entry) => ({
+      ...entry,
+      pattern_json: live.pattern_json,
+      slice: {
+        ...entry.slice,
+        layer_height: live.slice.layer_height,
+        first_layer_height: live.slice.first_layer_height,
+        layer_height_follows_nozzle: live.slice.layer_height_follows_nozzle,
+        first_layer_follows: live.slice.first_layer_follows,
+      },
+    }));
+  }
+
+  function amendSliceBookkeeping() {
+    if (!weaveHistory || S.holdBookkeeping) return;
+    const live = weaveHistoryEntry().slice;
+    const typing = {
+      range_from: document.activeElement === $("#weaveRangeFrom"),
+      range_to: document.activeElement === $("#weaveRangeTo"),
+    };
+    weaveHistory.amend((entry) => {
+      if (!entry?.slice) return entry;
+      const slice = { ...entry.slice };
+      SLICE_BOOKKEEPING_KEYS.forEach((key) => {
+        if (!typing[key]) slice[key] = live[key];
+      });
+      return { ...entry, slice };
+    });
+  }
+
+  // Runs a change the studio makes by itself, such as vase mode taken off a
+  // form that cannot climb in one coil, with the texture chip that goes with
+  // it, and writes exactly what it changed into the step the potter is on. It
+  // is never a step of its own: Undo and Redo find nothing new to record, and
+  // a number the potter is still typing stays out of it.
+  function amendStudioChange(change) {
+    if (!weaveHistory || S.holdBookkeeping) return change();
+    const before = weaveHistoryEntry();
+    const result = change();
+    const after = weaveHistoryEntry();
+    weaveHistory.amend((entry) => window.ClaylineStudioState.carryStudioChange(entry, before, after));
+    return result;
+  }
+
+  // Records whatever the potter changed last, now, as its own step. Every
+  // commit point calls it: a gizmo release, a control's change, a button, a
+  // model load, and Undo and Redo before they step.
+  function commitWeaveStep() {
+    weaveHistoryGestureActive = false;
+    weaveStateWriter?.flush();
+  }
+
+  function commitPendingWeaveEdit() {
+    if (!weaveHistoryGestureActive) weaveStateWriter?.flush();
+  }
+
+  function applyWeaveSettings(snapshot, { settle = false, modelChanged = false, land = null } = {}) {
     const current = weaveSettingsSnapshot();
     const placement = snapshot.placement;
     const slice = snapshot.slice;
     const exportSettings = snapshot.export;
-    const restoreAction = window.ClaylineStudioState.weaveRestoreAction(current, snapshot, {
+    let restoreAction = window.ClaylineStudioState.weaveRestoreAction(current, snapshot, {
       hasFile: Boolean(S.file),
       hasSlice: Boolean(S.slice),
     });
+    // Another model came back with this step: it is placed afresh, whatever
+    // its numbers say.
+    if (modelChanged && S.file) restoreAction = "mesh";
 
     ensureRestoreProfileOption(slice.profile);
     setControlValue("#weaveProfile", slice.profile);
@@ -988,9 +1159,12 @@
     $("#weaveStartCharge").value = Number.isFinite(exportSettings.start_charge_e)
       ? String(exportSettings.start_charge_e)
       : "";
+    $("#weaveKeepFlowing").checked = exportSettings.keep_clay_flowing !== false;
     syncControls();
     syncProfileFacts();
-    if (settle && restoreAction === "mesh") {
+    if (settle && land) {
+      land(restoreAction);
+    } else if (settle && restoreAction === "mesh") {
       beginMetric();
       uploadMesh();
     } else if (settle && restoreAction === "slice") {
@@ -1009,9 +1183,116 @@
     return false;
   }
 
-  function applyWeaveHistorySnapshot(snapshot) {
-    if (!snapshot) return false;
-    weaveStateWriter?.suspend(() => applyWeaveSettings(snapshot, { settle: true }));
+  // Puts the model a step was made on back on the table. A step from before
+  // any model was loaded empties the table again.
+  function switchWeaveModel(token) {
+    const file = token ? weaveModelShelf?.get(token) : null;
+    window.clearTimeout(S.timers.mesh);
+    abortStage("mesh");
+    abortStage("slice");
+    abortStage("modulate");
+    S.modelToken = file ? token : null;
+    S.file = file || null;
+    S.mesh = null;
+    S.slice = null;
+    S.result = null;
+    S.exactResult = null;
+    S.sliceFromCache = false;
+    // The question about inches was asked when this model first came in.
+    S.inchesBannerEvaluated = true;
+    $("#weaveInchesBanner").hidden = true;
+    syncWeaveProjectControls();
+    if (file) return;
+    S.lastTrace = null;
+    S.lastMeshPreview = null;
+    S.lastDims = null;
+    forgetSliceReadouts();
+    window.claylineViewport3d?.clearTrace();
+    window.claylineViewport3d?.setMesh?.([], []);
+    window.claylineScrubber?.detach();
+    $("#weaveFileSummary").textContent = "No model loaded";
+    $("#weaveModelFacts").textContent = "Mesh units and watertightness appear once the mesh loads.";
+    $("#weaveModelSize").hidden = true;
+    invalidateExact("Load a mesh to begin.");
+    showWeaveState("empty");
+    setStatus("Waiting for mesh");
+    idle();
+  }
+
+  // How an Undo or Redo brings the slice back. A slice this session already
+  // made for the same model, placement and slice numbers comes straight back
+  // from the undo cache; one made earlier but no longer cached is sliced again
+  // by itself; anything else goes the ordinary way.
+  function historyLanding(entry) {
+    if (!S.file) return null;
+    const key = sliceKeyOf(entry);
+    if (S.slice && sliceKeyOf(weaveHistoryEntry()) === key) {
+      // The slice on screen is this step's slice too (a nozzle swap with
+      // nothing following it keeps it going forward, so it does going back):
+      // only the final path is checked again.
+      const keep = () => scheduleModulation("settle");
+      keep.keepsSlice = true;
+      // Whether vase mode can be on depends on the slice and the layers
+      // printed. With both the same as now, the answer the last check gave
+      // holds for this step too.
+      keep.vaseVerdictHolds = printRangeOf(entry) === printRangeOf(weaveHistoryEntry());
+      return keep;
+    }
+    const cached = weaveSliceShelf?.get(key) || null;
+    if (cached) return () => landCachedSlice(cached);
+    const sameMesh = Boolean(S.mesh) && meshKeyOf(weaveHistoryEntry()) === meshKeyOf(entry);
+    const mesh = sameMesh ? null : (weaveMeshShelf?.get(meshKeyOf(entry)) || null);
+    // The model, placed for this step: from the cache when this session
+    // already placed it so, otherwise sent again.
+    const placeModel = () => {
+      beginMetric();
+      return mesh ? landCachedMesh(mesh) : uploadMesh({ fromHistory: true }).then(() => Boolean(S.mesh));
+    };
+    if (!weaveSlicedKeys.has(key)) {
+      if (!mesh) return null;
+      return (action) => {
+        if (action === "mesh") placeModel();
+        else if (action === "slice") invalidateSlice();
+        else invalidateExact("Settings restored — slice the form when you're ready.");
+      };
+    }
+    // Sliced earlier this session but no longer cached: sliced again by itself.
+    return (action) => {
+      if (action === "mesh") {
+        placeModel().then((placed) => { if (placed && S.mesh && !S.slice) runSlice(); });
+      } else {
+        if (action === "slice") invalidateSlice();
+        if (S.mesh) runSlice();
+      }
+    };
+  }
+
+  function applyWeaveHistorySnapshot(entry) {
+    if (!entry) return false;
+    const snapshot = settingsOfEntry(entry);
+    // Nothing still on its way for the step being left may land on this one.
+    abortStage("modulate");
+    window.clearTimeout(S.timers.modulate);
+    window.clearTimeout(S.timers.settle);
+    const modelChanged = (entry.model || null) !== (S.modelToken || null);
+    if (modelChanged) switchWeaveModel(entry.model);
+    // A step from before any model was loaded leaves the table empty.
+    const land = S.file ? historyLanding(entry) : (modelChanged ? () => {} : null);
+    // A slice coming back replaces the one on screen, so the print range is
+    // parked for it exactly as it is for a project opening.
+    if (land && !land.keepsSlice && S.slice && !modelChanged) S.slice = null;
+    S.landingFromHistory = true;
+    try {
+      weaveStateWriter?.suspend(() => applyWeaveSettings(snapshot, { settle: true, modelChanged, land }));
+    } finally {
+      S.landingFromHistory = false;
+    }
+    restoreTextureChip(entry.texture, snapshot.pattern_json);
+    // A step recorded before its slice could say vase mode is on for a form
+    // the slice then found cannot take it. Landing it with that same slice
+    // takes vase mode off, as the slice did, instead of asking for a final
+    // path the form cannot have.
+    if (land?.keepsSlice && land.vaseVerdictHolds && dropUnavailableVase()) syncControls();
     // The project line describes the form that is loaded.  An undo or a redo
     // puts a different one there, so the sentence about the project goes with
     // it rather than outliving the work it named.
@@ -1021,16 +1302,47 @@
       "weave",
       snapshot,
     );
+    // What the controls now say is this step, word for word, so the next
+    // click that changes nothing finds nothing to record and Redo stays.
+    weaveHistory?.amend(() => weaveHistoryEntry());
     window.claylineHistoryControls?.sync();
     return true;
   }
 
+  // The texture chip is presentation, rebuilt from the step that lit it: the
+  // pattern bytes are already the step's own, and the chip keeps them exact.
+  function restoreTextureChip(slug, patternJson) {
+    if (!slug || !S.textures.has(slug)) return;
+    try {
+      setActiveTexture(slug, JSON.parse(patternJson));
+    } catch (_error) {
+      setActiveTexture(null);
+    }
+  }
+
+  function stepWeaveHistory(direction) {
+    return window.ClaylineStudioState.stepHistory({
+      writer: weaveStateWriter,
+      history: weaveHistory,
+      direction,
+      // A field still holding a typed number, or a held flag nobody released,
+      // must not keep the edit out of history: it is recorded first.
+      beforeStep: () => {
+        const focused = document.activeElement;
+        if (!(focused instanceof HTMLInputElement && focused.type === "range")) {
+          weaveHistoryGestureActive = false;
+        }
+      },
+      apply: applyWeaveHistorySnapshot,
+    });
+  }
+
   function undoWeaveSettings() {
-    return applyWeaveHistorySnapshot(weaveHistory?.undo());
+    return stepWeaveHistory("undo");
   }
 
   function redoWeaveSettings() {
-    return applyWeaveHistorySnapshot(weaveHistory?.redo());
+    return stepWeaveHistory("redo");
   }
 
   // Quiet pre-slice inspector: the "Before you print" panel shows only a
@@ -1170,8 +1482,12 @@
     syncSettleButton();
   }
 
-  async function uploadMesh() {
+  async function uploadMesh({ fromHistory = S.landingFromHistory } = {}) {
     if (!S.file) return;
+    // A direct upload supersedes one still waiting out its debounce, so a fast
+    // Undo after a move sends the model once, not twice.
+    window.clearTimeout(S.timers.mesh);
+    S.timers.mesh = null;
     abortStage("slice");
     abortStage("modulate");
     const { controller, sequence } = newStage("mesh");
@@ -1179,7 +1495,12 @@
     S.mesh = null;
     S.slice = null;
     S.result = null;
+    S.sliceFromCache = false;
+    forgetSliceReadouts();
     busy("Reading mesh triangles…");
+    // The step this placement belongs to, read now: the model may be moved
+    // again before the engine answers.
+    const meshKey = meshKeyOf(weaveHistoryEntry());
     try {
       const response = await fetch(`${API.mesh}?${meshQuery()}`, {
         method: "POST",
@@ -1191,7 +1512,11 @@
       if (sequence !== S.sequence.mesh) return;
       markJsonReceived();
       S.mesh = payload;
-      renderMeshFacts(payload);
+      renderMeshFacts(payload, { adopt: !fromHistory });
+      // Another slicer's print file rebuilt into a form brings its own layer
+      // height and a plain pattern: part of loading it, not a step of its own.
+      if (!fromHistory && payload.rebuilt_from_print_file) amendRebuiltSettings();
+      rememberMesh(meshKey, payload);
       S.sliceDirty = false;
       showWeaveState("active");
       const plot = await renderMeshPreview(payload.preview);
@@ -1215,13 +1540,17 @@
   // silently; otherwise fall back to the load-mesh state with settings
   // intact (Pete 2026-07-22: relaunch left a phantom-sliced state that
   // errored on the first edit). Returns true when it handled the error.
-  async function recoverFromExpiredSession(error) {
+  async function recoverFromExpiredSession(error, { reslice = S.sliceFromCache } = {}) {
     const code = error?.code;
     if (code !== "weave_mesh_expired" && code !== "weave_slice_expired") return false;
     if (S.file) {
       S.mesh = null;
       S.slice = null;
       await uploadMesh();
+      // A slice the potter asked for, or one an Undo brought back, is made
+      // again by itself. Twice at most, so a lost engine never loops.
+      expiredRecoveries += 1;
+      if (reslice && S.mesh && expiredRecoveries <= 2) await runSlice();
       return true;
     }
     S.mesh = null;
@@ -1239,7 +1568,10 @@
     const { controller, sequence } = newStage("slice");
     invalidateExact("Slice settings changed — slice the form again.");
     S.slice = null;
+    S.sliceFromCache = false;
+    forgetSliceReadouts();
     busy("Slicing aligned wall rings…");
+    const sliceKey = sliceKeyOf(weaveHistoryEntry());
     try {
       const body = JSON.stringify(slicePayload());
       const payload = await jsonResponse(await fetch(API.slice, {
@@ -1250,30 +1582,139 @@
       }));
       if (sequence !== S.sequence.slice) return;
       markJsonReceived();
-      S.slice = payload;
-      S.sliceDirty = false;
-      renderSliceFacts(payload);
-      applyCapabilities(payload);
-      showWeaveState("active");
-      const plot = await renderTrace(payload.centerline);
-      if (sequence !== S.sequence.slice) return;
-      $("#weaveFitButton").disabled = !plot;
-      const patternPreview = await canonicalPatternRequest();
-      if (sequence !== S.sequence.slice) return;
-      S.scope = patternPreview.pattern;
-      renderPatternVisuals(patternPreview.pattern);
-      setStatus("Sliced · pattern ready");
-      $("#weaveExportIdentity").textContent = "Slice ready — checking the final path…";
-      revealInspector();
-      markRender("slice");
-      // Auto-settle (interface charter, 2026-07-20): a slice used to leave
-      // the artist staring at a "Build final path" button. The exact pass
-      // now runs on its own right after slicing; the status chip row is the
-      // only surface for that state.
-      scheduleReleaseSettle();
+      if (await landSlice(payload, sequence)) {
+        expiredRecoveries = 0;
+        rememberSlice(sliceKey, payload);
+      }
     } catch (error) {
       if (error.name !== "AbortError" && sequence === S.sequence.slice) {
-        if (!(await recoverFromExpiredSession(error))) {
+        // The potter asked for this slice, so a model the engine let go of is
+        // sent again and sliced, not left waiting on a second click.
+        if (!(await recoverFromExpiredSession(error, { reslice: true }))) {
+          showWeaveState("error", error.message, error.status);
+        }
+      }
+    } finally {
+      if (sequence === S.sequence.slice) idle();
+    }
+  }
+
+  // A slice landing, fresh from the engine or back from the undo cache.
+  async function landSlice(payload, sequence, { fromCache = false } = {}) {
+    S.slice = payload;
+    S.sliceDirty = false;
+    renderSliceFacts(payload);
+    // Vase mode taken off a form that cannot climb in one coil belongs to the
+    // step this slice was made for, like its layer count: never a step of its own.
+    amendStudioChange(() => applyCapabilities(payload));
+    showWeaveState("active");
+    const plot = await renderTrace(payload.centerline);
+    if (sequence !== S.sequence.slice) return false;
+    $("#weaveFitButton").disabled = !plot;
+    const patternPreview = await canonicalPatternRequest();
+    if (sequence !== S.sequence.slice) return false;
+    if (patternPreview.sliceCleared) {
+      // The engine no longer holds this slice: make it again.
+      if (fromCache && S.mesh) runSlice();
+      return false;
+    }
+    S.scope = patternPreview.pattern;
+    renderPatternVisuals(patternPreview.pattern);
+    setStatus("Sliced · pattern ready");
+    $("#weaveExportIdentity").textContent = "Slice ready — checking the final path…";
+    revealInspector();
+    markRender("slice");
+    // Auto-settle (interface charter, 2026-07-20): a slice used to leave
+    // the artist staring at a "Build final path" button. The exact pass
+    // now runs on its own right after slicing; the status chip row is the
+    // only surface for that state. The slice is not a step of its own: what
+    // it fills in (the layer count, the island stop) is written into the step
+    // it was made for, so it never adds an Undo or cuts off Redo.
+    scheduleReleaseSettle({ commit: false });
+    amendSliceBookkeeping();
+    return true;
+  }
+
+  // The undo cache. A mesh the engine placed, and a slice it made, are kept
+  // under the step they belong to; the engine keeps its own copies only for a
+  // while, so every reuse is checked by the next request that names them.
+  function rememberMesh(key, payload) {
+    if (!payload || !S.file) return;
+    weaveMeshShelf?.put(key, payload);
+  }
+
+  function rememberSlice(key, payload) {
+    if (!payload || !S.mesh || !S.file) return;
+    weaveSliceShelf?.put(key, { mesh: S.mesh, slice: payload });
+    weaveSlicedKeys.add(key);
+  }
+
+  // A dropped slice takes its numbers and its file with it: nothing in the
+  // inspector or the review panel may describe a slice that is gone.
+  function forgetSliceReadouts() {
+    [
+      "#weaveStatLayers", "#weaveStatWaves", "#weaveStatStrokes", "#weaveStatTravels",
+      "#weaveStatTime", "#weaveStatVolume", "#weaveStatWeight", "#weaveStatStack",
+    ].forEach((selector) => {
+      const element = $(selector);
+      if (element) element.textContent = "—";
+    });
+    const grid = $("#weaveAuditGrid");
+    if (grid) {
+      const term = document.createElement("span");
+      const definition = document.createElement("strong");
+      term.textContent = "State";
+      definition.textContent = "No final path yet";
+      grid.replaceChildren(term, definition);
+    }
+    $("#weaveParameterDump")?.replaceChildren();
+    if (GPANEL.open) {
+      // The panel comes back by itself once there is a file to show again.
+      GPANEL.reopen = true;
+      closeGcodePanel();
+    }
+    GPANEL.lines = null;
+    GPANEL.resultId = null;
+  }
+
+  // An Undo or Redo back to a placement this session already loaded: the
+  // engine's placed mesh comes back without sending the model again.
+  async function landCachedMesh(payload) {
+    abortStage("slice");
+    abortStage("modulate");
+    window.clearTimeout(S.timers.mesh);
+    S.timers.mesh = null;
+    const { sequence } = newStage("mesh");
+    invalidateExact("Mesh placement changed — slice the form again.");
+    S.mesh = payload;
+    S.slice = null;
+    S.result = null;
+    S.sliceFromCache = false;
+    forgetSliceReadouts();
+    renderMeshFacts(payload, { adopt: false });
+    S.sliceDirty = false;
+    showWeaveState("active");
+    const plot = await renderMeshPreview(payload.preview);
+    if (sequence !== S.sequence.mesh) return false;
+    $("#weaveFitButton").disabled = !plot;
+    setStatus("Mesh ready · slice required");
+    $("#weaveExportIdentity").textContent = "Mesh ready — choose Slice form when you're set.";
+    idle();
+    return true;
+  }
+
+  // An Undo or Redo back to a slice this session already made: the slice and
+  // its final path come back without the potter asking. If the engine has let
+  // go of them, the next request says so and Clayline slices again by itself.
+  async function landCachedSlice(record) {
+    if (!(await landCachedMesh(record.mesh))) return;
+    const { sequence } = newStage("slice");
+    S.sliceFromCache = true;
+    try {
+      await landSlice(record.slice, sequence, { fromCache: true });
+    } catch (error) {
+      if (error.name !== "AbortError" && sequence === S.sequence.slice) {
+        if (!(await recoverFromExpiredSession(error, { reslice: true }))) {
           showWeaveState("error", error.message, error.status);
         }
       }
@@ -1404,7 +1845,10 @@
       : "Artifact audit did not produce an exportable exact result.";
     setStatus(exportable ? "Ready to print \u00b7 final path" : "Audit stopped", exportable ? "exact" : "error");
     syncGcodeButton();
-    if (GPANEL.open && exportable && GPANEL.resultId !== finalized.result_id) openGcodePanel();
+    if ((GPANEL.open || GPANEL.reopen) && exportable && GPANEL.resultId !== finalized.result_id) {
+      GPANEL.reopen = false;
+      openGcodePanel();
+    }
     if (exportable && S.activeMode === "weave") attachWeaveScrubber();
   }
 
@@ -1447,6 +1891,8 @@
     showRoughPreview(false);
     syncFlowControls();
     S.sliceDirty = Boolean(S.mesh);
+    S.sliceFromCache = false;
+    forgetSliceReadouts();
     invalidateExact("Slice settings changed — choose Slice form to rebuild the rings.");
     if (S.mesh) setStatus("Slice required");
     syncSettleButton();
@@ -1472,7 +1918,7 @@
     S.timers.modulate = window.setTimeout(() => runModulation(quality), quality === "drag" ? 55 : 0);
   }
 
-  function scheduleReleaseSettle() {
+  function scheduleReleaseSettle({ commit = true } = {}) {
     // Cancel the delayed 55 ms rough request before starting the exact pass.
     // Otherwise a very quick release can start settle now, then let the stale
     // rough callback begin later and abort the exact request through newStage.
@@ -1483,7 +1929,7 @@
     // settle immediately preserves the W9.3 budget for real work instead of
     // spending 180 ms of it waiting after the artist has stopped dragging.
     if (S.slice) S.timers.settle = window.setTimeout(() => runModulation("settle"), 0);
-    weaveStateWriter?.flush();
+    if (commit) weaveStateWriter?.flush();
   }
 
   function scheduleDebouncedSettle() {
@@ -1575,7 +2021,7 @@
     return facts;
   }
 
-  function renderMeshFacts(payload) {
+  function renderMeshFacts(payload, { adopt = true } = {}) {
     const honesty = payload.honesty || {};
     const bounds = payload.bounds_mm || {};
     const height = Number(bounds.max_z) - Number(bounds.min_z);
@@ -1585,7 +2031,8 @@
     maybeOfferInchesBanner(width, depth, height);
     $("#weaveFileSummary").textContent = payload.filename || S.file?.name || "Mesh loaded";
     $("#weaveModelFacts").textContent = [
-      applyRebuiltPrintFile(payload.rebuilt_from_print_file),
+      // A model coming back for an Undo or Redo keeps the step's own numbers.
+      adopt ? applyRebuiltPrintFile(payload.rebuilt_from_print_file) : null,
       `${Number(honesty.triangle_count || 0).toLocaleString()} triangles`,
       honesty.watertight ? "watertight" : `${honesty.hole_count ?? "?"} mesh holes`,
       honesty.assumed_units ? `assumed ${honesty.assumed_units}` : null,
@@ -1635,6 +2082,10 @@
   // skirt the studio now prints through comes back as the whole form.
   function rereadParkedRange(parked, payload) {
     if (!parked) return parked;
+    // Parked from a step that was never sliced and never switched on: its two
+    // numbers are only the empty boxes of an unsliced form, not a choice, so an
+    // Undo back to it and a slice after must not show "to layer 1".
+    if (!Number.isInteger(parked.total) && parked.enabled !== true) return null;
     const total = Number(payload.print_range?.total);
     const emergence = payload.island_emergence;
     const proposedStop = emergence?.default_applied ? emergence.default_stop_to_layer : null;
@@ -1772,15 +2223,7 @@
     // any time without a fresh capabilities payload.
     S.zBlendUnavailable = unavailable;
     zBlend.disabled = unavailable;
-    if (unavailable && zBlend.checked) {
-      zBlend.checked = false;
-      if (S.texturePreset) {
-        const texture = S.textures.get(S.texturePreset);
-        const label = texture?.label || S.texturePreset;
-        setActiveTexture(null);
-        $("#weaveTextureHint").textContent = `${label} was adapted: vase mode is unavailable on this mesh/range, so the fitted preset is no longer active.`;
-      }
-    }
+    dropUnavailableVase();
     const bottomHint = capabilities.bottom_disabled_hint;
     // Recorded, not applied here: syncBottomAvailability weighs it against the
     // print range and the interior, and it must survive an interior toggle
@@ -1796,6 +2239,24 @@
       ? interiorHint
       : null;
     syncControls();
+  }
+
+  // Vase mode comes off a form the last check said cannot take it. The switch
+  // and what is sent agree: a pattern kept exactly as it came back (from a
+  // step, a project or a print file) loses its vase mode too, or the switch
+  // would show off while the next final path still asked for it.
+  function dropUnavailableVase() {
+    const zBlend = $("#weaveZBlend");
+    if (!S.zBlendUnavailable || !zBlend.checked) return false;
+    zBlend.checked = false;
+    if (S.texturePreset) {
+      const texture = S.textures.get(S.texturePreset);
+      const label = texture?.label || S.texturePreset;
+      setActiveTexture(null);
+      $("#weaveTextureHint").textContent = `${label} was adapted: vase mode is unavailable on this mesh/range, so the fitted preset is no longer active.`;
+    }
+    if (S.exactPattern?.settings?.z_blend) S.exactPattern.settings.z_blend = false;
+    return true;
   }
 
   function traceFlowRange(trace) {
@@ -2182,6 +2643,8 @@
     beginMetric();
     $("#weaveOffsetX").dispatchEvent(new Event("input", { bubbles: true }));
     $("#weaveOffsetY").dispatchEvent(new Event("input", { bubbles: true }));
+    // A release is the end of the gesture: one move, one step, now.
+    commitWeaveStep();
   }
 
   function commitGizmoRotate(axis, deltaDeg) {
@@ -2198,6 +2661,7 @@
     $("#weaveRotateX").dispatchEvent(new Event("input", { bubbles: true }));
     $("#weaveRotateY").dispatchEvent(new Event("input", { bubbles: true }));
     $("#weaveRotate").dispatchEvent(new Event("input", { bubbles: true }));
+    commitWeaveStep();
   }
 
   function commitGizmoScale(factor) {
@@ -2214,6 +2678,7 @@
     // The field's own "input" listener clears #weaveFitHeight for us
     // (mutual exclusivity, see bindMeshControls) and calls scheduleMesh().
     $("#weaveScale").dispatchEvent(new Event("input", { bubbles: true }));
+    commitWeaveStep();
   }
 
   function bindViewportInteraction() {
@@ -2262,7 +2727,14 @@
     }
     S.scope = payload.pattern || S.scope;
     renderPatternVisuals(S.scope);
-    applyCapabilities(payload);
+    // This final path's answer on vase mode belongs to the step it was built
+    // for. While a print range the potter is still typing differs from that
+    // step, the answer is about the new range, so it goes with that edit.
+    if (printRangeOf(weaveHistory?.current()) === printRangeOf(weaveHistoryEntry())) {
+      amendStudioChange(() => applyCapabilities(payload));
+    } else {
+      applyCapabilities(payload);
+    }
     S.crownFinish = payload.crown_finish || null;
     renderZBlendReachReadout(S.crownFinish);
     adoptServerIslandStop(payload.island_emergence);
@@ -2272,6 +2744,9 @@
       $("#weaveRangeEnabled").checked = false;
     }
     if (payload.print_range) syncRangeControls(payload.print_range);
+    // The island stop and crown the engine just proposed are the slice's
+    // bookkeeping, written into the current step rather than a new one.
+    amendSliceBookkeeping();
     showWeaveState("active");
     const displayTrace = payload.trace || payload.centerline;
     if (Array.isArray(displayTrace?.moves)) S.lastTrace = displayTrace;
@@ -2286,7 +2761,10 @@
       const exportable = payload.exportable === true && Boolean(payload.result_id);
       $("#weaveDownloadButton").disabled = !exportable;
       syncGcodeButton();
-      if (GPANEL.open && exportable && GPANEL.resultId !== payload.result_id) openGcodePanel();
+      if ((GPANEL.open || GPANEL.reopen) && exportable && GPANEL.resultId !== payload.result_id) {
+        GPANEL.reopen = false;
+        openGcodePanel();
+      }
       $("#weaveExportIdentity").textContent = payload.finalizing === true
         ? "Checking the final path — download unlocks when it passes."
         : (exportable
@@ -3599,6 +4077,8 @@
       syncControls();
       drawAllEditors();
       scheduleModulation("settle");
+      // One key press, one step.
+      commitWeaveStep();
     });
     canvas.addEventListener("contextmenu", (event) => {
       event.preventDefault();
@@ -3628,6 +4108,7 @@
       syncControls();
       drawAllEditors();
       scheduleModulation("settle");
+      commitWeaveStep();
     });
   }
 
@@ -3731,10 +4212,12 @@
       candidate.seed = seed;
       candidate.wave = backendNoise.wave;
       const payload = await canonicalPatternRequest(JSON.stringify(candidate));
+      commitPendingWeaveEdit();
       applyCanonicalPattern(payload.pattern.canonical_json, payload.pattern);
       beginMetric();
       invalidateExact("Noise regenerated by the backend — rebuilding the final path.");
       scheduleModulation("settle");
+      commitPendingWeaveEdit();
       setStatus(payload.sliceCleared ? "Slice required" : `Noise seed ${seed} · backend canonical`);
     } catch (error) {
       showWeaveState("error", `Noise preset failed. ${error.message}`, error.status);
@@ -3764,11 +4247,13 @@
     try {
       const text = await file.text();
       const payload = await canonicalPatternRequest(text);
+      commitPendingWeaveEdit();
       applyCanonicalPattern(payload.pattern.canonical_json, payload.pattern);
       armFlowColorForCurrentPattern();
       beginMetric();
       invalidateExact("Pattern loaded — rebuilding the final path.");
       scheduleModulation("settle");
+      commitPendingWeaveEdit();
       setStatus(payload.sliceCleared ? "Slice required" : "Pattern loaded · backend validated");
     } catch (error) {
       showWeaveState("error", `Pattern load failed. ${error.message}`, error.status);
@@ -3840,11 +4325,20 @@
         bead_width_follows_nozzle: false,
       },
       export: {
-        ...current.export,
+        ...exportWithoutFlowing(current.export),
         flow_multiplier: number(saved.flow_multiplier, current.export.flow_multiplier),
         start_charge_e: Number.isFinite(saved.start_charge_e) ? saved.start_charge_e : null,
+        // A print file is a record of what printed: one that does not say
+        // (0.7.2 and earlier) stopped the clay on every crossing, so it comes
+        // back with the switch off and rebuilds the file it is.
+        ...(saved.keep_clay_flowing === true ? {} : { keep_clay_flowing: false }),
       },
     };
+  }
+
+  function exportWithoutFlowing(exportSettings) {
+    const { keep_clay_flowing: _ignored, ...rest } = exportSettings || {};
+    return rest;
   }
 
   // `everything` is the Model box and File › Open…: every setting of the job
@@ -3865,7 +4359,11 @@
       const payload = await jsonResponse(response);
       if (everything) {
         const snapshot = settingsSnapshotFromRestore(payload);
+        // An edit made while the file was being read is its own step; the
+        // restore is the next one.
+        commitPendingWeaveEdit();
         weaveStateWriter?.suspend(() => applyWeaveSettings(snapshot, { settle: true }));
+        commitPendingWeaveEdit();
         const source = payload.source_mesh || {};
         const modelName = source.filename || "the model";
         let sentence;
@@ -3883,11 +4381,13 @@
         setWeaveProjectStatus(sentence);
         return;
       }
+      commitPendingWeaveEdit();
       applyCanonicalPattern(payload.pattern?.canonical_json, payload.pattern);
       armFlowColorForCurrentPattern();
       beginMetric();
       invalidateExact("Pattern restored — rebuilding the final path.");
       scheduleModulation("settle");
+      commitPendingWeaveEdit();
       $("#weaveRestoreStatus").textContent = `Pattern restored from ${file.name}`;
     } catch (error) {
       $("#weaveRestoreStatus").textContent = `Restore stopped: ${error.message}`;
@@ -3923,6 +4423,8 @@
     current: -1,
     raf: null,
     resultId: null,
+    // Closed because its slice was dropped: it opens again on the next file.
+    reopen: false,
   };
 
   function gcodePanelAvailable() {
@@ -4177,7 +4679,12 @@
       showWeaveState("error", "Choose one STL, OBJ, PLY, or 3MF mesh, or a print file.", 400);
       return;
     }
+    // Whatever was waiting to be recorded is its own step, and the new model
+    // is the next one: Undo brings the earlier model back, placed as it was.
+    window.claylineHistoryControls?.commitField?.();
+    commitPendingWeaveEdit();
     S.file = file;
+    adoptWeaveModel(file);
     S.inchesBannerEvaluated = false;
     if (S.restoreAwaitingMesh) {
       S.restoreAwaitingMesh = false;
@@ -4187,8 +4694,50 @@
     }
     $("#weaveInchesBanner").hidden = true;
     syncWeaveProjectControls();
+    commitWeaveStep();
+    keepRecentWeaveModels();
     beginMetric();
     uploadMesh();
+  }
+
+  // Puts a newly loaded model on the undo shelf and makes it the one on the
+  // table. The shelf holds files in memory only.
+  function adoptWeaveModel(file) {
+    S.modelToken = weaveModelShelf ? weaveModelShelf.add(file) : null;
+    S.sliceFromCache = false;
+  }
+
+  // The last three models stay undoable, or fewer when their files together
+  // pass WEAVE_MODEL_BYTES. Loading one more lets the steps made on the oldest
+  // fall off the bottom of history, the way the step cap does.
+  function keepRecentWeaveModels() {
+    if (!weaveHistory || !weaveModelShelf) return;
+    const models = weaveHistory.distinct("model").filter(Boolean);
+    const heldBytes = () => models.reduce(
+      (sum, token) => sum + (Number(weaveModelShelf.peek(token)?.size) || 0), 0,
+    );
+    while (
+      models.length > WEAVE_MODEL_LIMIT
+      || (models.length > 1 && models[0] !== S.modelToken && heldBytes() > WEAVE_MODEL_BYTES)
+    ) {
+      const oldest = models.shift();
+      weaveHistory.forgetOldestWhile((entry) => !entry.model || entry.model === oldest);
+    }
+    const kept = weaveHistory.distinct("model").filter(Boolean);
+    weaveModelShelf.keep(kept);
+    // Slices and placed meshes of a model that is gone cannot come back.
+    const live = new Set(kept.map((token) => JSON.stringify(token)));
+    const ofLiveModel = (key) => {
+      try {
+        const parsed = JSON.parse(key);
+        const mesh = typeof parsed.mesh === "string" ? JSON.parse(parsed.mesh) : parsed;
+        return live.has(JSON.stringify(mesh.model));
+      } catch (_error) {
+        return false;
+      }
+    };
+    weaveSliceShelf?.drop((_value, key) => !ofLiveModel(key));
+    weaveMeshShelf?.drop((_value, key) => !ofLiveModel(key));
   }
 
   function setDroppedFile(file) {
@@ -4464,6 +5013,11 @@
     $("#weaveBottomAlternate").addEventListener("change", () => {
       setActiveTexture(null); beginMetric(); syncControls(); scheduleModulation("settle");
     });
+    // Printer side, like the start charge: the rings stay as they are and only
+    // the final path is rebuilt.
+    $("#weaveKeepFlowing").addEventListener("change", () => {
+      beginMetric(); syncControls(); scheduleModulation("settle");
+    });
     $("#weaveLayerSkipEnabled").addEventListener("change", () => {
       beginMetric(); syncControls(); scheduleModulation("settle");
     });
@@ -4590,6 +5144,9 @@
       if (event.key === "Escape" && !$("#weavePatternOverlay").hidden) closePatternOverlay();
     });
     $("#weaveResetButton").addEventListener("click", () => {
+      // Reset is one step like any other: Undo brings every setting back. An
+      // edit still waiting to be recorded is its own step first.
+      commitPendingWeaveEdit();
       weaveStateWriter?.suspend(() => {
         S.pendingRange = null;
         S.rangeTotal = null;
@@ -4608,7 +5165,7 @@
         if (S.defaults) applyWeaveDefaults(S.defaults);
       });
       weaveStateWriter?.clear();
-      weaveHistory?.seed(weaveSettingsSnapshot());
+      commitWeaveStep();
       window.claylineHistoryControls?.sync();
       if (S.file) { beginMetric(); uploadMesh(); }
       else { invalidateExact("Weave settings reset."); drawAllEditors(); }
@@ -4752,7 +5309,10 @@
 
     activateMode("weave");
     setWeaveProjectStatus("");
+    // An edit still waiting to be recorded is its own step before the open.
+    commitPendingWeaveEdit();
     S.file = new File([source.bytes], source.name, { type: "application/octet-stream" });
+    adoptWeaveModel(S.file);
     // The project brings its own model and its own job, so a print file still
     // waiting for its model is not waiting any more.
     S.restoreAwaitingMesh = false;
@@ -4760,7 +5320,10 @@
     $("#weaveInchesBanner").hidden = true;
     // One undo step: the writer is held while the whole project lands, and
     // flushed once at the very end (below), after the re-slice has put the
-    // print range back — so the single history entry is the whole open.
+    // print range back — so the single history entry is the whole open. Until
+    // then the step on top of history is the one before the open, and the
+    // slice must not write its range into it.
+    S.holdBookkeeping = true;
     weaveStateWriter?.suspend(() => {
       // A saved project carries no sliced layer count, so the settings land
       // against a clean form and the saved print range goes to S.pendingRange,
@@ -4773,14 +5336,17 @@
     setWeaveProjectStatus(`Project opened · ${name}`);
     syncWeaveProjectControls();
     beginMetric();
-    await uploadMesh();
-    // A form saved mid-job comes back sliced; the range restores itself when
-    // the slice reports its layer count.
-    if (project.state.sliced && S.mesh) await runSlice();
-    // The one entry.  A slice already flushes on its own, and an identical
-    // snapshot is never pushed twice, so this both covers a project that was
-    // saved unsliced and stays a single step for one that was not.
+    try {
+      await uploadMesh();
+      // A form saved mid-job comes back sliced; the range restores itself when
+      // the slice reports its layer count.
+      if (project.state.sliced && S.mesh) await runSlice();
+    } finally {
+      S.holdBookkeeping = false;
+    }
+    // The one entry, made once the slice has put the print range back.
     weaveStateWriter?.flush();
+    keepRecentWeaveModels();
     return true;
   }
 
@@ -4788,6 +5354,11 @@
     $$("#weaveWorkspace input[type='number'], #weaveWorkspace input[type='text']")
       .forEach((control) => {
         control.addEventListener("focus", () => { weaveHistoryGestureActive = true; });
+        // Typing again after Enter is a new edit of the same field: it waits
+        // for its own commit instead of being recorded keystroke by keystroke.
+        control.addEventListener("input", (event) => {
+          if (event.isTrusted && document.activeElement === control) weaveHistoryGestureActive = true;
+        });
         const commit = () => {
           if (!weaveHistoryGestureActive) return;
           weaveHistoryGestureActive = false;
@@ -4796,6 +5367,28 @@
         control.addEventListener("change", commit);
         control.addEventListener("blur", commit);
       });
+  }
+
+  // Every potter change is one step from the moment it is made. A control's
+  // change and a button press are commit points: once their own handlers have
+  // run, whatever they changed is recorded, so two quick changes are never
+  // folded into one. A held gesture (a slider, a curve point, a field being
+  // typed in) keeps its own commit and is left alone here.
+  function bindHistoryCommitPoints() {
+    const workspace = $("#weaveWorkspace");
+    if (!workspace) return;
+    const commitSoon = () => queueMicrotask(commitPendingWeaveEdit);
+    workspace.addEventListener("change", commitSoon);
+    workspace.addEventListener("click", (event) => {
+      if (event.target instanceof Element && event.target.closest("button")) commitSoon();
+    });
+    // A press on the 3D view leaves any field: a typed number is committed
+    // as its own step before the model moves, and a field that kept focus no
+    // longer holds every later move out of history.
+    $("#weaveToolpathHost")?.addEventListener("pointerdown", () => {
+      window.claylineHistoryControls?.commitField?.();
+      commitWeaveStep();
+    }, true);
   }
 
   function initialise() {
@@ -4831,12 +5424,19 @@
       limit: 100,
       onChange: () => window.claylineHistoryControls?.sync(),
     });
+    // One more than the three kept, so a model being loaded never pushes out
+    // one that history still names before the oldest steps are let go.
+    weaveModelShelf = window.ClaylineStudioState?.createRecentShelf({
+      limit: WEAVE_MODEL_LIMIT + 1, prefix: "model",
+    });
+    weaveSliceShelf = window.ClaylineStudioState?.createRecentShelf({ limit: 4, prefix: "slice" });
+    weaveMeshShelf = window.ClaylineStudioState?.createRecentShelf({ limit: 4, prefix: "mesh" });
     weaveStateWriter = window.ClaylineStudioState?.createSettledWriter({
       storage: window.ClaylineStudioState.settingsStorage(window),
       mode: "weave",
       capture: weaveSettingsSnapshot,
       onSettled: (snapshot) => {
-        if (!weaveHistoryGestureActive) weaveHistory?.push(snapshot);
+        if (!weaveHistoryGestureActive) weaveHistory?.push(weaveHistoryEntry(snapshot));
       },
     });
     bindMeshControls();
@@ -4844,6 +5444,7 @@
     bindPatternControls();
     bindActions();
     bindHistoryFieldCommits();
+    bindHistoryCommitPoints();
     bindViewportInteraction();
     activateMode("tiles");
     syncControls();
@@ -4855,7 +5456,7 @@
       syncControls();
       syncProfileFacts();
       drawAllEditors();
-      weaveHistory?.seed(weaveSettingsSnapshot());
+      weaveHistory?.seed(weaveHistoryEntry(weaveSettingsSnapshot()));
       window.claylineHistoryControls?.sync();
     });
   }
@@ -4875,6 +5476,7 @@
     historyState: () => weaveHistory?.state(),
     undo: undoWeaveSettings,
     redo: redoWeaveSettings,
+    commitPending: commitPendingWeaveEdit,
   });
 
   window.addEventListener("beforeunload", () => {

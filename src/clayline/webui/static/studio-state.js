@@ -141,8 +141,11 @@
       cancel();
       return clearMode(storage, mode);
     };
+    // Whether an edit is still waiting out the debounce. Undo flushes it into
+    // its own step first, so a quick Command-Z never steps back past it.
+    const pending = () => timer !== null;
 
-    return Object.freeze({ schedule, flush, cancel, suspend, clear });
+    return Object.freeze({ schedule, flush, cancel, suspend, clear, pending });
   }
 
   function createHistory({ limit = 100, onChange = () => {} } = {}) {
@@ -186,8 +189,136 @@
       return clone(entries[index]);
     };
     const current = () => index < 0 ? null : clone(entries[index]);
+    // Rewrites the step the potter is on without making a new one and without
+    // touching Redo. For what the studio fills in by itself after a change has
+    // been recorded (the layer count a slice reports, the island stop it
+    // proposes): that belongs to the step it came from, never a step of its own.
+    const amend = (update) => {
+      if (index < 0) return false;
+      const next = clone(update(clone(entries[index])));
+      if (next === undefined || same(entries[index], next)) return false;
+      entries[index] = next;
+      return true;
+    };
+    // The distinct values one key takes along the whole history, oldest first.
+    const distinct = (key) => {
+      const seen = [];
+      entries.forEach((entry) => {
+        const value = entry ? entry[key] : undefined;
+        if (!seen.includes(value)) seen.push(value);
+      });
+      return seen;
+    };
+    // Lets the oldest steps fall off the bottom, as the step cap does, while
+    // they match. The step the potter is on is never dropped.
+    const forgetOldestWhile = (predicate) => {
+      let dropped = 0;
+      while (index > 0 && entries.length > 1 && predicate(entries[0])) {
+        entries.shift();
+        index -= 1;
+        dropped += 1;
+      }
+      if (dropped) changed();
+      return dropped;
+    };
 
-    return Object.freeze({ seed, push, undo, redo, current, state });
+    return Object.freeze({
+      seed, push, undo, redo, current, state, amend, distinct, forgetOldestWhile,
+    });
+  }
+
+  // What the studio changed by itself, carried into the step the potter is on.
+  // `before` and `after` are the live settings either side of the studio's own
+  // change; `entry` is the recorded step. Only what moved between before and
+  // after is written, so a number the potter is still typing (live, but not yet
+  // in the step) stays out of the step and is recorded as its own one later.
+  // Where nothing of the potter's is waiting, the step simply becomes `after`.
+  // A setting kept as JSON text (the pattern) is carried field by field too.
+  function carryStudioChange(entry, before, after) {
+    const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+    const plain = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+    const parsed = (value) => {
+      if (typeof value !== "string") return null;
+      try {
+        const object = JSON.parse(value);
+        return plain(object) ? object : null;
+      } catch (_error) {
+        return null;
+      }
+    };
+    const carry = (mine, was, now) => {
+      if (same(was, now)) return mine;
+      if (same(mine, was)) return clone(now);
+      if (plain(mine) && plain(was) && plain(now)) {
+        const out = { ...mine };
+        new Set([...Object.keys(was), ...Object.keys(now)]).forEach((key) => {
+          const next = carry(mine[key], was[key], now[key]);
+          if (next === undefined) delete out[key];
+          else out[key] = next;
+        });
+        return out;
+      }
+      const [mineObject, wasObject, nowObject] = [parsed(mine), parsed(was), parsed(now)];
+      if (mineObject && wasObject && nowObject) {
+        return JSON.stringify(carry(mineObject, wasObject, nowObject));
+      }
+      return clone(now);
+    };
+    return carry(clone(entry), clone(before), clone(after));
+  }
+
+  // One Undo or Redo. Whatever is still waiting out the debounce is recorded
+  // first, as its own step, so the step taken back is always the last change
+  // the potter made and nothing waiting is thrown away.
+  function stepHistory({ writer, history, direction, apply, beforeStep = () => {} }) {
+    beforeStep();
+    writer?.flush();
+    const entry = direction === "redo" ? history?.redo() : history?.undo();
+    if (!entry) return false;
+    apply(entry);
+    return true;
+  }
+
+  // A small most-recently-used shelf. Undo uses it for the model files of the
+  // last few steps and for slices already made this session; nothing on it is
+  // ever written to disk.
+  function createRecentShelf({ limit = 3, prefix = "item" } = {}) {
+    const capacity = Math.max(1, Math.trunc(Number(limit)) || 1);
+    const items = new Map();
+    let counter = 0;
+    const touch = (key, value) => {
+      items.delete(key);
+      items.set(key, value);
+      while (items.size > capacity) items.delete(items.keys().next().value);
+    };
+    const add = (value) => {
+      counter += 1;
+      const key = `${prefix}-${counter}`;
+      touch(key, value);
+      return key;
+    };
+    const put = (key, value) => {
+      touch(key, value);
+      return key;
+    };
+    const get = (key) => {
+      if (!items.has(key)) return null;
+      const value = items.get(key);
+      touch(key, value);
+      return value;
+    };
+    const has = (key) => items.has(key);
+    // Reads without counting as a use, so sizing the shelf never reorders it.
+    const peek = (key) => (items.has(key) ? items.get(key) : null);
+    const keep = (keys) => {
+      const wanted = new Set(keys);
+      [...items.keys()].forEach((key) => { if (!wanted.has(key)) items.delete(key); });
+    };
+    const drop = (predicate) => {
+      [...items.entries()].forEach(([key, value]) => { if (predicate(value, key)) items.delete(key); });
+    };
+    const keys = () => [...items.keys()];
+    return Object.freeze({ add, put, get, peek, has, keep, drop, keys, size: () => items.size });
   }
 
   function weaveRestoreAction(current, next, { hasFile = false, hasSlice = false } = {}) {
@@ -222,6 +353,9 @@
     clearMode,
     createSettledWriter,
     createHistory,
+    stepHistory,
+    carryStudioChange,
+    createRecentShelf,
     weaveRestoreAction,
   });
 });

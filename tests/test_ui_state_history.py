@@ -540,6 +540,6 @@ def test_item_1_wires_per_mode_history_to_settled_restore_paths() -> None:
     assert "nativeEditingTarget(event.target)" in app
     assert 'event.key.toLowerCase() !== "z"' in app
     assert "drawHistory?.seed(drawSettingsSnapshot())" in app
-    assert "weaveHistory?.seed(weaveSettingsSnapshot())" in weave
+    assert "weaveHistory?.seed(weaveHistoryEntry(weaveSettingsSnapshot()))" in weave
     assert "if (!drawHistoryGestureActive)" in app
     assert "if (!weaveHistoryGestureActive)" in weave

@@ -111,6 +111,7 @@ class WeaveRebuildRecipe:
     job_id: str
     layer_range: LayerRangeInput
     top_follow_slope_headroom: float
+    keep_clay_flowing: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,13 +273,28 @@ def prepare_weave_result(
     layer_range: LayerRangeInput = None,
     start_charge_e: float | None = None,
     top_follow_slope_headroom: float = 0.0,
+    keep_clay_flowing: bool = False,
 ) -> PreparedWeaveResult:
     """Build the exact immutable export trace without serializing artifacts.
 
     ``top_follow_slope_headroom`` is climb held back from the shaped rim. It is
     zero unless :func:`finalize_weave_result` is rebuilding this trace after
     its own final check read the written path as a shade too steep.
+
+    ``keep_clay_flowing`` keeps the ram pushing at the print rate from the
+    first line to the last: no prime ramp, no E-less end-early tail, and every
+    crossing laid as clay.  Off (the default) writes exactly what 0.7.2 wrote.
     """
+
+    if not isinstance(keep_clay_flowing, bool):
+        raise WeaveWorkflowError("keep_clay_flowing must be true or false")
+    if keep_clay_flowing:
+        for label, value in (("prime_mm", prime_mm), ("end_early_mm", end_early_mm)):
+            if value is not None and value != 0.0:
+                raise WeaveWorkflowError(
+                    f"Keep clay flowing lays no prime ramp and no end-early tail; {label} "
+                    "must be unset or 0"
+                )
 
     resolved_pattern = load_pattern(pattern)
     selected = select_layer_range(sliced, layer_range)
@@ -315,7 +331,13 @@ def prepare_weave_result(
     if resolved_pattern.settings.bottom_layers == 0:
         first_deposited_layer = _first_deposited_stream_layer(
             stream,
-            end_early_mm=(profile_defaults.end_early_mm if end_early_mm is None else end_early_mm),
+            end_early_mm=(
+                0.0
+                if keep_clay_flowing
+                else profile_defaults.end_early_mm
+                if end_early_mm is None
+                else end_early_mm
+            ),
         )
         if first_deposited_layer is None:
             raise WeaveWorkflowError(
@@ -356,6 +378,11 @@ def prepare_weave_result(
             raise WeaveWorkflowError(f"{label} must be finite and nonnegative")
     effective_prime_mm = snapshot_prime_mm if prime_mm is None else prime_mm
     effective_end_early_mm = snapshot_end_early_mm if end_early_mm is None else end_early_mm
+    if keep_clay_flowing:
+        # The ram never stops, so the file records the ramp and tail it printed:
+        # none.  The capsule says the same, so a restore rebuilds these bytes.
+        effective_prime_mm = 0.0
+        effective_end_early_mm = 0.0
     restore_capsule = encode_restore_capsule(
         source_mesh_name=selected.source_path.name,
         source_mesh_sha256=selected.source_sha256,
@@ -386,6 +413,7 @@ def prepare_weave_result(
         job_id=stream.job_id,
         top_layer=selected.top_layer,
         hollows=selected.hollows,
+        keep_clay_flowing=keep_clay_flowing,
     )
     parameters = {
         "bottom_layers": resolved_pattern.settings.bottom_layers,
@@ -533,6 +561,7 @@ def prepare_weave_result(
         ),
         reproducible=reproducible,
         parameters=parameters,
+        keep_clay_flowing=keep_clay_flowing,
     )
     prepared = prepare_emission(stream, resolved_profile, settings=settings)
     return PreparedWeaveResult(
@@ -562,6 +591,7 @@ def prepare_weave_result(
             job_id=stream.job_id,
             layer_range=layer_range,
             top_follow_slope_headroom=top_follow_slope_headroom,
+            keep_clay_flowing=keep_clay_flowing,
         ),
     )
 
@@ -588,6 +618,7 @@ def _rebuild_prepared_weave_result(
         job_id=recipe.job_id,
         layer_range=recipe.layer_range,
         top_follow_slope_headroom=top_follow_slope_headroom,
+        keep_clay_flowing=recipe.keep_clay_flowing,
     )
 
 
@@ -760,6 +791,7 @@ def build_weave_result(
     reproducible: bool = False,
     job_id: str | None = None,
     layer_range: LayerRangeInput = None,
+    keep_clay_flowing: bool = False,
 ) -> WeaveResult:
     """Build and finalize one Weave form through the audited shared back half."""
 
@@ -778,6 +810,7 @@ def build_weave_result(
             reproducible=reproducible,
             job_id=job_id,
             layer_range=layer_range,
+            keep_clay_flowing=keep_clay_flowing,
         )
     )
 

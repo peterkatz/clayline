@@ -2,8 +2,11 @@
 
 The drawing surface's reference photo tries local decode first (Safari's
 WKWebView opens HEIC natively); this route is the fallback for engines that
-can't, converting with Pillow + pillow-heif into an ordinary JPEG. It never
+can't, converting with Pillow + pi-heif into an ordinary JPEG. It never
 touches a pass or a slice request -- it only ever hands bytes back.
+
+pi-heif decodes only, so the HEIC samples are committed files under
+tests/fixtures/photo/ rather than encoded here.
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ import asyncio
 import io
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 import pytest
@@ -26,6 +30,7 @@ from clayline.webui.app import (
 )
 
 ORIGIN = {"origin": "http://testserver", "host": "testserver"}
+PHOTOS = Path(__file__).parent / "fixtures" / "photo"
 
 
 @asynccontextmanager
@@ -35,28 +40,15 @@ async def _client(app: object) -> AsyncIterator[httpx.AsyncClient]:
         yield client
 
 
-def _heic_bytes(
-    size: tuple[int, int] = (64, 48), color: tuple[int, int, int] = (180, 90, 30)
-) -> bytes:
-    pillow_heif = pytest.importorskip("pillow_heif")
-    from PIL import Image
-
-    pillow_heif.register_heif_opener()
-    image = Image.new("RGB", size, color)
-    buffer = io.BytesIO()
-    image.save(buffer, format="HEIF", quality=80)
-    return buffer.getvalue()
-
-
 def test_a_heic_photo_comes_back_as_a_decodable_jpeg() -> None:
-    pytest.importorskip("pillow_heif")
+    pytest.importorskip("pi_heif")
     from PIL import Image
 
     async def exercise() -> httpx.Response:
         async with _client(create_app()) as client:
             return await client.post(
                 "/api/convert-image",
-                content=_heic_bytes(),
+                content=(PHOTOS / "solid-64x48.heic").read_bytes(),
                 headers={**ORIGIN, "content-type": "application/octet-stream"},
             )
 
@@ -73,17 +65,11 @@ def test_a_sideways_phone_photo_comes_back_upright() -> None:
     # A phone holds a portrait shot as landscape pixels plus an EXIF turn; the
     # JPEG handed back carries no tags, so the turn must be baked into the
     # pixels or the photo lies on its side under the drawing.
-    pillow_heif = pytest.importorskip("pillow_heif")
+    # The sample is 64 x 48 pixels tagged orientation 6 (turn 90° clockwise).
+    pytest.importorskip("pi_heif")
     from PIL import Image
 
-    pillow_heif.register_heif_opener()
-    image = Image.new("RGB", (64, 48), (180, 90, 30))
-    exif = Image.Exif()
-    exif[274] = 6  # orientation: turn 90° clockwise to stand upright
-    buffer = io.BytesIO()
-    image.save(buffer, format="HEIF", quality=80, exif=exif.tobytes())
-
-    jpeg_bytes = _convert_image_to_jpeg(buffer.getvalue())
+    jpeg_bytes = _convert_image_to_jpeg((PHOTOS / "sideways-64x48-orientation6.heic").read_bytes())
     decoded = Image.open(io.BytesIO(jpeg_bytes))
     decoded.load()
     assert decoded.size == (48, 64)

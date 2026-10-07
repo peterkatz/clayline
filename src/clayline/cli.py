@@ -474,6 +474,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     weave.add_argument("--prime-mm", type=float)
     weave.add_argument("--end-early-mm", type=float)
+    weave.add_argument(
+        "--keep-clay-flowing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "keep the ram pushing at the print rate from the first line to the last: "
+            "no prime ramp, no end-early tail, and clay laid on every crossing"
+        ),
+    )
     weave.add_argument("-o", "--output", type=Path, help="G-code output path")
     weave.add_argument("--preview", type=Path, help="offline 3D HTML path")
     weave.add_argument("--plan-png", type=Path, help="2D plan PNG path")
@@ -779,6 +788,28 @@ def _weave_command(args: argparse.Namespace) -> int:
         args.wet_density,
         None if recipe is None else recipe.wet_density_g_cm3,
     )
+    keep_clay_flowing = restored(
+        "--keep-clay-flowing",
+        args.keep_clay_flowing,
+        False if recipe is None else recipe.keep_clay_flowing,
+    )
+    # A flowing job has no ramp or tail of its own; a file restored without the
+    # flow keeps the ramp and tail it recorded unless they are typed again.
+    prime_mm = restored("--prime-mm", args.prime_mm, None if recipe is None else recipe.prime_mm)
+    end_early_mm = restored(
+        "--end-early-mm",
+        args.end_early_mm,
+        None if recipe is None else recipe.end_early_mm,
+    )
+    # The 0 and 0 a flowing file records came with the flow, not from a choice.
+    # Turning the flow off for such a file brings back the profile's own ramp
+    # and tail, as the studio does, rather than a ram that stops on every
+    # crossing with neither.
+    if keep_clay_flowing or (recipe is not None and recipe.keep_clay_flowing):
+        if "--prime-mm" not in provided:
+            prime_mm = None
+        if "--end-early-mm" not in provided:
+            end_early_mm = None
     result = sliced.modulate(
         pattern,
         extrusion=args.extrusion,
@@ -827,14 +858,11 @@ def _weave_command(args: argparse.Namespace) -> int:
             args.reproducible,
             False if recipe is None else recipe.reproducible,
         ),
-        prime_mm=restored("--prime-mm", args.prime_mm, None if recipe is None else recipe.prime_mm),
-        end_early_mm=restored(
-            "--end-early-mm",
-            args.end_early_mm,
-            None if recipe is None else recipe.end_early_mm,
-        ),
+        prime_mm=prime_mm,
+        end_early_mm=end_early_mm,
         job_id=None if recipe is None else recipe.job_id,
         layer_range=layer_range,
+        keep_clay_flowing=keep_clay_flowing,
     )
     sys.stdout.write(render_report_text(result.report()))
     _print_warnings(result.warnings)

@@ -514,7 +514,12 @@ def build_report(
         ),
         print_path_mm=sum(segment.length_mm for segment in data.print_segments),
         deposited_path_mm=sum(part.length_mm for part in parts),
-        travel_path_mm=sum(segment.length_mm for segment in data.travel_segments),
+        # A crossing that lays clay is still a crossing: its length stays in the
+        # travel path (as the header's own stats count it) while its clay is in
+        # the volume, weight and deposited path above.
+        travel_path_mm=sum(
+            segment.length_mm for segment in (*data.travel_segments, *data.crossing_segments)
+        ),
         total_motion_path_mm=sum(segment.length_mm for segment in data.segments),
         motion_time_seconds=(
             sum(segment.length_mm / segment.feed_mm_s for segment in data.segments)
@@ -935,7 +940,9 @@ def _page_report(
     print_segments = tuple(
         segment for segment in segments if segment.kind in {"print", "release", "tail"}
     )
-    travel_segments = tuple(segment for segment in segments if segment.kind == "travel")
+    travel_segments = tuple(
+        segment for segment in segments if segment.kind in {"travel", "crossing"}
+    )
     motion_time = (
         sum(segment.length_mm / segment.feed_mm_s for segment in segments) + launch_seconds
     )

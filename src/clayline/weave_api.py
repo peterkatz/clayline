@@ -84,6 +84,7 @@ class SlicedFormFacade(SlicedForm):
         start_charge: float | None = None,
         job_id: str | None = None,
         layer_range: tuple[int, int] | None = None,
+        keep_clay_flowing: bool = False,
     ) -> WeaveResult:
         """Modulate this cached slice and finalize its exact audited output.
 
@@ -92,7 +93,8 @@ class SlicedFormFacade(SlicedForm):
         pattern value, whose default is 1.0. ``layer_range`` is artist-facing:
         both one-based endpoints are inclusive. Selection is Stage B only and
         rebases the chosen wall band to ``first_layer_height`` without slicing
-        the mesh again.
+        the mesh again. ``keep_clay_flowing`` keeps the ram pushing at the
+        print rate from the first line to the last (off by default).
         """
 
         from clayline.weave_workflow import build_weave_result
@@ -166,6 +168,7 @@ class SlicedFormFacade(SlicedForm):
             start_charge_e=start_charge,
             job_id=job_id,
             layer_range=layer_range,
+            keep_clay_flowing=keep_clay_flowing,
         )
 
 

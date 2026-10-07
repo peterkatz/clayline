@@ -97,6 +97,10 @@ _EMISSION_KEYS = {
     "end_early_mm_hex",
     "reproducible",
 }
+# Keep clay flowing on crossings, present (as true) only when it was on.  A
+# capsule without it stopped the clay on every crossing, as every file 0.7.2
+# and earlier saved did, so those files restore exactly as they were written.
+_EMISSION_OPTIONAL_KEYS = {"keep_clay_flowing"}
 _JOB_KEYS = {"present", "encoding", "utf8_b64"}
 _PROFILE_KEYS = {
     "name",
@@ -164,6 +168,8 @@ class DecodedWeaveRestore:
     # What the slice did with the form's hollows; "keep" when the capsule does
     # not say.
     hollows: str = HOLLOWS_KEEP
+    # Whether clay kept flowing on crossings; off when the capsule does not say.
+    keep_clay_flowing: bool = False
 
 
 def pattern_header_projection(pattern: Pattern) -> str:
@@ -318,6 +324,7 @@ def encode_restore_capsule(
     scale_z: float = 1.0,
     top_layer: str = TOP_LAYER_BELOW,
     hollows: str = HOLLOWS_KEEP,
+    keep_clay_flowing: bool = False,
 ) -> str:
     """Encode one strict canonical capsule ready for bounded framing."""
 
@@ -371,18 +378,25 @@ def encode_restore_capsule(
     # keeps the capsule 0.6.0 wrote, byte for byte.
     if hollows != HOLLOWS_KEEP:
         slice_payload["hollows"] = hollows
+    if not isinstance(keep_clay_flowing, bool):
+        raise ValueError("restore capsule keep_clay_flowing must be true or false")
+    emission_payload: dict[str, Any] = {
+        "flow_multiplier_hex": _hex(flow_multiplier),
+        "wet_density_g_cm3_hex": _hex(wet_density_g_cm3),
+        "prime_mm_hex": _hex(prime_mm),
+        "end_early_mm_hex": _hex(end_early_mm),
+        "reproducible": reproducible,
+    }
+    # Written only when clay kept flowing on crossings, so every job that
+    # stopped it keeps the capsule 0.7.2 wrote, byte for byte.
+    if keep_clay_flowing:
+        emission_payload["keep_clay_flowing"] = True
     payload = {
         "schema": _SCHEMA,
         "version": _VERSION,
         "source": source_payload,
         "slice": slice_payload,
-        "emission": {
-            "flow_multiplier_hex": _hex(flow_multiplier),
-            "wet_density_g_cm3_hex": _hex(wet_density_g_cm3),
-            "prime_mm_hex": _hex(prime_mm),
-            "end_early_mm_hex": _hex(end_early_mm),
-            "reproducible": reproducible,
-        },
+        "emission": emission_payload,
         "pattern_json_utf8_b64": _b64(pattern_to_json(pattern).encode("utf-8")),
         "job_id": {
             "present": job_id is not None,
@@ -436,7 +450,10 @@ def decode_restore_capsule(encoded: str) -> DecodedWeaveRestore:
         # "keep" is said by leaving the key out, as top_layer's "below" is.
         raise ValueError("restore slice.hollows must be 'ignore' when present")
     emission = _object(payload["emission"], "restore emission")
-    _exact_keys(emission, _EMISSION_KEYS, "restore emission")
+    _exact_keys_with_optional(emission, _EMISSION_KEYS, _EMISSION_OPTIONAL_KEYS, "restore emission")
+    if "keep_clay_flowing" in emission and emission["keep_clay_flowing"] is not True:
+        # Off is said by leaving the key out, as the slice's "keep" hollows is.
+        raise ValueError("restore emission.keep_clay_flowing must be true when present")
     job = _object(payload["job_id"], "restore job id")
     _exact_keys(job, _JOB_KEYS, "restore job id")
 
@@ -534,6 +551,7 @@ def decode_restore_capsule(encoded: str) -> DecodedWeaveRestore:
         job_id=job_id,
         top_layer=sliced.get("top_layer", TOP_LAYER_BELOW),
         hollows=sliced.get("hollows", HOLLOWS_KEEP),
+        keep_clay_flowing="keep_clay_flowing" in emission,
     )
     canonical = encode_restore_capsule(
         source_mesh_name=decoded.source_mesh_name,
@@ -565,6 +583,7 @@ def decode_restore_capsule(encoded: str) -> DecodedWeaveRestore:
         scale_z=decoded.scale_z,
         top_layer=decoded.top_layer,
         hollows=decoded.hollows,
+        keep_clay_flowing=decoded.keep_clay_flowing,
     )
     if canonical != encoded:
         raise ValueError("restore capsule is not in canonical form")

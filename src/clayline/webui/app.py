@@ -334,7 +334,7 @@ def create_app(
         The draw studio's reference lightbox always tries ``createImageBitmap``
         locally first — in the packaged app that decodes HEIC natively.  Only
         when that fails (typically HEIC in a non-Safari engine) does the photo
-        come here to be re-encoded as JPEG with Pillow/pillow-heif. It never
+        come here to be re-encoded as JPEG with Pillow/pi-heif. It never
         touches a pass or a slice request.
         """
 
@@ -1083,8 +1083,10 @@ async def _read_image_request(request: Any, *, required_origin: str | None = Non
 
 
 def _convert_image_to_jpeg(body: bytes) -> bytes:
-    """Decode a photo (Pillow, plus pillow-heif for HEIC/HEIF) and re-encode
-    it as JPEG. Synchronous — the route always calls this in a worker thread.
+    """Decode a photo (Pillow, plus pi-heif for HEIC/HEIF) and re-encode it as
+    JPEG. Synchronous — the route always calls this in a worker thread.
+    pi-heif is the decode-only build of pillow-heif: no bundled HEVC encoder,
+    which this route never needed.
     """
 
     import io
@@ -1099,9 +1101,9 @@ def _convert_image_to_jpeg(body: bytes) -> bytes:
             code="reference-photo-support-missing",
         ) from exc
     try:
-        import pillow_heif
+        import pi_heif
 
-        pillow_heif.register_heif_opener()
+        pi_heif.register_heif_opener()
     except ImportError:
         pass  # A HEIC upload will fail the open below with an honest message.
     try:
@@ -1696,6 +1698,9 @@ def _modulate_weave_payload(
     prime_mm = _optional_finite(payload, "prime_mm", minimum=0.0)
     end_early_mm = _optional_finite(payload, "end_early_mm", minimum=0.0)
     start_charge_e = _optional_finite(payload, "start_charge_e", minimum=0.0)
+    # The studio sends its "Keep clay flowing on crossings" switch (on by
+    # default there); a request that does not say keeps the engine's off.
+    keep_clay_flowing = _boolean(payload, "keep_clay_flowing", False)
     reproducible = _boolean(payload, "reproducible", False)
     wet_density = (
         DEFAULT_WET_DENSITY_G_CM3
@@ -1724,6 +1729,7 @@ def _modulate_weave_payload(
         reproducible=reproducible,
         job_id=job_id,
         layer_range=requested_range,
+        keep_clay_flowing=keep_clay_flowing,
     )
     safe_amplitude = (
         largest_pinch_free_amplitude(
@@ -1862,6 +1868,8 @@ def _weave_settings_snapshot(prepared_result: Any, payload: dict[str, Any]) -> d
             "prime_mm": settings.prime_mm,
             "end_early_mm": settings.end_early_mm,
             "start_charge_e": settings.start_charge_e,
+            # Written the way the page saves it: only when the switch is off.
+            **({} if settings.keep_clay_flowing else {"keep_clay_flowing": False}),
             "filename": payload.get("filename"),
         },
         "source": {
@@ -2038,6 +2046,9 @@ def _restore_weave_gcode_payload(
             "flow_multiplier": recipe.flow_multiplier,
             # Blank in the file means the printer's own charge, and comes back blank.
             "start_charge_e": recipe.start_charge_e,
+            # A file that does not say (0.7.2 and earlier) stopped the clay on
+            # every crossing, and comes back with the switch off.
+            "keep_clay_flowing": recipe.keep_clay_flowing,
             "wet_density_g_cm3": recipe.wet_density_g_cm3,
             "prime_mm": recipe.prime_mm,
             "end_early_mm": recipe.end_early_mm,
@@ -2610,7 +2621,7 @@ def _prepared_trace_payload(
 ) -> dict[str, Any]:
     """Mode-neutral serializer for one exact prepared emission trace."""
 
-    from clayline.emit import EmissionMotion
+    from clayline.emit import EmissionMotion, is_flowing_crossing
     from clayline.models import MoveKind
 
     indices = {} if stroke_indices is None else dict(stroke_indices)
@@ -2627,6 +2638,9 @@ def _prepared_trace_payload(
                 MoveKind.CARRY,
                 MoveKind.THREAD_RELEASE,
             )
+            # A crossing the ram keeps pushing through is clay on screen.
+            else 1
+            if is_flowing_crossing(event)
             else 0
         )
         pass_index = event.layer

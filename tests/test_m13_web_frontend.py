@@ -226,7 +226,7 @@ def test_layer_rhythm_controls_are_grouped_with_the_weave_pattern_and_persist_ca
 
 
 def test_stage_a_slice_is_explicit_and_slice_controls_do_not_auto_slice() -> None:
-    upload = _function("uploadMesh", "async function runSlice")
+    upload = _function("uploadMesh", "async function recoverFromExpiredSession")
     bind_slice = _function("bindSliceControls", "function bindPatternControls")
     bind_actions = _function("bindActions", "function initialise")
     assert "runSlice()" not in upload

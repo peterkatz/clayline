@@ -3,7 +3,7 @@
 The viewport draws every deposit motion of the exact prepared emission as a
 fat line, bead width wide, shaded to read as a round coil.  This module
 sweeps a real cross-section along those same motions and writes Wavefront
-OBJ text.  Nothing else is exported: not travels, not the non-deposit tail,
+OBJ text.  Nothing else is exported: not dry travels, not the non-deposit tail,
 not the ghosted source form, not the bed.
 
 The cross-section is an oval, bead width wide (from the motion's exact
@@ -21,7 +21,7 @@ import math
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-from clayline.emit import EmissionMotion, EmissionPoint, PreparedEmission
+from clayline.emit import EmissionMotion, EmissionPoint, PreparedEmission, is_flowing_crossing
 from clayline.models import MoveKind
 
 #: Motions that lay clay and are drawn as the coil in the slice window.
@@ -78,7 +78,13 @@ def coils_from_prepared(prepared: PreparedEmission) -> tuple[Coil, ...]:
         if not isinstance(event, EmissionMotion):
             close()
             continue
-        deposits = event.extrude and event.kind in DEPOSIT_KINDS and event.area_mm2 > 0
+        # A crossing the ram keeps pushing through lays clay too, and is part
+        # of the same coil as the lines either side of it.
+        deposits = (
+            event.extrude
+            and (event.kind in DEPOSIT_KINDS or is_flowing_crossing(event))
+            and event.area_mm2 > 0
+        )
         if deposits and current is not None:
             width = float(event.area_mm2) / layer_height
             if not points:

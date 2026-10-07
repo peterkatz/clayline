@@ -67,8 +67,18 @@ class EmissionSettings:
     # None keeps the profile's start block verbatim; a number replaces the E
     # amount of its single charge line; 0 removes the charge move entirely.
     start_charge_e: float | None = None
+    # Keep clay flowing on crossings (Pete, 2026-10-06): the ram never stops
+    # between the first line and the last.  Lines end and start at full flow
+    # (no E-less end-early tail, no prime ramp) and every crossing between two
+    # lines (lift, traverse, lowering) is an extruding move at the next line's
+    # print feed carrying one full bead per millimetre (the first layer's fuller
+    # bead on the first layer), so E per second equals printing.  Off (the
+    # engine default) keeps every byte as before.
+    keep_clay_flowing: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.keep_clay_flowing, bool):
+            raise EmissionError("keep_clay_flowing must be true or false")
         if self.start_charge_e is not None and (
             not math.isfinite(self.start_charge_e) or self.start_charge_e < 0
         ):
@@ -420,6 +430,8 @@ def prepare_emission(
     end_early_mm = defaults.end_early_mm if settings.end_early_mm is None else settings.end_early_mm
     assert prime_mm is not None  # resolved from non-optional profile defaults
     assert end_early_mm is not None
+    if settings.keep_clay_flowing:
+        prime_mm, end_early_mm = _flowing_prime_and_end_early(settings)
     return PreparedEmission(
         source_stream=stream,
         profile_name=profile.name,
@@ -431,6 +443,69 @@ def prepare_emission(
         end_early_mm=end_early_mm,
         events=tuple(_prepare_events(stream, profile, settings, prime_mm, end_early_mm)),
     )
+
+
+def _flowing_prime_and_end_early(settings: EmissionSettings) -> tuple[float, float]:
+    """The ramp and tail a flowing job prints: none, since the ram never stops.
+
+    A flowing job lays no prime ramp and no E-less end-early tail, so the
+    header records 0 for both.  An explicit nonzero length is a contradiction
+    the caller has to resolve, never something to drop silently.
+    """
+
+    for label, value in (("prime_mm", settings.prime_mm), ("end_early_mm", settings.end_early_mm)):
+        if value is not None and value != 0.0:
+            raise EmissionError(
+                f"keep_clay_flowing lays no prime ramp and no end-early tail; {label} must be "
+                "unset or 0"
+            )
+    if _corrected_thread_protection_ratio(settings) is not None:
+        raise EmissionError("keep_clay_flowing cannot be combined with corrected thread protection")
+    return 0.0, 0.0
+
+
+#: The three crossing motions a flowing job turns into clay.
+FLOWING_CROSSING_KINDS = frozenset(
+    {MoveKind.TRAVEL_LIFT, MoveKind.TRAVEL_XY, MoveKind.TRAVEL_APPROACH}
+)
+
+
+def is_flowing_crossing(event: EmissionEvent) -> bool:
+    """True for a crossing motion that lays clay (Keep clay flowing on crossings)."""
+
+    return (
+        isinstance(event, EmissionMotion) and event.extrude and event.kind in FLOWING_CROSSING_KINDS
+    )
+
+
+def _crossing_area(settings: EmissionSettings, move: Move) -> float:
+    """Clay per millimetre of a flowing crossing: one full bead at the job's flow.
+
+    A crossing onto the first layer carries that layer's fuller bead (the
+    ``first_layer_flow_factor`` the job records), so the ram's rate matches the
+    first-layer line it is heading for.
+    """
+
+    area = _deposit_area(settings) * settings.flow_multiplier
+    if move.layer_index == 0:
+        factor = settings.parameters.get("first_layer_flow_factor")
+        if (
+            isinstance(factor, (int, float))
+            and not isinstance(factor, bool)
+            and math.isfinite(float(factor))
+            and float(factor) > 0.0
+        ):
+            area *= float(factor)
+    return area
+
+
+def _next_print_feed(moves: tuple[Move, ...], start: int, profile: Profile) -> float | None:
+    """Print feed of the first PRINT move at or after ``start``; None when none follows."""
+
+    for candidate in moves[start:]:
+        if candidate.kind is MoveKind.PRINT:
+            return candidate.feed_mm_s or profile.speed_default
+    return None
 
 
 def _resolve_generated_utc(
@@ -559,6 +634,9 @@ def _prepare_events(
     current_page: int | None = None
     pending_reprime_source: Move | None = None
     moves = stream.moves
+    # A crossing flows only between two lines: once a print run has been laid
+    # and while another one follows.  The job's first approach stays dry.
+    printed_a_run = False
     index = 0
     while index < len(moves):
         move = moves[index]
@@ -676,10 +754,42 @@ def _prepare_events(
                     events.append(EmissionLiteral(dwell))
                 pending_reprime_source = None
             events.extend(_print_run(run, before_run, profile, settings, prime_mm, end_early_mm))
+            printed_a_run = True
             continue
 
         point = _resolve_point(move, current)
         _validate_body_point(point, profile)
+        flowing_feed = (
+            _next_print_feed(moves, index + 1, profile)
+            if settings.keep_clay_flowing and printed_a_run and move.kind in FLOWING_CROSSING_KINDS
+            else None
+        )
+        if flowing_feed is not None:
+            if current is None or point.distance_to(current) > 1e-12:
+                # The ram keeps pushing at the print rate: one full bead per
+                # millimetre at the next line's print feed, the same E per
+                # second as printing that line.  The move keeps its crossing
+                # kind, so it is still counted as a travel and checked as one.
+                events.append(
+                    EmissionMotion(
+                        point=point,
+                        command="G1",
+                        extrude=True,
+                        area_mm2=_crossing_area(settings, move),
+                        feed_mm_s=flowing_feed,
+                        kind=move.kind,
+                        page=move.page_index,
+                        layer=move.layer_index,
+                        stroke=move.stroke_id,
+                        comment=move.comment,
+                        source_move=move,
+                    )
+                )
+            current = point
+            index += 1
+            # Nothing stopped, so nothing is re-primed or dwelt on before the
+            # next line.
+            continue
         if current is None or point.distance_to(current) > 1e-12:
             carrying = move.kind is MoveKind.CARRY
             ratio = _corrected_thread_protection_ratio(settings) if carrying else None
@@ -1536,6 +1646,9 @@ def _header(
         f"; wet_density_g_cm3={_format_number(settings.wet_density_g_cm3)}",
         f"; prime_mm={_format_number(prime_mm)}",
         f"; end_early_mm={_format_number(end_early_mm)}",
+        # Written only when clay keeps flowing on crossings, so every other
+        # file's header stays byte-identical to the ones before it existed.
+        *(["; keep_clay_flowing=true"] if settings.keep_clay_flowing else []),
         f"; first_layer_z_mm={_format_number(stats.first_layer_z)}",
         f"; speed_default_mm_s={_format_number(profile.speed_default)}",
         f"; speed_first_layer_mm_s={_format_number(profile.first_layer_speed())}",

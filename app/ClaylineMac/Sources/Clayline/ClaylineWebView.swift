@@ -94,6 +94,9 @@ struct ClaylineWebView: NSViewRepresentable {
             if let galleryScript = ClaylineGallery.userScript() {
                 userContentController.addUserScript(galleryScript)
             }
+            // The Edit menu owns Command-Z and Shift-Command-Z; the page is told
+            // before it loads, so its own key handler stands aside.
+            userContentController.addUserScript(HistoryMenuBridge.userScript())
             userContentController.add(self, name: StudioSettingsStore.messageHandlerName)
             userContentController.add(self, name: Self.saveSVGHandlerName)
             userContentController.add(self, name: Self.projectOpenedHandlerName)

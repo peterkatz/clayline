@@ -1113,6 +1113,9 @@ function pageRow(index, stacked) {
     if (mm) input.dataset.unit = "mm";
     input.value = mm ? passInputValue(value) : String(value ?? 0);
     input.addEventListener("focus", () => { drawHistoryGestureActive = true; });
+    input.addEventListener("input", (event) => {
+      if (event.isTrusted && document.activeElement === input) drawHistoryGestureActive = true;
+    });
     input.addEventListener("change", () => {
       let next = Number(input.value);
       if (mm && Number.isFinite(next)) next = window.claylineUnits.toMm(next);
@@ -1241,6 +1244,9 @@ function pageRow(index, stacked) {
 
 function renderPages() {
   const list = $("#pageList");
+  // A row field about to be rebuilt cannot be left holding the history gate:
+  // WebKit may drop it without a blur, and nothing would be recorded again.
+  if (list.contains(document.activeElement)) drawHistoryGestureActive = false;
   list.replaceChildren();
   updateDesignSizeHint();
   if (!state.files.length) {
@@ -1416,6 +1422,7 @@ async function runLayoutCheck() {
         // the session snapshot directly; the authored snapshot was already
         // recorded or scheduled, so this never consumes another undo step.
         saveDrawSettingsSnapshot(drawSettingsSnapshot());
+        amendDrawMeasurements();
       }
     }
   } catch {
@@ -1513,6 +1520,8 @@ function renderBedMapHandles() {
       handle.removeEventListener("pointermove", move);
       handle.removeEventListener("pointerup", up);
       handle.removeEventListener("pointercancel", up);
+      // A number still being typed in a row is its own step, before the drag.
+      commitFocusedField();
       onUp(e);
     };
     handle.addEventListener("pointermove", move);
@@ -1523,6 +1532,8 @@ function renderBedMapHandles() {
     pageRect.removeAttribute("transform");
     markDirty("Page count or placement changed. Slice again before export.");
     renderPages();
+    // One drag, one step, recorded the moment it ends.
+    endDrawGesture();
   };
 
   const knobY = y - 5.5 * unit;
@@ -1734,6 +1745,8 @@ function renderBedMap(data) {
         rect.style.cursor = "grab";
         rect.removeAttribute("transform");
         if (!moved) return;
+        // A number still being typed in a row is its own step, before the drag.
+        commitFocusedField();
         const current = toBedMm(upEvent.clientX, upEvent.clientY);
         const dx = current.x - start.x;
         const dy = -(current.y - start.y);
@@ -1742,6 +1755,8 @@ function renderBedMap(data) {
         rect.dataset.justDragged = "1";
         markDirty("Page count or placement changed. Slice again before export.");
         renderPages();
+        // One drag, one step, recorded the moment it ends.
+        endDrawGesture();
       };
       rect.addEventListener("pointermove", onMove);
       rect.addEventListener("pointerup", onUp);
@@ -1791,6 +1806,7 @@ function applySuggestion(action) {
   markDirty("Change applied. Slice again to rebuild with it.");
   renderPages();
   scheduleLayoutCheck();
+  commitPendingDrawEdit();
 }
 
 function suggestionButton(action) {
@@ -2383,6 +2399,9 @@ function applyDrawHistorySnapshot(snapshot) {
   if (!snapshot) return false;
   drawStateWriter?.suspend(() => applyDrawSettings(snapshot));
   saveDrawSettingsSnapshot(snapshot);
+  // What the rail and the bed now say is this step, word for word, so the next
+  // click that changes nothing finds nothing to record and Redo stays.
+  drawHistory?.amend(() => drawSettingsSnapshot());
   // The project line describes what is on the bed.  An undo or a redo puts
   // something else there — an open can be undone back to an empty bed — so the
   // sentence about the project goes with it rather than outliving the work.
@@ -2391,12 +2410,50 @@ function applyDrawHistorySnapshot(snapshot) {
   return true;
 }
 
+function stepDrawHistory(direction) {
+  return window.ClaylineStudioState.stepHistory({
+    writer: drawStateWriter,
+    history: drawHistory,
+    direction,
+    // A change still waiting out the debounce is recorded as its own step
+    // first, and a gate nobody released must not hold it out.
+    beforeStep: () => {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLInputElement && focused.type === "range")) {
+        drawHistoryGestureActive = false;
+      }
+    },
+    apply: applyDrawHistorySnapshot,
+  });
+}
+
 function undoDrawSettings() {
-  return applyDrawHistorySnapshot(drawHistory?.undo());
+  return stepDrawHistory("undo");
 }
 
 function redoDrawSettings() {
-  return applyDrawHistorySnapshot(drawHistory?.redo());
+  return stepDrawHistory("redo");
+}
+
+function commitPendingDrawEdit() {
+  if (!drawHistoryGestureActive) drawStateWriter?.flush();
+}
+
+// A pass recorded while it was still being measured gets its measured size
+// written into that same step when the answer comes, so the next click finds
+// nothing new to record and Redo is never cut off by a measurement.
+function amendDrawMeasurements() {
+  const live = drawSettingsSnapshot();
+  drawHistory?.amend((entry) => {
+    if (!Array.isArray(entry?.passes) || entry.passes.length !== live.passes.length) return entry;
+    const passes = entry.passes.map((pass, index) => {
+      const now = live.passes[index];
+      if (!now || now.svg !== pass.svg || now.name !== pass.name) return pass;
+      if (pass.size_pinned || (Number.isFinite(pass.size_mm) && pass.size_mm > 0)) return pass;
+      return { ...pass, size_mm: now.size_mm };
+    });
+    return { ...entry, passes };
+  });
 }
 
 function activeHistoryAction(direction) {
@@ -2406,16 +2463,64 @@ function activeHistoryAction(direction) {
   return direction === "undo" ? undoDrawSettings() : redoDrawSettings();
 }
 
+// Only free text keeps the browser's own undo. A number box or a dropdown is
+// a setting like any other: Command-Z there commits it and steps the studio.
 function nativeEditingTarget(target) {
   if (!(target instanceof Element)) return false;
-  return Boolean(target.closest("textarea, select, [contenteditable], input:not([type='checkbox']):not([type='radio']):not([type='range'])"));
+  return Boolean(target.closest("textarea, [contenteditable]:not([contenteditable='false'])"));
+}
+
+const COMMITTABLE_FIELD = "select, input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='button']):not([type='submit']):not([type='file'])";
+
+// Leaves the focused number box or dropdown, which fires its own change and
+// blur: what was typed is recorded as its own step before anything else.
+function commitFocusedField() {
+  const field = document.activeElement;
+  if (!(field instanceof HTMLElement) || !field.matches(COMMITTABLE_FIELD)) return false;
+  field.blur();
+  return true;
+}
+
+// A press anywhere but the focused number box or dropdown leaves that field
+// first, before the press does anything, so what was typed is its own step.
+// The curve editors and the drawing board keep focus where it was while they
+// are pressed, and without this a typed number rode into their step.
+function commitFieldBeforePress(event) {
+  const field = document.activeElement;
+  if (!(field instanceof HTMLElement) || !field.matches(COMMITTABLE_FIELD)) return;
+  if (event.target instanceof Node && field.contains(event.target)) return;
+  commitFocusedField();
+}
+
+// One Undo or Redo, wherever it came from: the header buttons, the keys, or
+// the Mac app's Edit menu. "native" hands it back to the shell for free text.
+function historyCommand(direction) {
+  if (nativeEditingTarget(document.activeElement)) return "native";
+  commitFocusedField();
+  return activeHistoryAction(direction) ? "done" : "none";
+}
+
+// The header buttons always step the studio, whatever has focus; a number
+// still sitting in a field is committed first, as its own step.
+function historyButton(direction) {
+  commitFocusedField();
+  return activeHistoryAction(direction);
 }
 
 function handleHistoryKeydown(event) {
   if (!(event.metaKey || event.ctrlKey) || event.altKey || event.key.toLowerCase() !== "z") return;
   if (nativeEditingTarget(event.target)) return;
+  // One Command-Z must never step twice. In the Mac app the Edit menu owns
+  // Command-Z and Shift-Command-Z (the shell says so before the page loads,
+  // in window.claylineNativeHistoryMenu), so the page stands aside here and
+  // leaves the key unhandled; WebKit then hands it to the menu, whose Undo
+  // calls historyCommand through claylineDesktop. In a browser there is no
+  // menu and the page answers the key itself. Either way exactly one of the
+  // two runs, whichever order the shell offers the key in.
+  if (window.claylineNativeHistoryMenu === true) return;
+  const committed = commitFocusedField();
   const changed = activeHistoryAction(event.shiftKey ? "redo" : "undo");
-  if (changed) event.preventDefault();
+  if (changed || committed) event.preventDefault();
 }
 
 // One gesture is one undo step (PRD §7). A drawing gesture suppresses the
@@ -2434,6 +2539,7 @@ window.claylineHistoryControls = Object.freeze({
   sync: syncHistoryButtons,
   beginGesture: beginDrawGesture,
   endGesture: endDrawGesture,
+  commitField: commitFocusedField,
 });
 
 function showState(kind) {
@@ -3776,13 +3882,17 @@ async function loadAppVersion() {
 async function resetParameters() {
   if (!state.defaults) await loadDefaults({ restore: false });
   if (state.defaults) {
+    // Reset is one step like any other: Undo brings every setting back. An
+    // edit still waiting to be recorded is its own step first.
+    commitPendingDrawEdit();
     drawStateWriter?.suspend(() => {
       applyDefaults(state.defaults);
       if (state.files.length) invalidateAllPassMeasurements();
       markDirty("Parameters reset to the Draw factory defaults. Slice again before export.");
     });
     drawStateWriter?.clear();
-    drawHistory?.seed(drawSettingsSnapshot());
+    drawHistoryGestureActive = false;
+    drawStateWriter?.flush();
     syncHistoryButtons();
   } else {
     markDirty("Defaults service unreachable — parameters unchanged.");
@@ -3841,9 +3951,10 @@ function bindEvents() {
   $("#sliceButton").addEventListener("click", slice);
   $("#downloadButton").addEventListener("click", downloadGcode);
   $("#resetButton").addEventListener("click", resetParameters);
-  $("#undoButton").addEventListener("click", () => activeHistoryAction("undo"));
-  $("#redoButton").addEventListener("click", () => activeHistoryAction("redo"));
+  $("#undoButton").addEventListener("click", () => historyButton("undo"));
+  $("#redoButton").addEventListener("click", () => historyButton("redo"));
   window.addEventListener("keydown", handleHistoryKeydown);
+  document.addEventListener("pointerdown", commitFieldBeforePress, true);
   $$(".tab").forEach((tab) => {
     tab.addEventListener("click", () => setActiveView(tab.dataset.view));
     tab.addEventListener("keydown", handleTabKeydown);
@@ -3928,6 +4039,11 @@ function bindEvents() {
   $$("#tilesWorkspace input[type='number'], #tilesWorkspace input[type='text']")
     .forEach((control) => {
       control.addEventListener("focus", () => { drawHistoryGestureActive = true; });
+      // Typing again after Enter is a new edit of the same field: it waits
+      // for its own commit instead of being recorded keystroke by keystroke.
+      control.addEventListener("input", (event) => {
+        if (event.isTrusted && document.activeElement === control) drawHistoryGestureActive = true;
+      });
       const commit = () => {
         if (!drawHistoryGestureActive) return;
         drawHistoryGestureActive = false;
@@ -3936,6 +4052,16 @@ function bindEvents() {
       control.addEventListener("change", commit);
       control.addEventListener("blur", commit);
     });
+  // Every potter change is one step from the moment it is made. A control's
+  // change and a button press are commit points: once their own handlers have
+  // run, what they changed is recorded, so two quick changes are never folded
+  // into one. A held gesture keeps its own commit and is left alone here.
+  const tilesWorkspace = $("#tilesWorkspace");
+  const commitSoon = () => queueMicrotask(commitPendingDrawEdit);
+  tilesWorkspace?.addEventListener("change", commitSoon);
+  tilesWorkspace?.addEventListener("click", (event) => {
+    if (event.target instanceof Element && event.target.closest("button")) commitSoon();
+  });
   window.addEventListener("beforeunload", () => {
     revokeBlobUrls();
     state.files.forEach((file) => {
@@ -4015,6 +4141,11 @@ window.claylineUnits.onChange(() => {
 // File → Export, and Finder document-open events. Browser behavior is unchanged.
 window.claylineDesktop = Object.freeze({
   currentMode: () => document.body.dataset.claylineMode === "weave" ? "weave" : "tiles",
+  // Edit → Undo and Edit → Redo. The answer tells the shell whether the page
+  // took the step ("done"), had none to take ("none"), or wants the native
+  // text undo of a free-text field ("native").
+  undo: () => historyCommand("undo"),
+  redo: () => historyCommand("redo"),
   open: () => {
     if (document.body.dataset.claylineMode === "weave") window.claylineWeaveMode?.open();
     else $("#fileInput").click();

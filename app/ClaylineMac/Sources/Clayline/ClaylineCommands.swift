@@ -29,6 +29,23 @@ struct ClaylineCommands: Commands {
             .disabled(!actions.isReady)
         }
 
+        // The studio's own Undo and Redo, the same steps as the header
+        // buttons: moves, settings, a model loaded, a drawing edit. See
+        // HistoryMenuBridge for why one Command-Z steps exactly once.
+        CommandGroup(replacing: .undoRedo) {
+            Button("Undo") {
+                actions.undo()
+            }
+            .keyboardShortcut("z", modifiers: .command)
+            .disabled(!actions.isReady)
+
+            Button("Redo") {
+                actions.redo()
+            }
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .disabled(!actions.isReady)
+        }
+
         CommandGroup(replacing: .saveItem) {
             Button("Save Project…") {
                 actions.saveProject()

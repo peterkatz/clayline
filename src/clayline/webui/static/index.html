@@ -26,11 +26,11 @@
         <button class="mode-choice" id="weaveModeButton" type="button" data-clayline-mode="weave" aria-pressed="false">Weave · mesh</button>
       </nav>
       <div class="header-meta">
-        <div class="header-history" role="group" aria-label="Settings history">
-          <button class="icon-button header-history-button" id="undoButton" type="button" title="Undo settings change (⌘Z)" aria-label="Undo settings change" disabled>
+        <div class="header-history" role="group" aria-label="Undo and redo">
+          <button class="icon-button header-history-button" id="undoButton" type="button" title="Undo (⌘Z)" aria-label="Undo" disabled>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5"/><path d="M5 12h8a6 6 0 0 1 6 6"/></svg>
           </button>
-          <button class="icon-button header-history-button" id="redoButton" type="button" title="Redo settings change (⇧⌘Z)" aria-label="Redo settings change" disabled>
+          <button class="icon-button header-history-button" id="redoButton" type="button" title="Redo (⇧⌘Z)" aria-label="Redo" disabled>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5"/><path d="M19 12h-8a6 6 0 0 0-6 6"/></svg>
           </button>
         </div>
@@ -727,6 +727,10 @@
               <label class="field"><span>Printer</span><select id="weaveProfile"><option value="potterbot-xl" selected>PotterBot 10 XL · verified reference</option><option value="generic-reprap-paste">Generic RepRap paste · unverified</option><option value="generic-marlin-paste">Generic Marlin paste · unverified</option></select></label>
               <label class="field"><span>Clay flow <output id="weaveFlowOutput">1.00×</output></span><input id="weaveFlow" type="range" value="1" min="0.5" max="1.5" step="0.01"></label>
               <label class="field" title="Start charge before the first line, in the printer's E units. The profile's start block pushes this much clay out over the bed centre before printing so the barrel is under pressure. Blank keeps the profile's own charge; 0 skips the charge entirely. The profile's amount shows as the placeholder."><span>Start charge (E)</span><input id="weaveStartCharge" type="number" min="0" step="100" placeholder="profile"></label>
+              <label class="switch-row" id="weaveKeepFlowingRow" title="On every crossing from one line to the next, the lift, the move across and the lowering, the ram keeps pushing clay at the rate it prints, and every line starts and ends at full flow. The clay laid on the way counts in the clay, weight and time, and shows as clay in the preview. Turn it off to stop the push on every crossing as before: each line then ends with a short stretch of no clay and the next one builds up slowly.">
+                <span><strong>Keep clay flowing on crossings</strong><small id="weaveKeepFlowingHint">The ram keeps pushing at the print rate while the nozzle crosses, so the next line starts at full pressure.</small></span>
+                <input id="weaveKeepFlowing" type="checkbox" role="switch" checked aria-describedby="weaveKeepFlowingHint">
+              </label>
               <p class="profile-fact" id="weaveProfileFact">Profile truth supplies speeds, bounds, start/end blocks, and pressure travel.</p>
             </div>
           </section>

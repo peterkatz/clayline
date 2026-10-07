@@ -75,6 +75,33 @@ final class WebActions: ObservableObject {
         webView?.evaluateJavaScript("window.claylineDesktop && window.claylineDesktop.saveProject()")
     }
 
+    /// Edit → Undo: one step of the studio's history, or the native text undo
+    /// when the page says focus is in free text.
+    func undo() {
+        stepHistory(.undo)
+    }
+
+    /// Edit → Redo, the same way.
+    func redo() {
+        stepHistory(.redo)
+    }
+
+    /// How a free-text field gets its own undo: the stock Edit menu action,
+    /// sent up the responder chain. Replaceable so the bridge can be tested.
+    var performNativeHistory: @MainActor (HistoryMenuBridge.Direction) -> Void = { direction in
+        _ = NSApp.sendAction(HistoryMenuBridge.nativeSelector(for: direction), to: nil, from: nil)
+    }
+
+    private func stepHistory(_ direction: HistoryMenuBridge.Direction) {
+        guard isReady, let webView else { return }
+        webView.evaluateJavaScript(HistoryMenuBridge.script(for: direction)) { [weak self] value, _ in
+            guard HistoryMenuBridge.outcome(of: value) == .nativeText else { return }
+            Task { @MainActor [weak self] in
+                self?.performNativeHistory(direction)
+            }
+        }
+    }
+
     func importDocuments(_ urls: [URL]) {
         guard let selection = ClaylineFileTypes.importSelection(from: urls) else { return }
         guard isReady, webView != nil else {

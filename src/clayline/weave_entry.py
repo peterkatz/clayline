@@ -16,6 +16,10 @@ Three constructions answer every layer, tried in this order:
 
 There is no fourth, no search over combinations, and no planner state beyond the
 single XY.  A layer that none of the three can open is reported by name.
+
+The third prints the ridden part of the wall twice — the ride lays it, then the
+wall's whole ring goes over it — so a caller can leave it out (``wall_ride``),
+and a stretch of a form that is not one piece all the way up does.
 """
 
 from __future__ import annotations
@@ -85,6 +89,7 @@ def choose_layer_entry(
     current_region: BaseGeometry,
     bead_width: float,
     allow_reverse: bool = True,
+    wall_ride: bool = True,
 ) -> LayerEntry | GateFailure:
     """Open this layer's fill from the climb column, or say why nothing can.
 
@@ -100,6 +105,14 @@ def choose_layer_entry(
     wall ring, which must be walked the way its seam and its flow arithmetic
     were built.  Then there is one candidate, its own first point, and the
     question is only which construction reaches it.
+
+    ``wall_ride=False`` leaves out the third construction.  A ride lays clay on
+    this layer's own wall line, and the wall then prints its whole ring over
+    it, so every millimetre of a ride is wall printed twice — there is no way
+    round that, because a ring with the fill hung between two of its points can
+    be printed once in one pass only from one of those two points.  Without the
+    ride, an opening more than a bead away is a :class:`GateFailure` saying so,
+    and the caller breaks the line there instead.
     """
 
     points = np.asarray(fill_points, dtype=np.float64)
@@ -147,6 +160,18 @@ def choose_layer_entry(
         if isinstance(direct, ConnectorProof):
             return entry(nearest_reverse, nearest_distance, direct)
         failure = direct
+
+    if not wall_ride:
+        if failure is not None:
+            return failure
+        return GateFailure(
+            "wall_ride_prints_wall_twice",
+            nearest_distance,
+            bead_width,
+            "the nearest end of the fill starts farther than one coil width from where "
+            "the line arrives, and going round on the wall to reach it would print that "
+            "part of the wall twice",
+        )
 
     # Taper, twist, or a dense spiral whose ends are fixed can put both
     # openings out of a bead's reach.  Ride the wall to one of them rather than

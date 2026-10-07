@@ -20,7 +20,7 @@ Words as Clayline uses them, in the order you're likely to meet them.
 
 **Stroke.** One continuous run of clay without lifting. Clayline joins your lines into as few strokes as it can.
 
-**Travel.** A move with no clay flowing, between one stroke and the next. Fewer is better: every travel is a place where the thread stops and restarts.
+**Travel.** A move between one stroke and the next, where the nozzle lifts and crosses. No clay flows on it, except in Weave with **Keep clay flowing on crossings** on. Fewer is better: every travel is a place where the thread breaks.
 
 **Join, weld.** Where two line ends close together are treated as the same point, so a slightly rough hand-drawn corner still prints as one stroke.
 
