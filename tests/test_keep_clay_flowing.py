@@ -367,9 +367,14 @@ def test_a_ramp_or_tail_with_flowing_is_refused() -> None:
 def test_the_switch_sits_beside_start_charge_on_by_default() -> None:
     printer = HTML[HTML.index('data-weave-section="printer"') :]
     printer = printer[: printer.index("</section>")]
+    assert "<h2>Printer and coil</h2>" in printer
+    flow = printer.index('id="weaveFlow"')
     charge = printer.index('id="weaveStartCharge"')
     switch = printer.index('id="weaveKeepFlowing"')
-    assert charge < switch < printer.index('id="weaveProfileFact"')
+    assert printer.index('id="weaveProfile"') < flow < charge < switch
+    # Nothing sits between Start charge and the switch.
+    row_start = printer.rindex("<label", 0, printer.index('id="weaveKeepFlowingRow"'))
+    assert "<label" not in printer[charge:row_start]
     assert "<strong>Keep clay flowing on crossings</strong>" in printer
     assert (
         "The ram keeps pushing at the print rate while the nozzle crosses, so the next line "

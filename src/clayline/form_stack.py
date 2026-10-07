@@ -8,7 +8,7 @@ MoveStream consumed by preview, report, lint, and emission.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from itertools import pairwise
@@ -35,7 +35,12 @@ from clayline.wave import (
 )
 from clayline.weave_analysis import analyze_weave_geometry
 from clayline.weave_bottom import BottomStroke, build_bottom_plan
-from clayline.weave_continuity import GateFailure, material_extent
+from clayline.weave_continuity import (
+    DirectStepGates,
+    FillStrip,
+    GateFailure,
+    material_extent,
+)
 from clayline.weave_entry import LayerEntry, choose_layer_entry
 from clayline.weave_fill import contained_connector
 from clayline.weave_interior import build_interior_strokes
@@ -55,8 +60,15 @@ from clayline.weave_stack import (
     ClearanceRule,
     StackedInterval,
     StackPlan,
-    path_seconds,
     plan_band,
+)
+from clayline.weave_thread_plan import (
+    RELAY_LIMIT_MM,
+    GreedyRecord,
+    LayerFill,
+    StretchLayer,
+    StretchPlan,
+    plan_stretch,
 )
 from clayline.weave_zblend import (
     SLOPE_MAX_RATIO,
@@ -118,6 +130,26 @@ class _ThreadBreak:
 
 
 @dataclass(frozen=True, slots=True)
+class _LaidThread:
+    """One way of laying a stretch's thread, and what it cost.
+
+    ``held`` is whether every join and weld a plan promised was proved again
+    when it was laid (always True for greedy's own thread).  ``record`` is what
+    greedy actually laid, which a plan's new joins are told apart from.
+    """
+
+    segments: list[list[_RingPath]]
+    welds: dict[tuple[int, int], np.ndarray]
+    breaks: list[_ThreadBreak]
+    held: bool
+    record: GreedyRecord
+
+
+#: Nothing laid yet, so nothing exempt: what greedy's own pass is measured against.
+_NO_GREEDY = GreedyRecord(frozenset(), frozenset())
+
+
+@dataclass(frozen=True, slots=True)
 class _BottomFill:
     """One bottom path and the material region it was proved inside."""
 
@@ -133,12 +165,17 @@ def build_form_move_stream(
     job_id: str | None = None,
     zblend_path: ZBlendPath | None = None,
     flow_multiplier: float = 1.0,
+    plan_threads: bool = True,
 ) -> MoveStream:
     """Build the exact discrete-layer MoveStream consumed by emission.
 
     No marker is inserted between rings in a continuous wall.  The stable
     ``deposition_run_id`` metadata is the shared emitter/preview/report key,
     so changing ``layer_index`` does not restart prime or end-early handling.
+
+    ``plan_threads=False`` lays every stretch's thread greedily, unplanned.
+    Only the layer-by-layer count Stack pieces compares itself with asks for
+    it: that count is read on layers of separate pieces, where no thread runs.
     """
 
     _validate_inputs(sliced, pattern, profile)
@@ -909,12 +946,14 @@ def build_form_move_stream(
         bands: Sequence[WallBand],
         *,
         whole_form: bool,
+        leaving_to: np.ndarray | None = None,
     ) -> tuple[list[list[_RingPath]], dict[tuple[int, int], np.ndarray], list[_ThreadBreak]] | None:
         """The thread through every layer of a stretch of one-piece bands."""
 
         return thread_through(
             [by_address[address] for band in bands for address in band.tracks[0].rings],
             whole_form=whole_form,
+            leaving_to=leaving_to,
         )
 
     def thread_through(
@@ -922,6 +961,7 @@ def build_form_move_stream(
         *,
         whole_form: bool,
         column: bool = False,
+        leaving_to: np.ndarray | None = None,
     ) -> tuple[list[list[_RingPath]], dict[tuple[int, int], np.ndarray], list[_ThreadBreak]] | None:
         """The deposited thread through one stretch of one-piece layers, in segments.
 
@@ -931,10 +971,16 @@ def build_form_move_stream(
         depositing, opens the next layer's fill from that column, traverses it,
         welds to the next wall, and goes round again.
 
-        Planning is one pass in deposition order and its whole state is the
-        climb column.  There is no search: the fill trail's two ends are the
-        entire candidate family, and :func:`choose_layer_entry` picks between
-        them and constructs the coil that reaches the winner.
+        Laying is one pass in deposition order and its whole state is the
+        climb column: the fill trail's two ends are the candidates for each
+        join, and :func:`choose_layer_entry` picks between them and constructs
+        the coil that reaches the winner.  That pass takes the nearest piece
+        next.  Where the stretch is not a whole form and that order breaks, the
+        stretch is planned (:func:`~clayline.weave_thread_plan.plan_stretch`) and
+        laid again in the planned order, through the same proofs; the plan is
+        kept only if every join it promised holds, it breaks strictly fewer
+        times, and its crossings are no longer in all than greedy's.  A whole
+        form is never planned.
 
         The thread comes back as SEGMENTS, and normally there is exactly one:
         the whole stretch, printed without the head ever leaving the clay.  A
@@ -959,6 +1005,10 @@ def build_form_move_stream(
         ``column`` is one piece of a form that stands in several on these
         layers (Stack pieces): its own fill is the only fill it lays, and the
         other pieces' fill on the same layers is theirs to print.
+
+        ``leaving_to`` is where what prints after the stretch may start, so the
+        crossing out of it is counted when its plan is weighed against greedy's
+        (None: nothing follows).
         """
 
         # Every layer of the stretch, filled, exactly once.  Anything else and
@@ -968,112 +1018,486 @@ def build_form_move_stream(
         if any(ring.provenance.layer_index >= fill_layers for ring in rings):
             return None
         first_layer = rings[0].provenance.layer_index
-
-        segments: list[list[_RingPath]] = [[]]
-        breaks: list[_ThreadBreak] = []
-        welds: dict[tuple[int, int], np.ndarray] = {}
-        climb_xy: tuple[float, float] | None = None
-        lower_wall: np.ndarray | None = None
-        lower_deposition: tuple[np.ndarray, ...] = ()
+        start_wall: np.ndarray | None = None
+        start_deposition: tuple[np.ndarray, ...] = ()
         # Where the head stands when the stretch begins, if it begins above two
         # pieces.  It only chooses which end of the first layer to start from,
         # so the crossing in is as short as the fill allows; it is never a
         # climb column, because the head arrives by travel, not by climbing.
-        head_xy: tuple[float, float] | None = None
+        start_head: tuple[float, float] | None = None
         if first_layer > 0:
-            lower_wall, lower_deposition = clay_below(rings[0])
-            head_xy = None if current is None else (current.x, current.y)
+            start_wall, start_deposition = clay_below(rings[0])
+            start_head = None if current is None else (current.x, current.y)
+        strips: dict[tuple[int, int], FillStrip | None] = {}
+        # Every weld asked of the interior, once: greedy's pass, the planner and
+        # the planned pass ask about the same fill ends and seams.
+        welds_asked: dict[
+            tuple[int, int, tuple[float, float], tuple[float, float]], np.ndarray | None
+        ] = {}
 
-        def cut(record: _ThreadBreak) -> None:
-            """End the thread here, name why, and let the next layer start one."""
+        def weld_of(
+            layer_index: int,
+            island_index: int,
+            start: tuple[float, float],
+            end: tuple[float, float],
+        ) -> np.ndarray | None:
+            key = (layer_index, island_index, start, end)
+            if key not in welds_asked:
+                welds_asked[key] = interior.weld_route(layer_index, island_index, start, end)
+            return welds_asked[key]
 
-            breaks.append(record)
-            if segments[-1]:
-                segments.append([])
+        def strip_of(
+            layer_index: int, island_index: int, upper_wall: np.ndarray
+        ) -> FillStrip | None:
+            key = (layer_index, island_index)
+            if key not in strips:
+                strips[key] = interior.fill_strip(
+                    layer_index, island_index, upper_wall, sliced.bead_width
+                )
+            return strips[key]
 
-        for ring in rings:
-            layer_index = ring.provenance.layer_index
-            island_index = ring.provenance.island_index
-            modulated = modulated_by_address[ring.provenance]
-            opening_head, head_xy = head_xy, None
-            fills = tuple(fill_islands_by_layer.get(layer_index, {}).get(island_index, ()))
-            # At most one island.  Its ribs may arrive as several pieces — a
-            # concavity or a hole splits a raster — and those pieces are linked
-            # to each other below by the same constructions that open the layer.
-            if not column and len(fills) != len(fill_by_layer.get(layer_index, ())):
-                # Fill on this layer belongs to an island this route does not
-                # own.  That is the multi-island scope, not a hard layer.
-                return None
+        def lay(plan: StretchPlan | None, exempt: GreedyRecord) -> _LaidThread | None:
+            """Lay the stretch: greedily with no plan, or exactly as planned."""
 
-            # Linking is quadratic in the piece count, so past this bound the
-            # layer is placed WITHOUT proving each link rather than either
-            # spending unbounded work or surrendering the form.  The pieces
-            # still print, in reach order, and the layer says it broke.
-            prove_links = len(fills) <= _MAX_LINKED_RIB_PIECES
-            if not prove_links:
-                cut(
-                    _ThreadBreak(
-                        layer_index,
-                        island_index,
-                        "linked_rib_pieces",
-                        len(fills),
-                        _MAX_LINKED_RIB_PIECES,
-                        "the layer's ribs arrive in more pieces than one pass will prove",
+            segments: list[list[_RingPath]] = [[]]
+            breaks: list[_ThreadBreak] = []
+            welds: dict[tuple[int, int], np.ndarray] = {}
+            # What greedy laid, so a plan's new joins can be told from today's.
+            joins: set[tuple[int, tuple[float, float], tuple[float, float]]] = set()
+            seams: set[tuple[int, tuple[float, float], int]] = set()
+            # Whether every join and weld the plan promised was proved again.
+            held = True
+            climb_xy: tuple[float, float] | None = None
+            lower_wall: np.ndarray | None = start_wall
+            lower_deposition: tuple[np.ndarray, ...] = start_deposition
+            head_xy: tuple[float, float] | None = start_head
+
+            def cut(record: _ThreadBreak) -> None:
+                """End the thread here, name why, and let the next layer start one."""
+
+                breaks.append(record)
+                if segments[-1]:
+                    segments.append([])
+
+            for stretch_position, ring in enumerate(rings):
+                layer_index = ring.provenance.layer_index
+                island_index = ring.provenance.island_index
+                modulated = modulated_by_address[ring.provenance]
+                opening_head, head_xy = head_xy, None
+                fills = tuple(fill_islands_by_layer.get(layer_index, {}).get(island_index, ()))
+                # At most one island.  Its ribs may arrive as several pieces — a
+                # concavity or a hole splits a raster — and those pieces are linked
+                # to each other below by the same constructions that open the layer.
+                if not column and len(fills) != len(fill_by_layer.get(layer_index, ())):
+                    # Fill on this layer belongs to an island this route does not
+                    # own.  That is the multi-island scope, not a hard layer.
+                    return None
+
+                # Linking is quadratic in the piece count, so past this bound the
+                # layer is placed WITHOUT proving each link rather than either
+                # spending unbounded work or surrendering the form.  The pieces
+                # still print, in reach order, and the layer says it broke.
+                prove_links = len(fills) <= _MAX_LINKED_RIB_PIECES
+                if not prove_links:
+                    cut(
+                        _ThreadBreak(
+                            layer_index,
+                            island_index,
+                            "linked_rib_pieces",
+                            len(fills),
+                            _MAX_LINKED_RIB_PIECES,
+                            "the layer's ribs arrive in more pieces than one pass will prove",
+                        )
+                    )
+
+                upper_wall = np.asarray(modulated.points, dtype=np.float64)
+                region = material_extent(upper_wall)
+                if region is None:
+                    # No usable material geometry, so nothing on this layer can be
+                    # proved against it.  The layer still prints.
+                    cut(
+                        _ThreadBreak(
+                            layer_index,
+                            island_index,
+                            "material_extent",
+                            None,
+                            None,
+                            "this layer's wall does not resolve to a material region",
+                        )
+                    )
+
+                opening_of = (
+                    # The first layer opens wherever its own fill begins: there is
+                    # no column below it yet, and its approach is the one startup
+                    # travel every print is allowed — or, above two pieces, the
+                    # crossing that reaches this stretch.
+                    None
+                    if climb_xy is None or lower_wall is None or region is None or not prove_links
+                    else partial(
+                        choose_layer_entry,
+                        layer_index=layer_index,
+                        island_index=island_index,
+                        climb_xy=climb_xy,
+                        lower_wall=lower_wall,
+                        upper_wall=upper_wall,
+                        lower_deposition=lower_deposition,
+                        current_region=region,
+                        bead_width=sliced.bead_width,
+                        wall_ride=whole_form,
                     )
                 )
 
-            upper_wall = np.asarray(modulated.points, dtype=np.float64)
-            region = material_extent(upper_wall)
-            if region is None:
-                # No usable material geometry, so nothing on this layer can be
-                # proved against it.  The layer still prints.
-                cut(
-                    _ThreadBreak(
-                        layer_index,
-                        island_index,
-                        "material_extent",
-                        None,
-                        None,
-                        "this layer's wall does not resolve to a material region",
+                if not fills:
+                    # Wall only.  The seam chains off the column below, so the
+                    # entry is at most one ring sample long and usually nothing at
+                    # all, and the climb lands straight onto the wall's own start.
+                    wall = _ring_path(
+                        ring,
+                        modulated,
+                        pattern,
+                        _seam_index(
+                            ring,
+                            modulated,
+                            pattern,
+                            climb_xy if climb_xy is not None else opening_head,
+                            source_layer_index=layer_index + sliced.source_layer_start,
+                        ),
+                        pattern_scale=(
+                            1.0
+                            if layer_pattern_scales is None
+                            else layer_pattern_scales.get(layer_index, 0.0)
+                        ),
+                        profile_z_offsets=profile_z_by_address.get(ring.provenance),
+                    )
+                    chosen = (
+                        None
+                        if opening_of is None
+                        else opening_of(
+                            fill_points=np.asarray(
+                                [(point.x, point.y) for point in wall.points], dtype=np.float64
+                            ),
+                            allow_reverse=False,
+                        )
+                    )
+                    if isinstance(chosen, GateFailure):
+                        cut(
+                            _ThreadBreak(
+                                layer_index,
+                                island_index,
+                                chosen.gate,
+                                chosen.measured,
+                                chosen.limit,
+                                chosen.detail,
+                            )
+                        )
+                        chosen = None
+                    wall = _RingPath(
+                        wall.ring, (*_entry_points(chosen, wall.points[0]), *wall.points)
+                    )
+                    segments[-1].append(wall)
+                    climb_xy = (wall.points[-1].x, wall.points[-1].y)
+                    lower_wall = upper_wall
+                    lower_deposition = (
+                        np.asarray([(point.x, point.y) for point in wall.points], dtype=np.float64),
+                    )
+                    continue
+
+                layer_plan = None if plan is None else plan.layers[stretch_position]
+                laid: list[np.ndarray] = []
+                deposited: list[_PathPoint] = []
+                position = climb_xy
+                if layer_plan is not None:
+                    # The planned order: every piece once, each the way round
+                    # the plan says, each reached by the same proved step greedy
+                    # takes — only which piece, which end, and where a crossing
+                    # lands differ.
+                    if sorted(index for index, _ in layer_plan.order) != list(range(len(fills))):
+                        raise FormStackError(
+                            f"layer {layer_index + 1}'s planned fill does not lay every piece once"
+                        )
+                    own_fill = LayerFill(
+                        [
+                            np.asarray([(point.x, point.y) for point in piece.points])
+                            for piece in fills
+                        ],
+                        sliced.bead_width,
+                    )
+                    leaving: tuple[int, int] | None = None
+                    # One layer's gates, built once from exactly the walls, clay
+                    # and outline every step on it is proved against.
+                    step_gates = (
+                        None
+                        if lower_wall is None or region is None
+                        else DirectStepGates(
+                            lower_wall=lower_wall,
+                            upper_wall=upper_wall,
+                            lower_deposition=lower_deposition,
+                            current_region=region,
+                            bead_width=sliced.bead_width,
+                            fill_strip=strip_of(layer_index, island_index, upper_wall),
+                        )
+                    )
+                    # A crossing the plan chose is proved as greedy proves a
+                    # step, without the band, so the reason it names is the
+                    # reason greedy would give.
+                    plain_gates = (
+                        None
+                        if lower_wall is None or region is None
+                        else DirectStepGates(
+                            lower_wall=lower_wall,
+                            upper_wall=upper_wall,
+                            lower_deposition=lower_deposition,
+                            current_region=region,
+                            bead_width=sliced.bead_width,
+                        )
+                    )
+                    for step, (index, backwards) in enumerate(layer_plan.order):
+                        piece = fills[index]
+                        ordered = tuple(reversed(piece.points)) if backwards else piece.points
+                        target = (ordered[0].x, ordered[0].y)
+                        if position is None or region is None or not prove_links:
+                            reach = None
+                        elif lower_wall is None:
+                            reach = (
+                                None
+                                if layer_index == 0
+                                else GateFailure(
+                                    "lower_clay_support",
+                                    False,
+                                    True,
+                                    "nothing printed on the layer below reaches under this "
+                                    "layer to carry a joining bead",
+                                )
+                            )
+                        else:
+                            crossing = layer_plan.linked[step] is False
+                            reach = choose_layer_entry(
+                                layer_index=layer_index,
+                                island_index=island_index,
+                                climb_xy=position,
+                                fill_points=np.asarray(
+                                    [(point.x, point.y) for point in ordered], dtype=np.float64
+                                ),
+                                lower_wall=lower_wall,
+                                upper_wall=upper_wall,
+                                lower_deposition=lower_deposition,
+                                current_region=region,
+                                bead_width=sliced.bead_width,
+                                allow_reverse=False,
+                                wall_ride=False,
+                                fill_strip=(
+                                    None
+                                    if crossing
+                                    else strip_of(layer_index, island_index, upper_wall)
+                                ),
+                                gates=plain_gates if crossing else step_gates,
+                            )
+                        if isinstance(reach, GateFailure):
+                            if layer_plan.linked[step]:
+                                held = False
+                            if deposited:
+                                opened = _RingPath(fills[0].ring, tuple(deposited))
+                                laid.append(
+                                    np.asarray(
+                                        [(point.x, point.y) for point in opened.points],
+                                        dtype=np.float64,
+                                    )
+                                )
+                                segments[-1].append(opened)
+                                deposited = []
+                            cut(
+                                _ThreadBreak(
+                                    layer_index,
+                                    island_index,
+                                    reach.gate,
+                                    reach.measured,
+                                    reach.limit,
+                                    reach.detail,
+                                )
+                            )
+                            reach = None
+                        elif (
+                            reach is not None
+                            and reach.entry_points is not None
+                            and (layer_index, position, target) not in exempt.joins
+                        ):
+                            # A join greedy would not have made may not lay
+                            # clay on this layer's other fill.
+                            trims = {index: 1 if backwards else 0}
+                            if leaving is not None:
+                                trims[leaving[0]] = leaving[1]
+                            if own_fill.relaid((position, target), trims) > RELAY_LIMIT_MM:
+                                held = False
+                        if not deposited:
+                            deposited.extend(_entry_points(reach, ordered[0]))
+                        else:
+                            deposited.extend(_link_points(reach, ordered[0]))
+                        deposited.extend(ordered)
+                        position = (deposited[-1].x, deposited[-1].y)
+                        leaving = (index, 0 if backwards else 1)
+                else:
+                    # Ribs first, in the order the head can reach them.  The
+                    # piece that opens the layer is the one with an end nearest
+                    # the climb column; each later piece is reached from where
+                    # the previous one finished, by the same three
+                    # constructions.  This is one forward pass with no
+                    # backtracking: a piece is placed and never reconsidered.
+                    pending = list(fills)
+                    while pending:
+                        if position is not None:
+                            piece = min(
+                                pending,
+                                key=lambda candidate: min(
+                                    math.dist(
+                                        position, (candidate.points[0].x, candidate.points[0].y)
+                                    ),
+                                    math.dist(
+                                        position, (candidate.points[-1].x, candidate.points[-1].y)
+                                    ),
+                                ),
+                            )
+                        elif opening_head is not None:
+                            piece = min(
+                                pending,
+                                key=lambda candidate: min(
+                                    math.dist(
+                                        opening_head, (candidate.points[0].x, candidate.points[0].y)
+                                    ),
+                                    math.dist(
+                                        opening_head,
+                                        (candidate.points[-1].x, candidate.points[-1].y),
+                                    ),
+                                ),
+                            )
+                        else:
+                            piece = pending[0]
+                        pending.remove(piece)
+                        piece_points = np.asarray(
+                            [(point.x, point.y) for point in piece.points], dtype=np.float64
+                        )
+                        if position is None or region is None or not prove_links:
+                            reach = None
+                        elif lower_wall is None:
+                            # Only the bed has no wall under it, and a link there lies
+                            # on the bed.  Anywhere else nothing below was found to
+                            # carry the bead, so the link is refused rather than laid
+                            # across the open fill.
+                            reach = (
+                                None
+                                if layer_index == 0
+                                else GateFailure(
+                                    "lower_clay_support",
+                                    False,
+                                    True,
+                                    "nothing printed on the layer below reaches under this layer "
+                                    "to carry a joining bead",
+                                )
+                            )
+                        else:
+                            reach = choose_layer_entry(
+                                layer_index=layer_index,
+                                island_index=island_index,
+                                climb_xy=position,
+                                fill_points=piece_points,
+                                lower_wall=lower_wall,
+                                upper_wall=upper_wall,
+                                lower_deposition=lower_deposition,
+                                current_region=region,
+                                bead_width=sliced.bead_width,
+                                # A ride lays clay on the wall line that the wall then
+                                # prints again, so a stretch never rides: it breaks.  A
+                                # form that is one piece all the way up still rides as
+                                # it always has (its bytes are pinned); that its rides
+                                # print its wall twice as well is reported, not changed
+                                # here.
+                                wall_ride=whole_form,
+                            )
+                        broke = isinstance(reach, GateFailure)
+                        if isinstance(reach, GateFailure):
+                            # No proved coil reaches this piece from where the head
+                            # stands.  The thread stops just short of it and starts
+                            # again on it: one travel, at this layer, named.  It is
+                            # never answered by dragging the head somewhere the clay
+                            # would have been easier to reach.
+                            if deposited:
+                                opened = _RingPath(fills[0].ring, tuple(deposited))
+                                laid.append(
+                                    np.asarray(
+                                        [(point.x, point.y) for point in opened.points],
+                                        dtype=np.float64,
+                                    )
+                                )
+                                segments[-1].append(opened)
+                                deposited = []
+                            cut(
+                                _ThreadBreak(
+                                    layer_index,
+                                    island_index,
+                                    reach.gate,
+                                    reach.measured,
+                                    reach.limit,
+                                    reach.detail,
+                                )
+                            )
+                            reach = None
+                        # Above two pieces the head arrives by crossing, so the first
+                        # piece starts from whichever of its ends is nearer.  So does a
+                        # piece a stretch had to break to reach: the crossing is the
+                        # whole cost of the break, and it should be the short one.
+                        # Reversing a trail lays the same clay the other way round.
+                        arrival = (
+                            opening_head
+                            if position is None
+                            else position
+                            if broke and not whole_form
+                            else None
+                        )
+                        reverse_opening = (
+                            reach is None
+                            and arrival is not None
+                            and math.dist(arrival, (piece.points[-1].x, piece.points[-1].y))
+                            < math.dist(arrival, (piece.points[0].x, piece.points[0].y))
+                        )
+                        ordered = (
+                            tuple(reversed(piece.points))
+                            if (reach is not None and reach.reversed_fill) or reverse_opening
+                            else piece.points
+                        )
+                        if reach is not None and reach.entry_points is not None:
+                            joins.add((layer_index, position, (ordered[0].x, ordered[0].y)))
+                        if not deposited:
+                            # Opening the layer: the climb belongs to this reach, and
+                            # it carries the transition's proof facts.
+                            deposited.extend(_entry_points(reach, ordered[0]))
+                        else:
+                            # Linking one piece to the next, on the layer the head is
+                            # already standing on.  No climb here — the only vertical
+                            # move in a layer is the one that entered it.
+                            deposited.extend(_link_points(reach, ordered[0]))
+                        deposited.extend(ordered)
+                        position = (deposited[-1].x, deposited[-1].y)
+
+                fill_path = _RingPath(fills[0].ring, tuple(deposited))
+                fill_end = (fill_path.points[-1].x, fill_path.points[-1].y)
+                # The seam is seated at the rib's end for every island here, dense
+                # or sparse: this route welds and then climbs from that same seam,
+                # so a seam anywhere else buys a longer weld and a worse column.
+                seam_at = (
+                    layer_plan.seam_index
+                    if layer_plan is not None and layer_plan.seam_index is not None
+                    else _seam_index(
+                        ring,
+                        modulated,
+                        pattern,
+                        fill_end,
+                        source_layer_index=layer_index + sliced.source_layer_start,
                     )
                 )
-
-            opening_of = (
-                # The first layer opens wherever its own fill begins: there is
-                # no column below it yet, and its approach is the one startup
-                # travel every print is allowed — or, above two pieces, the
-                # crossing that reaches this stretch.
-                None
-                if climb_xy is None or lower_wall is None or region is None or not prove_links
-                else partial(
-                    choose_layer_entry,
-                    layer_index=layer_index,
-                    island_index=island_index,
-                    climb_xy=climb_xy,
-                    lower_wall=lower_wall,
-                    upper_wall=upper_wall,
-                    lower_deposition=lower_deposition,
-                    current_region=region,
-                    bead_width=sliced.bead_width,
-                    wall_ride=whole_form,
-                )
-            )
-
-            if not fills:
-                # Wall only.  The seam chains off the column below, so the
-                # entry is at most one ring sample long and usually nothing at
-                # all, and the climb lands straight onto the wall's own start.
                 wall = _ring_path(
                     ring,
                     modulated,
                     pattern,
-                    _seam_index(
-                        ring,
-                        modulated,
-                        pattern,
-                        climb_xy if climb_xy is not None else opening_head,
-                        source_layer_index=layer_index + sliced.source_layer_start,
-                    ),
+                    seam_at,
                     pattern_scale=(
                         1.0
                         if layer_pattern_scales is None
@@ -1081,234 +1505,167 @@ def build_form_move_stream(
                     ),
                     profile_z_offsets=profile_z_by_address.get(ring.provenance),
                 )
-                chosen = (
-                    None
-                    if opening_of is None
-                    else opening_of(
-                        fill_points=np.asarray(
-                            [(point.x, point.y) for point in wall.points], dtype=np.float64
-                        ),
-                        allow_reverse=False,
-                    )
+                route = weld_of(
+                    layer_index,
+                    island_index,
+                    fill_end,
+                    (wall.points[0].x, wall.points[0].y),
                 )
-                if isinstance(chosen, GateFailure):
+                if route is None:
+                    if layer_plan is not None and layer_plan.welded:
+                        held = False
+                    # No proved bead from the ribs out to the wall.  Lifting here
+                    # and still calling the result one thread would be a lie, so the
+                    # thread ends at the ribs and the wall opens the next one — the
+                    # break is this layer's, and it says so.
+                    segments[-1].append(fill_path)
                     cut(
                         _ThreadBreak(
                             layer_index,
                             island_index,
-                            chosen.gate,
-                            chosen.measured,
-                            chosen.limit,
-                            chosen.detail,
+                            "interior_weld_route",
+                            None,
+                            None,
+                            "no proved bead runs from this layer's ribs out to its wall",
                         )
                     )
-                    chosen = None
-                wall = _RingPath(wall.ring, (*_entry_points(chosen, wall.points[0]), *wall.points))
-                segments[-1].append(wall)
+                    segments[-1].append(wall)
+                else:
+                    if layer_plan is None:
+                        seams.add((layer_index, fill_end, seam_at))
+                    elif (layer_index, fill_end, seam_at) not in exempt.welds:
+                        # A weld greedy would not have laid may not lay clay
+                        # on this layer's other fill either, and stands on the
+                        # clay below by the half bead every join does.
+                        last_index, last_backwards = layer_plan.order[-1]
+                        if (
+                            own_fill.relaid(route, {last_index: 0 if last_backwards else 1})
+                            > RELAY_LIMIT_MM
+                        ):
+                            held = False
+                        if layer_index > 0 and (
+                            step_gates is None or not step_gates.stands_on_clay(route)
+                        ):
+                            held = False
+                    welds[(layer_index, island_index)] = route
+                    if len(route) > 2:
+                        fill_path = _extended_path(fill_path, route[1:-1])
+                    segments[-1].extend((fill_path, wall))
+                # A closed ring ends where it began, so the wall's last point IS
+                # the next layer's climb column.
                 climb_xy = (wall.points[-1].x, wall.points[-1].y)
                 lower_wall = upper_wall
+                laid.append(
+                    np.asarray([(point.x, point.y) for point in fill_path.points], dtype=np.float64)
+                )
+                # Every stretch this layer laid supports the next one, not only the
+                # stretch that happened to be last before a break.
                 lower_deposition = (
+                    *laid,
                     np.asarray([(point.x, point.y) for point in wall.points], dtype=np.float64),
                 )
-                continue
 
-            # Ribs first, in the order the head can reach them.  The piece that
-            # opens the layer is the one with an end nearest the climb column;
-            # each later piece is reached from where the previous one finished,
-            # by the same three constructions.  This is one forward pass with no
-            # backtracking: a piece is placed and never reconsidered.
-            pending = list(fills)
-            laid: list[np.ndarray] = []
-            deposited: list[_PathPoint] = []
-            position = climb_xy
-            while pending:
-                if position is not None:
-                    piece = min(
-                        pending,
-                        key=lambda candidate: min(
-                            math.dist(position, (candidate.points[0].x, candidate.points[0].y)),
-                            math.dist(position, (candidate.points[-1].x, candidate.points[-1].y)),
-                        ),
-                    )
-                elif opening_head is not None:
-                    piece = min(
-                        pending,
-                        key=lambda candidate: min(
-                            math.dist(opening_head, (candidate.points[0].x, candidate.points[0].y)),
-                            math.dist(
-                                opening_head, (candidate.points[-1].x, candidate.points[-1].y)
-                            ),
-                        ),
-                    )
-                else:
-                    piece = pending[0]
-                pending.remove(piece)
-                piece_points = np.asarray(
-                    [(point.x, point.y) for point in piece.points], dtype=np.float64
-                )
-                if position is None or region is None or not prove_links:
-                    reach = None
-                elif lower_wall is None:
-                    # Only the bed has no wall under it, and a link there lies
-                    # on the bed.  Anywhere else nothing below was found to
-                    # carry the bead, so the link is refused rather than laid
-                    # across the open fill.
-                    reach = (
-                        None
-                        if layer_index == 0
-                        else GateFailure(
-                            "lower_clay_support",
-                            False,
-                            True,
-                            "nothing printed on the layer below reaches under this layer "
-                            "to carry a joining bead",
-                        )
-                    )
-                else:
-                    reach = choose_layer_entry(
+            return _LaidThread(
+                segments, welds, breaks, held, GreedyRecord(frozenset(joins), frozenset(seams))
+            )
+
+        def planned(greedy: _LaidThread) -> StretchPlan | None:
+            """The plan for a stretch that broke, or None where there is nothing to plan."""
+
+            layers: list[StretchLayer] = []
+            for ring in rings:
+                layer_index = ring.provenance.layer_index
+                island_index = ring.provenance.island_index
+                modulated = modulated_by_address[ring.provenance]
+                fills = tuple(fill_islands_by_layer.get(layer_index, {}).get(island_index, ()))
+                upper_wall = np.asarray(modulated.points, dtype=np.float64)
+                region = material_extent(upper_wall)
+                if len(fills) > _MAX_LINKED_RIB_PIECES or region is None:
+                    # Links laid unproved, or no outline to prove them in: the
+                    # thread there is greedy's and is not second-guessed.
+                    return None
+                proof = interior.proofs.get((layer_index, island_index))
+                layers.append(
+                    StretchLayer(
                         layer_index=layer_index,
-                        island_index=island_index,
-                        climb_xy=position,
-                        fill_points=piece_points,
-                        lower_wall=lower_wall,
-                        upper_wall=upper_wall,
-                        lower_deposition=lower_deposition,
-                        current_region=region,
-                        bead_width=sliced.bead_width,
-                        # A ride lays clay on the wall line that the wall then
-                        # prints again, so a stretch never rides: it breaks.  A
-                        # form that is one piece all the way up still rides as
-                        # it always has (its bytes are pinned); that its rides
-                        # print its wall twice as well is reported, not changed
-                        # here.
-                        wall_ride=whole_form,
+                        pieces=tuple(
+                            np.asarray([(point.x, point.y) for point in piece.points])
+                            for piece in fills
+                        ),
+                        ring=upper_wall,
+                        region=region,
+                        fill_strip=(
+                            strip_of(layer_index, island_index, upper_wall) if fills else None
+                        ),
+                        default_seam=partial(
+                            _seam_index,
+                            ring,
+                            modulated,
+                            pattern,
+                            source_layer_index=layer_index + sliced.source_layer_start,
+                        ),
+                        weld=partial(weld_of, layer_index, island_index),
+                        weld_ride_limit=0.0 if proof is None else proof.weld_ride_limit,
                     )
-                broke = isinstance(reach, GateFailure)
-                if isinstance(reach, GateFailure):
-                    # No proved coil reaches this piece from where the head
-                    # stands.  The thread stops just short of it and starts
-                    # again on it: one travel, at this layer, named.  It is
-                    # never answered by dragging the head somewhere the clay
-                    # would have been easier to reach.
-                    if deposited:
-                        opened = _RingPath(fills[0].ring, tuple(deposited))
-                        laid.append(
-                            np.asarray(
-                                [(point.x, point.y) for point in opened.points], dtype=np.float64
-                            )
-                        )
-                        segments[-1].append(opened)
-                        deposited = []
-                    cut(
-                        _ThreadBreak(
-                            layer_index,
-                            island_index,
-                            reach.gate,
-                            reach.measured,
-                            reach.limit,
-                            reach.detail,
-                        )
-                    )
-                    reach = None
-                # Above two pieces the head arrives by crossing, so the first
-                # piece starts from whichever of its ends is nearer.  So does a
-                # piece a stretch had to break to reach: the crossing is the
-                # whole cost of the break, and it should be the short one.
-                # Reversing a trail lays the same clay the other way round.
-                arrival = (
-                    opening_head
-                    if position is None
-                    else position
-                    if broke and not whole_form
-                    else None
                 )
-                reverse_opening = (
-                    reach is None
-                    and arrival is not None
-                    and math.dist(arrival, (piece.points[-1].x, piece.points[-1].y))
-                    < math.dist(arrival, (piece.points[0].x, piece.points[0].y))
-                )
-                ordered = (
-                    tuple(reversed(piece.points))
-                    if (reach is not None and reach.reversed_fill) or reverse_opening
-                    else piece.points
-                )
-                if not deposited:
-                    # Opening the layer: the climb belongs to this reach, and
-                    # it carries the transition's proof facts.
-                    deposited.extend(_entry_points(reach, ordered[0]))
-                else:
-                    # Linking one piece to the next, on the layer the head is
-                    # already standing on.  No climb here — the only vertical
-                    # move in a layer is the one that entered it.
-                    deposited.extend(_link_points(reach, ordered[0]))
-                deposited.extend(ordered)
-                position = (deposited[-1].x, deposited[-1].y)
+            return plan_stretch(
+                layers,
+                bead_width=sliced.bead_width,
+                opening_head=start_head,
+                first_lower_wall=start_wall,
+                first_lower_deposition=start_deposition,
+                seam_free=pattern.settings.seam is SeamPolicy.CHAINED,
+                greedy=greedy.record,
+                lift=profile.travel_policy.lift,
+                exit_landings=leaving_to,
+            )
 
-            fill_path = _RingPath(fills[0].ring, tuple(deposited))
-            fill_end = (fill_path.points[-1].x, fill_path.points[-1].y)
-            # The seam is seated at the rib's end for every island here, dense
-            # or sparse: this route welds and then climbs from that same seam,
-            # so a seam anywhere else buys a longer weld and a worse column.
-            wall = _ring_path(
-                ring,
-                modulated,
-                pattern,
-                _seam_index(
-                    ring,
-                    modulated,
-                    pattern,
-                    fill_end,
-                    source_layer_index=layer_index + sliced.source_layer_start,
-                ),
-                pattern_scale=(
-                    1.0
-                    if layer_pattern_scales is None
-                    else layer_pattern_scales.get(layer_index, 0.0)
-                ),
-                profile_z_offsets=profile_z_by_address.get(ring.provenance),
-            )
-            route = interior.weld_route(
-                layer_index,
-                island_index,
-                fill_end,
-                (wall.points[0].x, wall.points[0].y),
-            )
-            if route is None:
-                # No proved bead from the ribs out to the wall.  Lifting here
-                # and still calling the result one thread would be a lie, so the
-                # thread ends at the ribs and the wall opens the next one — the
-                # break is this layer's, and it says so.
-                segments[-1].append(fill_path)
-                cut(
-                    _ThreadBreak(
-                        layer_index,
-                        island_index,
-                        "interior_weld_route",
-                        None,
-                        None,
-                        "no proved bead runs from this layer's ribs out to its wall",
-                    )
+        def crossing_mm(thread: _LaidThread) -> float:
+            """What a thread's crossings lay off the line, counted as the plan ranks them.
+
+            Each break's lift, move across and lowering; the move onto the
+            stretch from where the head stands; and the move out of it to the
+            nearest place what prints next may start.
+            """
+
+            laid = [segment for segment in thread.segments if segment]
+            if not laid:
+                return 0.0
+            first = laid[0][0].points[0]
+            last = laid[-1][-1].points[-1]
+            total = 0.0 if start_head is None else math.dist(start_head, (first.x, first.y))
+            for before, after in pairwise(laid):
+                end, start = before[-1].points[-1], after[0].points[0]
+                total += 2.0 * max(0.0, profile.travel_policy.lift) + math.dist(
+                    (end.x, end.y), (start.x, start.y)
                 )
-                segments[-1].append(wall)
-            else:
-                welds[(layer_index, island_index)] = route
-                if len(route) > 2:
-                    fill_path = _extended_path(fill_path, route[1:-1])
-                segments[-1].extend((fill_path, wall))
-            # A closed ring ends where it began, so the wall's last point IS
-            # the next layer's climb column.
-            climb_xy = (wall.points[-1].x, wall.points[-1].y)
-            lower_wall = upper_wall
-            laid.append(
-                np.asarray([(point.x, point.y) for point in fill_path.points], dtype=np.float64)
-            )
-            # Every stretch this layer laid supports the next one, not only the
-            # stretch that happened to be last before a break.
-            lower_deposition = (
-                *laid,
-                np.asarray([(point.x, point.y) for point in wall.points], dtype=np.float64),
-            )
+            if leaving_to is not None and len(leaving_to):
+                total += float(
+                    np.min(np.hypot(leaving_to[:, 0] - last.x, leaving_to[:, 1] - last.y))
+                )
+            return total
+
+        laid_greedy = lay(None, _NO_GREEDY)
+        if laid_greedy is None:
+            return None
+        kept = laid_greedy
+        # A form that is one piece all the way up keeps its route and its bytes.
+        # A stretch that broke is planned, and the plan is laid through the same
+        # proofs; it stands only if everything it promised held, it breaks
+        # strictly less often, and its crossings lay no more off the line in
+        # all.  Otherwise greedy's thread stands, as it was.
+        if plan_threads and not whole_form and laid_greedy.breaks:
+            plan = planned(laid_greedy)
+            if plan is not None and plan.breaks < len(laid_greedy.breaks):
+                laid_plan = lay(plan, laid_greedy.record)
+                if (
+                    laid_plan is not None
+                    and laid_plan.held
+                    and len(laid_plan.breaks) < len(laid_greedy.breaks)
+                    and crossing_mm(laid_plan) <= crossing_mm(laid_greedy) + 1e-9
+                ):
+                    kept = laid_plan
+        segments, welds, breaks = kept.segments, kept.welds, kept.breaks
 
         # Measured, not guessed: a line that stops more often than it holds is
         # not a thread, and calling it one would cost the layers their welds as
@@ -1349,32 +1706,87 @@ def build_form_move_stream(
     # order, so the pieces-apart warning can count what stacking cost there.
     stacked_spans: list[tuple[int, int, StackPlan]] = []
 
+    spans_planned: dict[int, tuple[StackedInterval, ...]] = {}
+
     def stack_spans(band: WallBand) -> tuple[StackedInterval, ...]:
         """The band's layers cut where its tracks stop being separate pieces, planned.
 
         With Stack pieces off, or a band this route does not stack, the band is
-        one interval with no plan, and prints exactly as it always has.
+        one interval with no plan, and prints exactly as it always has.  Planned
+        once per band: a stretch below it asks where it starts before it prints.
         """
 
         if not stacking:
             return (StackedInterval(band.span.first_layer, band.span.last_layer, None),)
-        return stack_plan_for_band(
-            band,
-            sliced,
-            pattern,
-            profile,
-            modulated_by_address,
-            fill_points=lambda address: tuple(
-                np.asarray([(point.x, point.y) for point in fill.points], dtype=np.float64)
-                for fill in fill_islands_by_layer.get(address.layer_index, {}).get(
-                    address.island_index, ()
-                )
-            ),
-            first_stackable_layer=0 if interior_filled else fill_layers,
-            flow_multiplier=flow_multiplier,
-        )
+        if band.index not in spans_planned:
+            spans_planned[band.index] = stack_plan_for_band(
+                band,
+                sliced,
+                pattern,
+                modulated_by_address,
+                first_stackable_layer=0 if interior_filled else fill_layers,
+                flow_multiplier=flow_multiplier,
+            )
+        return spans_planned[band.index]
 
-    def stack_interval(interval: StackedInterval) -> None:
+    def landings_on(layer_index: int, island_index: int | None) -> np.ndarray | None:
+        """Where a line that starts on this layer, or this piece of it, may start.
+
+        Every end of its fill, which a thread opens on whichever is nearest; or
+        where it has none, every point of its wall.
+        """
+
+        if layer_index >= len(sliced.layers):
+            return None
+        points = [
+            (end.x, end.y)
+            for island, pieces in fill_islands_by_layer.get(layer_index, {}).items()
+            if island_index is None or island == island_index
+            for piece in pieces
+            for end in (piece.points[0], piece.points[-1])
+        ]
+        if not points:
+            points = [
+                (float(point[0]), float(point[1]))
+                for ring in sliced.layers[layer_index].rings
+                if island_index is None or ring.provenance.island_index == island_index
+                for point in np.asarray(modulated_by_address[ring.provenance].points)
+            ]
+        return np.asarray(points, dtype=np.float64) if points else None
+
+    def band_landings(band: WallBand, interval_index: int = 0) -> np.ndarray | None:
+        """Where the band's ``interval_index``-th interval starts to print."""
+
+        intervals = stack_spans(band)
+        if interval_index >= len(intervals):
+            return None
+        interval = intervals[interval_index]
+        if interval.plan is not None and interval.plan.chunks:
+            column, chunk_first, _chunk_last = interval.plan.chunks[0]
+            ring = by_address[interval.columns[column][chunk_first - interval.first_layer]]
+            return landings_on(chunk_first, ring.provenance.island_index)
+        layer_index = interval.first_layer
+        islands = fill_islands_by_layer.get(layer_index, {})
+        if interior_filled and layer_index < fill_layers and islands:
+            # Layer by layer, a layer's first island opens on its first rib,
+            # wherever the head stands.
+            first_fill = next(iter(islands.values()))
+            if first_fill:
+                start = first_fill[0].points[0]
+                return np.asarray(((start.x, start.y),), dtype=np.float64)
+        return landings_on(layer_index, None)
+
+    def group_landings(position: int) -> np.ndarray | None:
+        """Where the ``position``-th group of bands starts to print, if there is one."""
+
+        if position >= len(stretches):
+            return None
+        threaded, bands = stretches[position]
+        if threaded:
+            return landings_on(bands[0].span.first_layer, None)
+        return band_landings(bands[0])
+
+    def stack_interval(interval: StackedInterval, then: np.ndarray | None = None) -> None:
         """Print one interval of separate pieces a few layers of a piece at a time.
 
         The order was planned from each piece's outline, height and print time
@@ -1420,11 +1832,19 @@ def build_form_move_stream(
                     paths.append(path)
                     previous_seam = (path.points[0].x, path.points[0].y)
                 wall_paths.append(paths)
-        for column, chunk_first, chunk_last in plan.chunks:
+        for chunk_position, (column, chunk_first, chunk_last) in enumerate(plan.chunks):
             rings = columns[column][chunk_first - first : chunk_last - first + 1]
             island = rings[0].provenance.island_index
             if interior_filled:
-                thread = thread_through(rings, whole_form=False, column=True)
+                if chunk_position + 1 < len(plan.chunks):
+                    next_column, next_first, _next_last = plan.chunks[chunk_position + 1]
+                    leaving_to = landings_on(
+                        next_first,
+                        columns[next_column][next_first - first].provenance.island_index,
+                    )
+                else:
+                    leaving_to = then
+                thread = thread_through(rings, whole_form=False, column=True, leaving_to=leaving_to)
                 if thread is None:
                     raise FormStackError(
                         f"layers {chunk_first + 1}-{chunk_last + 1} of piece {island + 1} "
@@ -1476,8 +1896,17 @@ def build_form_move_stream(
     stretches = thread_groups()
     whole_form = len(stretches) == 1 and stretches[0][0]
     processed_fill_layers: set[int] = set()
-    for threaded, group_bands in stretches:
-        thread = continuous_thread_paths(group_bands, whole_form=whole_form) if threaded else None
+    for group_position, (threaded, group_bands) in enumerate(stretches):
+        thread = (
+            continuous_thread_paths(
+                group_bands,
+                whole_form=whole_form,
+                # A whole form is never planned, so it never asks.
+                leaving_to=None if whole_form else group_landings(group_position + 1),
+            )
+            if threaded
+            else None
+        )
         if thread is not None:
             thread_segments, thread_welds, thread_breaks = thread
             resolved_welds.update(thread_welds)
@@ -1511,7 +1940,7 @@ def build_form_move_stream(
                 )
             )
             continue
-        for band in group_bands:
+        for band_position, band in enumerate(group_bands):
             rings_by_track = tuple(
                 tuple(by_address[address] for address in track.rings) for track in band.tracks
             )
@@ -1586,9 +2015,18 @@ def build_form_move_stream(
             # every deposited Z monotonic and gives each ring its own paste-safe
             # run/travel boundary.  With Stack pieces on, an interval of
             # separate pieces prints a few layers of a piece at a time instead.
-            for interval in stack_spans(band):
+            intervals = stack_spans(band)
+            for interval_position, interval in enumerate(intervals):
                 if interval.plan is not None:
-                    stack_interval(interval)
+                    # What prints after the interval's last piece: the band's
+                    # next interval, the group's next band, or the next group.
+                    if interval_position + 1 < len(intervals):
+                        then = band_landings(band, interval_position + 1)
+                    elif band_position + 1 < len(group_bands):
+                        then = band_landings(group_bands[band_position + 1])
+                    else:
+                        then = group_landings(group_position + 1)
+                    stack_interval(interval, then)
                     continue
                 for layer_index in range(interval.first_layer, interval.last_layer + 1):
                     if layer_index in processed_fill_layers:
@@ -1709,6 +2147,7 @@ def build_form_move_stream(
             profile,
             job_id=job_id,
             zblend_path=zblend_path,
+            plan_threads=False,
         )
         slice_warnings = _stacked_pieces_apart(
             sliced.warnings,
@@ -1744,36 +2183,25 @@ def stack_plan_for_band(
     band: WallBand,
     sliced: SlicedForm,
     pattern: Pattern,
-    profile: Profile,
     modulated_by_address: dict[RingProvenance, ModulatedRing],
     *,
-    fill_points: Callable[[RingProvenance], Sequence[np.ndarray]],
     first_stackable_layer: int,
     flow_multiplier: float = 1.0,
 ) -> tuple[StackedInterval, ...]:
     """Stack pieces' plan for one band, from geometry alone.
 
     The one place the form stack and the drag preview both ask, so the order
-    the file prints in is the order the preview draws.  A layer's time is its
-    wall and its fill at the profile's print speed (the first layer's slower
-    speed on the first layer).  The clay the nozzle must clear is taken as wide
-    as the job lays it at its fullest: the coil width times the clay flow and
-    the pattern's own widest flow, never narrower than the coil width.
+    the file prints in is the order the preview draws.  The clay the nozzle
+    must clear is taken as wide as the job lays it at its fullest: the coil
+    width times the clay flow and the pattern's own widest flow, never
+    narrower than the coil width.
     """
-
-    def seconds_of(address: RingProvenance) -> float:
-        speed = profile.first_layer_speed() if address.layer_index == 0 else profile.speed_default
-        wall = np.asarray(modulated_by_address[address].points, dtype=np.float64)
-        return path_seconds(wall, speed) + sum(
-            path_seconds(points, speed) for points in fill_points(address)
-        )
 
     rings = {ring.provenance: ring for layer in sliced.layers for ring in layer.rings}
     return plan_band(
         band,
         rings.__getitem__,
         lambda address: np.asarray(modulated_by_address[address].points, dtype=np.float64),
-        seconds_of,
         filled=pattern.settings.interior != "hollow",
         seam=pattern.settings.seam,
         rule=ClearanceRule(

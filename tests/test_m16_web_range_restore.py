@@ -143,7 +143,7 @@ def test_the_web_restore_button_lives_with_the_pattern_and_brings_back_only_it()
     artist's current job and this button must not touch any of them."""
 
     pattern_section = HTML[
-        HTML.index('data-weave-section="oscilloscope"') : HTML.index('data-weave-section="printer"')
+        HTML.index('data-weave-section="pattern"') : HTML.index('data-weave-section="inside"')
     ]
     for control in ("weavePatternSave", "weavePatternLoad", "weaveRestoreButton"):
         assert f'id="{control}"' in pattern_section

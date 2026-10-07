@@ -6,7 +6,7 @@ Clayline's starting numbers are reasonable, not measured. Your clay, your pressu
 
 Print a single pass of a simple design, a straight line or a gallery tile at one pass, at your usual pressure and speed. Measure the laid coil with calipers in a few places.
 
-If it's wider or narrower than the nozzle opening, tell Clayline. In Draw in Clay, open **Advanced** under 03 Layers, choose **Measured**, and enter the width. In Weave, enter it as **Coil width** under Advanced in 02 Slice. The side-by-side spacing, the join depth, and the clay estimate all follow from this number.
+If it's wider or narrower than the nozzle opening, tell Clayline. In Draw in Clay, open **Advanced** under 03 Layers, choose **Measured**, and enter the width. In Weave, enter it as **Coil width** under Advanced in 02 Printer and coil. The side-by-side spacing, the join depth, and the clay estimate all follow from this number.
 
 ## 2. Clay flow
 

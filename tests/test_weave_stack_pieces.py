@@ -425,7 +425,7 @@ def test_an_arch_prints_its_merged_layer_after_both_legs(tmp_path: Path) -> None
     assert max(len({m.layer_index for m in run}) for run in _runs(on)) >= 2
 
 
-# --- order, guard, restore --------------------------------------------------
+# --- order, restore --------------------------------------------------------
 
 
 def test_plan_emission_and_preview_are_one_order(
@@ -459,54 +459,19 @@ def test_plan_emission_and_preview_are_one_order(
     assert previewed == planned
 
 
-def _layer_starts(result: WeaveResult) -> dict[tuple[int, int], float]:
-    """When each piece-layer starts printing, from the moves and their feeds."""
-
-    profile = result.profile
-    clock = 0.0
-    starts: dict[tuple[int, int], float] = {}
-    previous: Move | None = None
-    for move in result.emission.stream.moves:
-        if previous is not None and move.x is not None:
-            length = math.dist((previous.x, previous.y, previous.z), (move.x, move.y, move.z))
-            speed = move.feed_mm_s or (
-                profile.speed_default if move.kind is MoveKind.PRINT else profile.speed_travel
-            )
-            clock += length / speed
-        if move.kind is MoveKind.PRINT:
-            starts.setdefault((move.layer_index, _piece(move)), clock)
-        previous = move
-    return starts
-
-
-def test_the_slump_guard_holds_a_quick_piece(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_quick_piece_stacks_without_waiting(tmp_path: Path) -> None:
+    # Pete (2026-10-07) had the five-second wait between a piece's layers taken
+    # out: a small piece far enough from the big one now gets several layers in
+    # a row instead of taking turns one layer at a time.
     _path, sliced = _slice(tmp_path, _big_and_small)
     on = _modulate(sliced, stack=True)
-    starts = _layer_starts(on)
     small = 1
 
     assert on.emission.lint_report.ok
-    layers = sorted(layer for layer, piece in starts if piece == small)
-    for below, above in pairwise(layers):
-        gap = starts[(above, small)] - starts[(below, small)]
-        assert gap >= weave_stack.SLUMP_GUARD_SECONDS - 1e-6, (above, gap)
-    assert all(
-        len({m.layer_index for m in run}) == 1 for run in _runs(on) if _piece(run[0]) == small
-    )
-
-    # The guard, not the nozzle, is what held it: without the guard it stacks.
-    real = weave_stack.plan_order
-    monkeypatch.setattr(
-        weave_stack,
-        "plan_order",
-        lambda columns, rule, **kwargs: real(columns, rule, **{**kwargs, "guard_seconds": 0.0}),
-    )
-    unguarded = _modulate(sliced, stack=True)
     assert any(
-        len({m.layer_index for m in run}) > 1 for run in _runs(unguarded) if _piece(run[0]) == small
+        len({m.layer_index for m in run}) > 1 for run in _runs(on) if _piece(run[0]) == small
     )
+    assert not hasattr(weave_stack, "SLUMP_GUARD_SECONDS")
 
 
 @pytest.mark.parametrize("keep_clay_flowing", [False, True])
@@ -749,7 +714,7 @@ def test_the_pieces_apart_warning_says_why_stacking_did_not_save_crossings(
         ),
         layer_span=LayerSpan(2, 5),
     )
-    plan = weave_stack.StackPlan(((0, 2), (0, 3), (1, 2), (1, 3)), 0, 0)
+    plan = weave_stack.StackPlan(((0, 2), (0, 3), (1, 2), (1, 3)))
     (said,) = _stacked_pieces_apart([warning], [(2, 3, plan)], {2: now}, {2: before})
     assert words in said.message
     assert "found no layers" not in said.message

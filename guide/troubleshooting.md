@@ -43,19 +43,19 @@ The preview is showing **Sliced**, the checked path from the last slice. Slice a
 ## In Weave
 
 **The sliced rings look like a tangled contour map instead of stacked walls.**
-The model's up axis is wrong. Change **Up axis** under 01 Model. Rhino exports are usually Y up.
+The model's up axis is wrong. Change **Up axis** under **Advanced** in 01 Form. Rhino exports are usually Y up.
 
 **The model loads at the wrong size.**
-Clayline assumes one unit in the file is one millimetre. Type the real height on the size line under 01 Model and the whole form scales with it.
+Clayline assumes one unit in the file is one millimetre. Type the real height on the size line under 01 Form and the whole form scales with it.
 
 **Solid or Infill can't be chosen.**
-Vase mode is on. Turn it off under 04 Vase mode first.
+Vase mode is on. Turn it off under 03 Wall first.
 
 **Download G-code is greyed out.**
 It unlocks after the final path passes every check, and so does **File → Export G-code…**. Look at Warnings in Before you print for what's holding it.
 
 **I want the pattern off a print file I made last month.**
-Use **Restore pattern from G-code…** under 06 Weave pattern: only the pattern comes back, and the form on the table, its size, the layers and the range stay exactly as you have them. Drop the print file on the box under 01 Model instead and every setting of that job comes back, placement, layers, range, pattern and printer; it then names the model it was sliced from, and loading that model rebuilds the job. A project you saved beside the print file still opens as one piece.
+Use **Restore pattern from G-code…** under 04 Pattern: only the pattern comes back, and the form on the table, its size, the layers and the range stay exactly as you have them. Drop the print file on the box under 01 Form instead and every setting of that job comes back, placement, layers, range, pattern and printer; it then names the model it was sliced from, and loading that model rebuilds the job. A project you saved beside the print file still opens as one piece.
 
 ## The app
 

@@ -2,6 +2,26 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.8.2 — 2026-10-07
+
+### Fixed
+- **Fewer crossings where the form is one piece.** Where a layer's fill comes
+  in separate parts, the line now joins them in the order that crosses least,
+  and a step onto a rib end in an inward corner of the wall is no longer
+  refused by a hair. On a head with a split near the top, the short crossings
+  that stacked up layer after layer on the upper shoulder are gone. Nothing is
+  printed twice and no new clay is laid over open fill; where the parts of the
+  fill are more than a coil apart, the nozzle still crosses.
+- **Stack pieces no longer waits five seconds between a piece's layers,** so
+  a small piece stacks several layers in a row instead of taking turns one
+  layer at a time.
+- **A new Weave job starts with a flat pattern,** not a sine wave.
+- **Weave's settings are in a new order:** Form, Printer and coil, Wall,
+  Pattern, Inside and floor, then Print. Each setting sits with what it
+  changes: the printer, nozzle and clay flow together near the top, the
+  pattern right after the wall, the bottom with the inside, and Print selected
+  layers and Stack pieces at the end. Nothing works differently.
+
 ## 0.8.1 — 2026-10-06
 
 ### New

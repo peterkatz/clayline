@@ -45,7 +45,7 @@
   const DISABLED_REASONS = Object.freeze({
     amplitude: "Amplitude has no visible effect while the wave is flat.",
     wavelength: "Wavelength has no visible effect while the wave is flat.",
-    twist: "Twist has no visible effect while the wave is flat.",
+    twist: "Amplitude, Wavelength, Twist and Wave depth have no visible effect while the wave is flat.",
     followForm: "Form following has no visible effect while the wave is flat.",
     extrusionPhase: "Extrusion phase has no effect while the extrusion track is flat.",
     // Overlap sets the spacing of DENSE fill only: the bottom, a solid
@@ -84,7 +84,7 @@
       + "once every turn. Choose a hollow interior to climb in one coil again.",
     interiorNeedsLayers:
       "A solid or infill interior needs discrete layers. Turn Vase mode · spiral rise off to fill the interior.",
-    infillRamp: "No effect while Cap layers is 0.",
+    infillRamp: "No effect while Roof layers is 0.",
     // Stack pieces is refused by the engine beside vase mode and profile
     // blend (weave_models._validate_stack_exclusions); the switch says why.
     stackNeedsLayers:

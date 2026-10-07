@@ -154,6 +154,289 @@ class InfillChainPlan:
             raise ValueError("an infill chain's layer indices must be consecutive")
 
 
+@dataclass(frozen=True, slots=True)
+class FillStrip:
+    """The band between one sparse island's wall line and the inset its ribs end on.
+
+    Every rib is clipped to the island's mitred inset, half a bead inside the
+    wall line.  Along a straight or outward-curving wall that inset runs exactly
+    half a bead in, inside the wall corridor a step is proved against.  At an
+    inward corner of the wall it does not: a mitred inset keeps its sharp
+    corner, so the rib ends there stand MORE than half a bead from the wall line,
+    in a pocket the round corridor never reaches — measured on Pete's head job,
+    steps of 2.5-3.8 mm between two rib ends refused for leaving the corridor by
+    0.003-0.16 mm.  Nothing lies in that pocket: the ribs stop at its inner edge
+    and the wall runs along its outer one.
+
+    ``region`` is the band itself, bounded to one bead of the wall line so a
+    chamber whose own inset was dropped can never be taken for band.
+    ``boundaries`` are the insets' rings, and a step may only use the band to
+    LAND on one of them — on a rib's end — at the fill's own endpoint slack.
+    """
+
+    region: BaseGeometry
+    boundaries: tuple[LineString, ...]
+    slack: float
+
+    def lands_on_rib(self, point: tuple[float, float]) -> bool:
+        target = Point(point)
+        return any(target.distance(boundary) <= self.slack for boundary in self.boundaries)
+
+
+class DirectStepGates:
+    """The gates one layer's direct steps are proved by, built once and asked many times.
+
+    :func:`prove_direct_wall_entry` asks one question and builds these for it.
+    A caller weighing several steps on the same layer — every pair of rib ends
+    it might join — holds one of these instead, so the wall corridor, the clay
+    below and the layer's material are buffered once rather than once per step.
+    Both ask exactly the same gates in exactly the same order.
+    """
+
+    __slots__ = (
+        "_bead_width",
+        "_containment",
+        "_corridor",
+        "_current_region",
+        "_envelope",
+        "_fill_strip",
+        "_lines",
+        "_lower_deposition",
+        "_lower_wall",
+        "_material",
+        "_upper_wall",
+    )
+
+    def __init__(
+        self,
+        *,
+        lower_wall: FloatArray,
+        upper_wall: FloatArray,
+        lower_deposition: tuple[FloatArray, ...],
+        current_region: BaseGeometry,
+        bead_width: float,
+        fill_strip: FillStrip | None = None,
+    ) -> None:
+        self._lower_wall = lower_wall
+        self._upper_wall = upper_wall
+        self._lower_deposition = lower_deposition
+        self._current_region = current_region
+        self._bead_width = bead_width
+        self._fill_strip = fill_strip
+        self._corridor: BaseGeometry | None = None
+        self._containment: BaseGeometry | None = None
+        self._lines: BaseGeometry | None = None
+        self._envelope: BaseGeometry | None = None
+        self._material: dict[bool, BaseGeometry] = {}
+
+    @property
+    def _radius(self) -> float:
+        return self._bead_width / 2.0 + CONTINUITY_TOLERANCE_MM
+
+    def _wall_corridor(self) -> BaseGeometry:
+        if self._corridor is None:
+            self._corridor = shapely.union_all(
+                (
+                    LineString(np.asarray(self._lower_wall, dtype=np.float64)).buffer(self._radius),
+                    LineString(np.asarray(self._upper_wall, dtype=np.float64)).buffer(self._radius),
+                )
+            )
+        return self._corridor
+
+    def lower_lines(self) -> BaseGeometry:
+        if self._lines is None:
+            self._lines = shapely.union_all(
+                [LineString(np.asarray(path, dtype=np.float64)) for path in self._lower_deposition]
+            )
+        return self._lines
+
+    def _support_envelope(self) -> BaseGeometry:
+        if self._envelope is None:
+            self._envelope = self.lower_lines().buffer(self._radius)
+        return self._envelope
+
+    def stands_on_clay(self, route: FloatArray) -> bool:
+        """Whether every millimetre of ``route`` lies within half a bead of the clay below.
+
+        The same envelope a direct step's support gate uses, asked of any
+        polyline — a weld a planner chose, which the interior proves inside the
+        clay of its own layer but never against the layer below.
+        """
+
+        if not self._lower_deposition:
+            return False
+        line = LineString(np.asarray(route, dtype=np.float64))
+        return bool(self._support_envelope().covers(line))
+
+    def _with_strip(self) -> BaseGeometry:
+        if self._containment is None:
+            assert self._fill_strip is not None
+            self._containment = self._wall_corridor().union(self._fill_strip.region)
+        return self._containment
+
+    def _material_for(self, strip_used: bool) -> BaseGeometry:
+        if strip_used not in self._material:
+            containment = self._with_strip() if strip_used else self._wall_corridor()
+            self._material[strip_used] = self._current_region.buffer(CONTINUITY_TOLERANCE_MM).union(
+                containment
+            )
+        return self._material[strip_used]
+
+    def failure(
+        self,
+        previous_seam: tuple[float, float],
+        fill_start: tuple[float, float],
+        *,
+        more_support: BaseGeometry | None = None,
+    ) -> tuple[GateFailure | None, bool]:
+        """The first gate this step fails, or None; and whether it needed the fill strip.
+
+        ``more_support`` is extra clay below, already buffered to the proof
+        radius, for a caller weighing a step against clay it is still choosing
+        (a planner).  It only ever ADDS cover; :func:`prove_direct_wall_entry`
+        never passes it.
+        """
+
+        bead_width = self._bead_width
+        if not math.isfinite(bead_width) or bead_width <= 0.0:
+            return GateFailure(
+                "bead_width", bead_width, "> 0", "bead width is not printable"
+            ), False
+        route = LineString((previous_seam, fill_start))
+        if route.length <= CONTINUITY_TOLERANCE_MM:
+            return (
+                GateFailure(
+                    "route_length",
+                    float(route.length),
+                    f"> {CONTINUITY_TOLERANCE_MM:g}",
+                    "the lateral connector collapsed to the climb column",
+                ),
+                False,
+            )
+        # A direct shortcut is a connector, not a second inner wall.  Longer
+        # boundary/wall-integrated routes belong to a different candidate family.
+        if route.length > bead_width + CONTINUITY_TOLERANCE_MM:
+            return (
+                GateFailure(
+                    "direct_connector_length",
+                    float(route.length),
+                    bead_width,
+                    "direct entry exceeds one bead; a wall-integrated family is required",
+                ),
+                False,
+            )
+
+        wall_corridor = self._wall_corridor()
+        strip_used = False
+        if not wall_corridor.covers(route):
+            # The step may cross the band between the wall line and the ribs'
+            # inset only to land on a rib's end, and only where the corridor
+            # alone does not already hold it — so every step the corridor
+            # proves is proved, and hashed, exactly as before.
+            containment = wall_corridor
+            if self._fill_strip is not None and self._fill_strip.lands_on_rib(fill_start):
+                containment = self._with_strip()
+                strip_used = bool(containment.covers(route))
+            if not strip_used:
+                return (
+                    GateFailure(
+                        "swept_wall_containment",
+                        float(route.difference(containment).length),
+                        0.0,
+                        "part of the connector lies outside the lower/upper swept wall corridor",
+                    ),
+                    False,
+                )
+
+        if not self._lower_deposition:
+            return (
+                GateFailure(
+                    "lower_clay_support",
+                    False,
+                    True,
+                    "no emitted lower deposition was supplied for the connector",
+                ),
+                strip_used,
+            )
+        support_envelope = self._support_envelope()
+        if not support_envelope.covers(route):
+            unsupported = route.difference(support_envelope)
+            if more_support is None or not (
+                unsupported.is_empty or more_support.covers(unsupported)
+            ):
+                if more_support is not None:
+                    unsupported = unsupported.difference(more_support)
+                return (
+                    GateFailure(
+                        "lower_clay_support",
+                        float(unsupported.length),
+                        0.0,
+                        "part of the connector lies farther than half a bead from lower clay",
+                    ),
+                    strip_used,
+                )
+
+        material = self._material_for(strip_used)
+        if not material.covers(route):
+            return (
+                GateFailure(
+                    "current_material_containment",
+                    float(route.difference(material).length),
+                    0.0,
+                    "connector leaves both current material and the swept wall corridor",
+                ),
+                strip_used,
+            )
+        return None, strip_used
+
+    def prove(
+        self,
+        previous_seam: tuple[float, float],
+        fill_start: tuple[float, float],
+        *,
+        route_class: str = "direct-swept-wall-corridor",
+    ) -> ConnectorProof | GateFailure:
+        failure, strip_used = self.failure(previous_seam, fill_start)
+        if failure is not None:
+            return failure
+        route = LineString((previous_seam, fill_start))
+        half_bead = self._bead_width / 2.0
+        points = _readonly_points(np.asarray((previous_seam, fill_start), dtype=np.float64))
+        support_diagnostic = _sampled_directed_distance(route, self.lower_lines())
+        facts: dict[str, Any] = {
+            "route_class": route_class,
+            "points": points.tolist(),
+            "length_mm": float(route.length),
+            "bead_width_mm": self._bead_width,
+            "support_limit_mm": half_bead,
+            "tolerance_mm": CONTINUITY_TOLERANCE_MM,
+            "wall_corridor_covered": True,
+            "lower_clay_supported": True,
+            "current_material_covered": True,
+        }
+        if strip_used:
+            # Only a step that needed the band says so, so every other proof
+            # keeps the hash it always had.
+            facts["fill_strip_used"] = True
+        proof_id = hashlib.sha256(
+            json.dumps(facts, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return ConnectorProof(
+            proof_id=proof_id,
+            route_class=route_class,
+            points=points,
+            length_mm=float(route.length),
+            support_limit_mm=half_bead,
+            # This dense diagnostic is not the safety oracle.  Continuous buffered
+            # coverage above is; the number is retained for reports and review.
+            support_diagnostic_max_mm=min(support_diagnostic, half_bead),
+            containment_tolerance_mm=CONTINUITY_TOLERANCE_MM,
+            wall_corridor_covered=True,
+            lower_clay_supported=True,
+            current_material_covered=True,
+        )
+
+
 def prove_direct_wall_entry(
     *,
     previous_seam: tuple[float, float],
@@ -164,6 +447,7 @@ def prove_direct_wall_entry(
     current_region: Polygon,
     bead_width: float,
     route_class: str = "direct-swept-wall-corridor",
+    fill_strip: FillStrip | None = None,
 ) -> ConnectorProof | GateFailure:
     """Prove a current-Z connector from a deposited seam to the next fill.
 
@@ -173,109 +457,20 @@ def prove_direct_wall_entry(
     because its lower seam is a few hundredths of a millimetre outside the
     upper polygon; the correct domain is the union of lower/upper swept wall
     envelopes until the route enters current material.
+
+    ``fill_strip`` adds the band between the wall line and the ribs' inset to
+    that domain, for a step that lands on a rib's end (see :class:`FillStrip`).
+    Without it the proof is exactly what it always was.
     """
 
-    if not math.isfinite(bead_width) or bead_width <= 0.0:
-        return GateFailure("bead_width", bead_width, "> 0", "bead width is not printable")
-    route = LineString((previous_seam, fill_start))
-    if route.length <= CONTINUITY_TOLERANCE_MM:
-        return GateFailure(
-            "route_length",
-            float(route.length),
-            f"> {CONTINUITY_TOLERANCE_MM:g}",
-            "the lateral connector collapsed to the climb column",
-        )
-    # A direct shortcut is a connector, not a second inner wall.  Longer
-    # boundary/wall-integrated routes belong to a different candidate family.
-    if route.length > bead_width + CONTINUITY_TOLERANCE_MM:
-        return GateFailure(
-            "direct_connector_length",
-            float(route.length),
-            bead_width,
-            "direct entry exceeds one bead; a wall-integrated family is required",
-        )
-
-    lower_wall_line = LineString(np.asarray(lower_wall, dtype=np.float64))
-    upper_wall_line = LineString(np.asarray(upper_wall, dtype=np.float64))
-    half_bead = bead_width / 2.0
-    proof_radius = half_bead + CONTINUITY_TOLERANCE_MM
-    wall_corridor = shapely.union_all(
-        (
-            lower_wall_line.buffer(proof_radius),
-            upper_wall_line.buffer(proof_radius),
-        )
-    )
-    wall_covered = bool(wall_corridor.covers(route))
-    if not wall_covered:
-        uncovered = route.difference(wall_corridor)
-        return GateFailure(
-            "swept_wall_containment",
-            float(uncovered.length),
-            0.0,
-            "part of the connector lies outside the lower/upper swept wall corridor",
-        )
-
-    if not lower_deposition:
-        return GateFailure(
-            "lower_clay_support",
-            False,
-            True,
-            "no emitted lower deposition was supplied for the connector",
-        )
-    lower_lines = shapely.union_all(
-        [LineString(np.asarray(path, dtype=np.float64)) for path in lower_deposition]
-    )
-    support_envelope = lower_lines.buffer(proof_radius)
-    supported = bool(support_envelope.covers(route))
-    if not supported:
-        unsupported = route.difference(support_envelope)
-        return GateFailure(
-            "lower_clay_support",
-            float(unsupported.length),
-            0.0,
-            "part of the connector lies farther than half a bead from lower clay",
-        )
-
-    material = current_region.buffer(CONTINUITY_TOLERANCE_MM).union(wall_corridor)
-    material_covered = bool(material.covers(route))
-    if not material_covered:
-        return GateFailure(
-            "current_material_containment",
-            float(route.difference(material).length),
-            0.0,
-            "connector leaves both current material and the swept wall corridor",
-        )
-
-    points = _readonly_points(np.asarray((previous_seam, fill_start), dtype=np.float64))
-    support_diagnostic = _sampled_directed_distance(route, lower_lines)
-    facts = {
-        "route_class": route_class,
-        "points": points.tolist(),
-        "length_mm": float(route.length),
-        "bead_width_mm": bead_width,
-        "support_limit_mm": half_bead,
-        "tolerance_mm": CONTINUITY_TOLERANCE_MM,
-        "wall_corridor_covered": wall_covered,
-        "lower_clay_supported": supported,
-        "current_material_covered": material_covered,
-    }
-    proof_id = hashlib.sha256(
-        json.dumps(facts, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    return ConnectorProof(
-        proof_id=proof_id,
-        route_class=route_class,
-        points=points,
-        length_mm=float(route.length),
-        support_limit_mm=half_bead,
-        # This dense diagnostic is not the safety oracle.  Continuous buffered
-        # coverage above is; the number is retained for reports and review.
-        support_diagnostic_max_mm=min(support_diagnostic, half_bead),
-        containment_tolerance_mm=CONTINUITY_TOLERANCE_MM,
-        wall_corridor_covered=wall_covered,
-        lower_clay_supported=supported,
-        current_material_covered=material_covered,
-    )
+    return DirectStepGates(
+        lower_wall=lower_wall,
+        upper_wall=upper_wall,
+        lower_deposition=lower_deposition,
+        current_region=current_region,
+        bead_width=bead_width,
+        fill_strip=fill_strip,
+    ).prove(previous_seam, fill_start, route_class=route_class)
 
 
 def build_wall_ride(
@@ -600,6 +795,8 @@ def _readonly_points(value: FloatArray) -> FloatArray:
 __all__ = [
     "CONTINUITY_TOLERANCE_MM",
     "ConnectorProof",
+    "DirectStepGates",
+    "FillStrip",
     "GateFailure",
     "InfillChainPlan",
     "InfillContinuityImpossible",

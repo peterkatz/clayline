@@ -78,6 +78,7 @@ from shapely.geometry import (
 
 from clayline.models import Severity
 from clayline.wave import ModulatedRing
+from clayline.weave_continuity import CONTINUITY_TOLERANCE_MM, FillStrip
 
 # ``_covers`` is the primitive's own containment predicate, imported rather than
 # restated.  A second copy of "None means covers, a float means
@@ -374,6 +375,42 @@ class InteriorResult:
         if proof is None or proof.dense:
             return None
         return proof.fill_end
+
+    def fill_strip(
+        self,
+        layer_index: int,
+        island_index: int,
+        upper_wall: FloatArray,
+        bead_width: float,
+    ) -> FillStrip | None:
+        """The band between this island's wall line and its ribs' inset, or None.
+
+        The island's region less every inset its ribs were clipped to, widened
+        by the continuity tolerance the wall corridor carries, and kept within
+        one bead of the wall line: an inset dropped as split or empty
+        (see :func:`_weld_boundaries`) would otherwise leave a whole chamber of
+        fill looking like band.  None when the island has no inset, so nothing
+        is ever proved against a band that was not measured.
+        """
+
+        proof = self.proofs.get((layer_index, island_index))
+        if proof is None or not proof.insets:
+            return None
+        # The band carries the same tenth of a micron the wall corridor does, so
+        # a step landing exactly on a rib's end is not refused for a sliver
+        # where the band meets the inset.
+        band = (
+            proof.polygon.difference(shapely.union_all(list(proof.insets)))
+            .buffer(CONTINUITY_TOLERANCE_MM)
+            .intersection(LineString(np.asarray(upper_wall, dtype=np.float64)).buffer(bead_width))
+        )
+        if band.is_empty:
+            return None
+        return FillStrip(
+            region=band,
+            boundaries=tuple(LineString(inset.exterior.coords) for inset in proof.insets),
+            slack=_endpoint_slack(proof.tolerance),
+        )
 
     def weld_route(
         self,

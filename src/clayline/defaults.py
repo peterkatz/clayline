@@ -270,10 +270,10 @@ def ui_defaults() -> dict[str, Any]:
             "bead_width_follows_nozzle": DEFAULT_WEAVE_BEAD_WIDTH_MM is None,
             "overlap_fraction": DEFAULT_OVERLAP_FRACTION,
             "flow_multiplier": DEFAULT_FLOW_MULTIPLIER,
-            # Served starting wave is a gentle sine so amplitude 1 mm is
-            # visible on first slice (engine default stays "flat" for
-            # API/CLI compatibility and golden safety).
-            "wave": "sine",
+            # A new Weave job starts flat (Pete, 2026-10-07: "the default
+            # pattern should be flat, not sine wave"); the engine default was
+            # already flat.
+            "wave": "flat",
             "extrusion": DEFAULT_WEAVE_EXTRUSION_PRESET,
             # Amplitude: plain visible-by-default 1 mm — an aesthetic choice,
             # no auto-follow (Pete 2026-07-20). Wavelength: nozzle-derived,

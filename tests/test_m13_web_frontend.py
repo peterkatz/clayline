@@ -180,22 +180,20 @@ def test_both_modes_forward_canonical_bead_width_to_the_shared_viewport() -> Non
 def test_weave_rail_order_and_complete_ui_states_are_explicit() -> None:
     sections = re.findall(r'data-weave-section="([^"]+)"', HTML)
     assert sections == [
-        "model",
-        "slice",
-        "bottom",
-        "vase",
-        "interior",
-        "oscilloscope",
+        "form",
         "printer",
+        "wall",
+        "pattern",
+        "inside",
+        "print",
     ]
     headings = [
-        "Model",
-        "Slice",
-        "Bottom",
-        "Vase mode",
-        "Interior",
-        "Weave pattern",
-        "Printer",
+        "Form",
+        "Printer and coil",
+        "Wall",
+        "Pattern",
+        "Inside and floor",
+        "Print",
     ]
     workspace_start = HTML.index('id="weaveWorkspace"')
     positions = [HTML.index(f"<h2>{heading}</h2>", workspace_start) for heading in headings]
@@ -206,7 +204,7 @@ def test_weave_rail_order_and_complete_ui_states_are_explicit() -> None:
 
 def test_layer_rhythm_controls_are_grouped_with_the_weave_pattern_and_persist_canonically() -> None:
     pattern_section = HTML[
-        HTML.index('data-weave-section="oscilloscope"') : HTML.index('data-weave-section="printer"')
+        HTML.index('data-weave-section="pattern"') : HTML.index('data-weave-section="inside"')
     ]
     for control in (
         "weaveLayerSkipEnabled",
@@ -390,7 +388,7 @@ def test_wave_extrusion_pattern_and_capability_rules_are_all_live() -> None:
     assert "layer.x_mm" in WEAVE and "layer.displacement_mm" in WEAVE
     assert "payload.pattern?.canonical_json" in WEAVE
     assert "pattern_json: source" in WEAVE
-    assert "Twist has no visible effect while the wave is flat." in WEAVE
+    assert "Amplitude, Wavelength, Twist and Wave depth have no visible effect while the wave is flat." in WEAVE
     assert "A continuous spiral has no layer seam." in WEAVE
     assert "S.previousSeam" in WEAVE
     assert "z_blend_disabled_hint" in WEAVE
@@ -431,8 +429,6 @@ def test_expired_slice_pattern_requests_self_heal_without_artist_cache_jargon() 
 
 def test_every_verifier_reported_nullified_weave_setting_is_disabled_with_a_reason() -> None:
     for control, hint in (
-        ("weaveAmplitude", "weaveAmplitudeHint"),
-        ("weaveWavelength", "weaveWavelengthHint"),
         ("weaveTwist", "weaveTwistHint"),
         ("weaveExtrusionPhase", "weaveExtrusionPhaseHint"),
         ("weaveBottomOverlap", "weaveBottomOverlapHint"),
@@ -444,17 +440,24 @@ def test_every_verifier_reported_nullified_weave_setting_is_disabled_with_a_reas
         assert f'id="{control}"' in HTML
         assert f'aria-describedby="{hint}"' in HTML
         assert f'id="{hint}"' in HTML
+    # The flat-wave reason is said once, on the line under Twist, and names every
+    # control it greys; each greyed control still carries its own reason on hover.
+    for control in ("weaveAmplitude", "weaveWavelength", "weaveFollowLobes", "weaveFollowCoves"):
+        assert f'id="{control}"' in HTML
+        assert f'id="{control}Hint"' not in HTML
+    assert HTML.count("no visible effect while the wave is flat") == 0
 
     for reason in (
         "Amplitude has no visible effect while the wave is flat.",
         "Wavelength has no visible effect while the wave is flat.",
-        "Twist has no visible effect while the wave is flat.",
+        "Amplitude, Wavelength, Twist and Wave depth have no visible effect while the wave is flat.",
+        "Form following has no visible effect while the wave is flat.",
         "Extrusion phase has no effect while the extrusion track is flat.",
         _OVERLAP_COPY,
         "On — takes effect when Bottom layers is above 0. Crossing passes bond the base stronger.",
         "Off — takes effect only when Bottom layers is above 0.",
         "Taper wobble to zero across one final top-Z revolution.",
-        "No effect while Cap layers is 0.",
+        "No effect while Roof layers is 0.",
         "No effect with Concentric.",
     ):
         assert reason in WEAVE
@@ -491,14 +494,14 @@ def test_vase_rim_seam_and_form_following_are_structurally_grouped() -> None:
     rim_nest = HTML.index('id="weaveLevelRimNest"')
     rim = HTML.index('id="weaveLevelRimRow"')
     seam_block = HTML.index("Layer seam")
-    slice_end = HTML.index('data-weave-section="bottom"')
+    wall_start = HTML.index('data-weave-section="wall"')
+    wall_end = HTML.index('data-weave-section="pattern"')
     follow_block = HTML.index('id="weaveFollowFormBlock"')
     lobes = HTML.index('id="weaveFollowLobesField"')
     coves = HTML.index('id="weaveFollowCovesField"')
 
-    assert vase < rim_nest < rim
+    assert wall_start < vase < rim_nest < rim < seam_block < wall_end
     assert 'class="nested-option" id="weaveLevelRimNest" hidden' in HTML
-    assert seam_block < slice_end
     assert "where each layer starts" in HTML
     assert follow_block < lobes < coves
     assert "Follow the form" in HTML
@@ -682,8 +685,8 @@ _OVERLAP_COPY = (
 
 def _interior_section() -> str:
     return HTML[
-        HTML.index('data-weave-section="interior"') : HTML.index(
-            'data-weave-section="oscilloscope"'
+        HTML.index('data-weave-section="inside"') : HTML.index(
+            'data-weave-section="print"'
         )
     ]
 
@@ -698,7 +701,7 @@ def _engine_refusal(**settings: object) -> str:
 
 def test_interior_offers_three_choices_and_says_what_each_does_to_the_clay() -> None:
     section = _interior_section()
-    assert "<h2>Interior</h2>" in section
+    assert "<h2>Inside and floor</h2>" in section
     assert 'id="weaveInteriorControl"' in section
     assert 'class="segmented' in section
     for value in ("hollow", "solid", "infill"):
@@ -706,7 +709,10 @@ def test_interior_offers_three_choices_and_says_what_each_does_to_the_clay() -> 
     assert 'name="weaveInterior" value="hollow" checked' in section
     # One short line each, said where the choice is made (Pete, 2026-10-03: the
     # section had become walls of text).
-    assert '<p class="section-copy">What the nozzle lays inside the wall.</p>' in section
+    assert (
+        '<p class="section-copy">What the nozzle lays inside the wall, and under it.</p>'
+        in section
+    )
     assert "Just the wall, nothing inside." in section
     sync = _function("syncInteriorControls", "function syncControls")
     # Solid admits its weight instead of selling itself.
@@ -741,7 +747,9 @@ def test_each_interior_mode_hides_its_own_controls_until_it_is_chosen() -> None:
     # Rib spacing of one coil or less is a dense fill under another name.
     assert 'id="weaveInfillSpacing" type="number" value="3" min="1.01"' in section
     assert "Base layers" in section and "floor skin" in section
-    assert "Cap layers" in section and "roof skin" in section
+    assert "<span>Roof layers</span>" in section and "roof skin" in section
+    assert "<span>Roof ramp layers</span>" in section
+    assert "Cap layers" not in section and "<span>Ramp layers</span>" not in section
 
     sync = _function("syncInteriorControls", "function syncControls")
     assert '$("#weaveSolidBlock").hidden = interior.interior !== "solid"' in sync
@@ -1128,7 +1136,10 @@ def test_the_sections_opening_promise_matches_what_choosing_a_fill_now_does() ->
     section = _interior_section()
     # The opening line promises nothing; each clearing says so where it lives.
     assert "nothing switches on its own" not in section
-    assert '<p class="section-copy">What the nozzle lays inside the wall.</p>' in section
+    assert (
+        '<p class="section-copy">What the nozzle lays inside the wall, and under it.</p>'
+        in section
+    )
     # Every clearing the sentence admits to is really there, and vice versa:
     # the section may not name two while the code performs three.
     interior = _function("applyInteriorSettings", "function setInteriorControls")
@@ -1139,7 +1150,8 @@ def test_the_sections_opening_promise_matches_what_choosing_a_fill_now_does() ->
 
 def test_the_infill_repetition_claim_is_qualified_by_the_controls_beneath_it() -> None:
     """ "Every layer repeats the same ribs" sat three lines above Base layers,
-    Cap layers and Ramp layers — each of which makes it untrue."""
+    Roof layers and Roof ramp layers (once Cap layers and Ramp layers) — each of
+    which makes it untrue."""
 
     section = _interior_section()
     assert "Every layer repeats the same ribs" not in section
@@ -1688,9 +1700,9 @@ def test_an_opened_print_file_keeps_its_rule_until_its_model_comes_or_the_job_ch
 
 def test_ignore_hollows_sits_with_interior_and_is_off_and_unsaid_until_chosen() -> None:
     # Pete looked for it with the fill, not the slicing (2026-10-03): it sits right
-    # under the Hollow / Solid / Infill choice, and not in the Slice section.
+    # under the Hollow / Solid / Infill choice, and not with the slicing settings.
     section = _interior_section()
-    assert 'id="weaveIgnoreHollowsRow"' not in HTML[: HTML.index('data-weave-section="interior"')]
+    assert 'id="weaveIgnoreHollowsRow"' not in HTML[: HTML.index('data-weave-section="inside"')]
     row = section[section.index('<label class="switch-row" id="weaveIgnoreHollowsRow"') :]
     row = row[: row.index("</label>") + len("</label>")]
     assert section.index('id="weaveInteriorHint"') < section.index(row)

@@ -944,22 +944,13 @@ def drag_trace_payload(
     stacked_layers: set[int] = set()
     if pattern.settings.stack_pieces and not pattern.settings.z_blend:
         from clayline.form_stack import stack_plan_for_band
-        from clayline.profiles import load_profile
 
-        profile = load_profile(sliced.profile_name)
         for band in sliced.wall_bands:
             for interval in stack_plan_for_band(
                 band,
                 sliced,
                 pattern,
-                profile,
                 modulated_by_address,
-                fill_points=lambda address: tuple(
-                    np.asarray(xyz[:, :2], dtype=np.float64)
-                    for xyz, _layers, _flow, _label in interior_by_island.get(
-                        address.layer_index, {}
-                    ).get(address.island_index, ())
-                ),
                 first_stackable_layer=(
                     0 if pattern.settings.interior != "hollow" else pattern.settings.bottom_layers
                 ),

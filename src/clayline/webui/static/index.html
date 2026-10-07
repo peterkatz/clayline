@@ -437,10 +437,10 @@
         </div>
 
         <div class="rail-scroll">
-          <section class="rail-section weave-section is-active" data-weave-section="model">
+          <section class="rail-section weave-section is-active" data-weave-section="form">
             <div class="section-index">01</div>
             <div class="section-body">
-              <h2>Model</h2>
+              <h2>Form</h2>
               <div class="inches-banner" id="weaveInchesBanner" hidden role="status">
                 <span id="weaveInchesBannerText"></span>
                 <div class="inches-banner-actions">
@@ -448,7 +448,7 @@
                   <button type="button" id="weaveInchesBannerDismiss" class="secondary-button compact-button">Keep millimetres</button>
                 </div>
               </div>
-              <p class="section-copy">Load the base mesh — the form your pattern wraps. Every honest ring and mesh warning is kept.</p>
+              <p class="section-copy">Load the form your pattern wraps.</p>
               <label class="drop-zone" id="weaveDropZone" for="weaveFileInput" title="Load one STL, OBJ, PLY, or 3MF mesh in millimetres, open a saved project, bring back every setting from a print file Clayline saved (it then asks for its model by name), rebuild a form from another slicer's print file, or load a saved pattern.">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg>
                 <span><strong>Drop a file here</strong><small>mesh · project · print file · saved pattern</small></span>
@@ -460,17 +460,17 @@
               </div>
               <p class="field-hint project-status" id="weaveProjectStatus" role="status" aria-live="polite" hidden></p>
               <div class="file-summary" id="weaveFileSummary" aria-live="polite">No model loaded</div>
-              <div class="control-grid">
-                <label class="field" title="Which source axis points upward before placement. Rhino OBJ exports are usually Y up — if the sliced rings look like a tangled contour map instead of stacked walls, flip this."><span>Up axis</span><select id="weaveUpAxis"><option value="z" selected>Z up</option><option value="y">Y up</option></select></label>
-              </div>
               <div class="model-size-line" id="weaveModelSize" hidden title="The placed size on the bed — width × depth × height. Type a new height and the form rescales uniformly; nothing hidden, same honest rescale.">
                 <span id="weaveSizeText"></span>
                 <label class="height-edit"><span>height</span><input id="weaveHeightEdit" type="number" min="0.1" step="0.5" data-unit="mm"><span id="weaveHeightUnit">mm</span></label>
               </div>
               <p class="field-hint" id="weaveModelFacts">Mesh units and watertightness appear once the mesh loads.</p>
-              <p class="field-hint">Click the form for move, rotate and resize handles — drag the form to slide it, a ring to rotate, the corner cube to resize. Empty space orbits. Numbers live under Advanced.</p>
+              <p class="field-hint" title="Drag the form to slide it, a ring to turn it, the corner cube to resize it. Drag empty space to turn the view. The exact numbers are under Advanced.">Click the form to move, turn or resize it.</p>
               <details class="advanced-controls">
                 <summary>Advanced</summary>
+                <div class="control-grid">
+                  <label class="field" title="Which source axis points upward before placement. Rhino OBJ exports are usually Y up — if the sliced rings look like a tangled contour map instead of stacked walls, flip this."><span>Up axis</span><select id="weaveUpAxis"><option value="z" selected>Z up</option><option value="y">Y up</option></select></label>
+                </div>
                 <div class="control-grid two-up">
                   <label class="field" title="Multiplies the file's own size. To hit an exact height, type it in the size line above."><span>Scale factor</span><input id="weaveScale" type="number" value="1" min="0.0001" step="0.01"></label>
                   <label class="field" title="Stretches the placed form's width on the bed, on top of Scale factor. 1 leaves it alone."><span>Width ×</span><input id="weaveScaleX" type="number" value="1" min="0.0001" step="0.01"></label>
@@ -488,76 +488,43 @@
             </div>
           </section>
 
-          <section class="rail-section weave-section" data-weave-section="slice">
+          <section class="rail-section weave-section" data-weave-section="printer">
             <div class="section-index">02</div>
             <div class="section-body">
-              <h2>Slice</h2>
-              <p class="section-copy">Horizontal sections become aligned, locally normalised wall rings.</p>
-              <div class="control-grid two-up">
-                <label class="field" title="Nozzle opening. Hardware, so it's always millimetres regardless of the display unit. The sizes listed come from the selected printer's profile. Coil width and coil height follow the nozzle until you type your own values."><span>Nozzle opening</span><select id="weaveNozzle"><option value="5" selected>⌀ 5 mm</option></select></label>
-                <label class="field" title="Starting heuristic: 30% of the nozzle (5 mm → 1.5 mm). It follows nozzle changes until you type a measured value; clay and machine setup can require a different layer height."><span><span class="field-word">Layer height (mm)</span> <button type="button" class="follow-chip" id="weaveLayerHeightFollow" aria-pressed="true" title="Starting at 30% of the nozzle. Type a measured value to take over; click to follow again.">auto</button></span><input id="weaveLayerHeight" type="number" value="1.5" min="0.1" step="0.1"></label>
-                <label class="field"><span>First layer Z (mm)</span><input id="weaveFirstLayer" type="number" value="1.5" min="0.1" step="0.1"></label>
+              <h2>Printer and coil</h2>
+              <p class="section-copy">The printer, the nozzle you fitted, and the coil it lays.</p>
+              <div class="control-grid">
+                <label class="field"><span>Printer</span><select id="weaveProfile"><option value="potterbot-xl" selected>PotterBot 10 XL · verified reference</option><option value="generic-reprap-paste">Generic RepRap paste · unverified</option><option value="generic-marlin-paste">Generic Marlin paste · unverified</option></select></label>
               </div>
-              <label class="switch-row" id="weaveStackPiecesRow" title="Where the form stands in separate pieces, the nozzle prints a few layers of one piece before it crosses to the next, so it crosses less often. It only goes ahead where no part of the nozzle can reach a taller piece, treating the nozzle as a cone that widens 45° from its tip up to the wider part above it, and the coil as wide as the clay flow lays it. To cross, it lifts above the tallest clay; with Keep clay flowing on crossings, the ram pauses for the extra climb and drop, so clay does not pile up where the next line starts. It waits until 5 seconds after a piece's layer started before putting that piece's next layer on, printing another piece meanwhile; when no other piece can go, the lowest one goes next anyway. For Nozzle sticks out, fit the nozzle you print with and measure from its tip up to the bottom of the first wider part — the adapter, cap or collar. Not checked: how fast your clay firms up, or how well a layer sticks to one that has waited.">
-                <span><strong>Stack pieces <span class="experimental-mark">★ Experimental</span></strong><small id="weaveStackPiecesHint">Prints a few layers of one piece before moving to the next, as far as the nozzle clears.</small></span>
-                <input id="weaveStackPieces" type="checkbox" role="switch" aria-describedby="weaveStackPiecesHint" aria-controls="weaveStackPiecesNest">
+              <p class="profile-fact" id="weaveProfileFact">Profile truth supplies speeds, bounds, start/end blocks, and pressure travel.</p>
+              <div class="control-grid">
+                <label class="field" title="Nozzle opening. Hardware, so it's always millimetres regardless of the display unit. The sizes listed come from the selected printer's profile. Coil width and coil height follow the nozzle until you type your own values."><span>Nozzle opening</span><select id="weaveNozzle"><option value="5" selected>⌀ 5 mm</option></select></label>
+                <label class="field"><span>Clay flow <output id="weaveFlowOutput">1.00×</output></span><input id="weaveFlow" type="range" value="1" min="0.5" max="1.5" step="0.01"></label>
+                <label class="field" title="Start charge before the first line, in the printer's E units. The profile's start block pushes this much clay out over the bed centre before printing so the barrel is under pressure. Blank keeps the profile's own charge; 0 skips the charge entirely. The profile's amount shows as the placeholder."><span>Start charge (E)</span><input id="weaveStartCharge" type="number" min="0" step="100" placeholder="profile"></label>
+              </div>
+              <label class="switch-row" id="weaveKeepFlowingRow" title="On every crossing from one line to the next, the lift, the move across and the lowering, the ram keeps pushing clay at the rate it prints, and every line starts and ends at full flow. The clay laid on the way counts in the clay, weight and time, and shows as clay in the preview. Turn it off to stop the push on every crossing as before: each line then ends with a short stretch of no clay and the next one builds up slowly.">
+                <span><strong>Keep clay flowing on crossings</strong><small id="weaveKeepFlowingHint">The ram keeps pushing at the print rate while the nozzle crosses, so the next line starts at full pressure.</small></span>
+                <input id="weaveKeepFlowing" type="checkbox" role="switch" checked aria-describedby="weaveKeepFlowingHint">
               </label>
-              <div class="nested-option" id="weaveStackPiecesNest" hidden>
-                <label class="field" title="With the nozzle you print with fitted, measure from its tip straight up to the bottom of the first wider part — the adapter, cap or collar. Stack pieces never lets clay stand within 2 mm of that part. Until you measure, 10 mm."><span>Nozzle sticks out (mm)</span><input id="weaveNozzleClearance" type="number" value="10" min="3" max="100" step="1"></label>
+              <div class="control-grid two-up">
+                <label class="field" title="Starting heuristic: 30% of the nozzle (5 mm → 1.5 mm). It follows nozzle changes until you type a measured value; clay and machine setup can require a different layer height."><span><span class="field-word">Layer height (mm)</span> <button type="button" class="follow-chip" id="weaveLayerHeightFollow" aria-pressed="true" title="Starting at 30% of the nozzle. Type a measured value to take over; click to follow again.">auto</button></span><input id="weaveLayerHeight" type="number" value="1.5" min="0.1" step="0.1"></label>
+                <label class="field"><span>First layer height (mm)</span><input id="weaveFirstLayer" type="number" value="1.5" min="0.1" step="0.1"></label>
               </div>
               <details class="advanced-controls">
                 <summary>Advanced</summary>
                 <div class="control-grid two-up">
                   <label class="field" title="Coil width (mm). Follows the nozzle until you type your own. Sensible range ≈ 0.8–1.5 × the nozzle opening."><span><span class="field-word">Coil width (mm)</span> <button type="button" class="follow-chip" id="weaveBeadWidthFollow" aria-pressed="true" title="Following the nozzle diameter. Type a value to take over; click to follow again.">auto</button></span><input id="weaveBeadWidth" type="number" value="5" min="0.1" step="0.1"></label>
-                  <label class="field" title="How finely the printline follows the wave. Auto keeps it at half the coil width, capped at 1 mm — finer means smoother waves and heavier files."><span>Sample spacing (mm)</span><input id="weaveSampleSpacing" type="number" value="1" min="0.05" step="0.05" data-unit="mm"></label>
                 </div>
                 <p class="field-hint" id="weaveBeadWidthHint">Set by the nozzle size. Change only if your clay behaves differently. Coil width is flow, not the hole — pushing more clay per millimetre lays a fatter coil than the nozzle; less stretches it thinner.</p>
               </details>
-              <div class="weave-fact-line" id="weaveSliceFacts" aria-live="polite"><span>Layers —</span><span>Rings —</span><span>Samples —</span></div>
-              <label class="switch-row">
-                <span><strong>Print selected layers</strong><small>Layer numbers are one-based; both ends included. The selected wall band is rebased to the bed.</small></span>
-                <input id="weaveRangeEnabled" type="checkbox" role="switch" disabled>
-              </label>
-              <div class="control-grid two-up">
-                <label class="field"><span>From layer</span><input id="weaveRangeFrom" type="number" value="1" min="1" step="1" disabled></label>
-                <label class="field"><span>To layer</span><input id="weaveRangeTo" type="number" value="1" min="1" step="1" disabled></label>
-              </div>
-              <p class="physical-readout" id="weaveRangeReadout" aria-live="polite">Slice the form to choose a print range.</p>
-              <div class="weave-control-block weave-seam-block">
-                <div class="scope-subhead"><span>Layer seam</span><strong>where each layer starts</strong></div>
-                <p class="field-hint">Choose how starts line up across discrete layers.</p>
-                <fieldset class="segmented weave-seam-control" id="weaveSeamControl" aria-label="Layer seam placement" aria-describedby="weaveSeamHint">
-                  <label><input type="radio" name="weaveSeam" value="chained" checked><span>Chained</span></label>
-                  <label><input type="radio" name="weaveSeam" value="scatter"><span>Scatter</span></label>
-                  <label><input type="radio" name="weaveSeam" value="pinned"><span>Pinned</span></label>
-                </fieldset>
-                <p class="field-hint" id="weaveSeamHint">Chained follows the nearest seam between layers.</p>
-                <label class="field" id="weavePinnedAngleField" hidden><span>Pinned angle (degrees)</span><input id="weavePinnedAngle" type="number" value="0" step="1"></label>
-              </div>
             </div>
           </section>
 
-          <section class="rail-section weave-section" data-weave-section="bottom">
+          <section class="rail-section weave-section" data-weave-section="wall">
             <div class="section-index">03</div>
             <div class="section-body">
-              <h2>Bottom</h2>
-              <p class="section-copy">Optional structural spirals print before the wall. Zero adds no unrequested clay.</p>
-              <div class="control-grid two-up">
-                <label class="field"><span>Bottom layers</span><input id="weaveBottomLayers" type="number" value="0" min="0" step="1" aria-describedby="weaveBottomLayersHint"><small class="dependent-control-hint" id="weaveBottomLayersHint" hidden>Bottom is available only when the print range starts at source layer 1.</small></label>
-                <label class="field" id="weaveBottomOverlapField" title="How much each neighbouring dense fill coil overlaps its neighbour — in the bottom, in a solid interior, and in an infill's base and cap skins. Sparse infill ribs are spaced by Rib spacing instead. More overlap closes the fill with more clay."><span>Fill overlap</span><input id="weaveBottomOverlap" type="number" value="0.2" min="0" max="0.95" step="0.05" aria-describedby="weaveBottomOverlapHint"><small class="dependent-control-hint" id="weaveBottomOverlapHint" hidden>Fill overlap spaces dense fill only — the bottom, a solid interior, or an infill's base and cap skins. Nothing here is laying dense fill.</small></label>
-              </div>
-              <label class="switch-row" id="weaveBottomAlternateRow">
-                <span><strong>Alternate bottom direction</strong><small id="weaveBottomAlternateHint">Crossing passes bond the base stronger.</small></span>
-                <input id="weaveBottomAlternate" type="checkbox" role="switch" checked aria-describedby="weaveBottomAlternateHint">
-              </label>
-            </div>
-          </section>
-
-          <section class="rail-section weave-section" data-weave-section="vase">
-            <div class="section-index">04</div>
-            <div class="section-body">
-              <h2>Vase mode</h2>
-              <p class="section-copy">The wall climbs in one continuous coil instead of stacked layers. Off, the form prints as discrete layers and the Interior can be filled.</p>
+              <h2>Wall</h2>
+              <p class="section-copy">How the wall climbs.</p>
               <label class="switch-row" id="weaveZBlendRow">
                 <span><strong>Vase mode · spiral rise</strong><small id="weaveZBlendHint">The wall climbs in one continuous coil — no layer seams.</small></span>
                 <input id="weaveZBlend" type="checkbox" role="switch">
@@ -578,14 +545,131 @@
                   <input id="weaveLevelRim" type="checkbox" role="switch" aria-describedby="weaveLevelRimHint">
                 </label>
               </div>
+              <div class="weave-control-block weave-seam-block">
+                <div class="scope-subhead"><span>Layer seam</span><strong>where each layer starts</strong></div>
+                <p class="field-hint">Choose how starts line up across discrete layers.</p>
+                <fieldset class="segmented weave-seam-control" id="weaveSeamControl" aria-label="Layer seam placement" aria-describedby="weaveSeamHint">
+                  <label><input type="radio" name="weaveSeam" value="chained" checked><span>Chained</span></label>
+                  <label><input type="radio" name="weaveSeam" value="scatter"><span>Scatter</span></label>
+                  <label><input type="radio" name="weaveSeam" value="pinned"><span>Pinned</span></label>
+                </fieldset>
+                <p class="field-hint" id="weaveSeamHint">Chained follows the nearest seam between layers.</p>
+                <label class="field" id="weavePinnedAngleField" hidden><span>Pinned angle (degrees)</span><input id="weavePinnedAngle" type="number" value="0" step="1"></label>
+              </div>
             </div>
           </section>
 
-          <section class="rail-section weave-section" data-weave-section="interior">
+          <section class="rail-section weave-section weave-scope-section" data-weave-section="pattern">
+            <div class="section-index">04</div>
+            <div class="section-body">
+              <h2>Pattern</h2>
+              <p class="section-copy">The trace is one wrapped cycle. Drag a point; ghost cycles expose the seam before clay does.</p>
+              <div class="scope-frame">
+                <canvas id="weaveWaveCanvas" width="640" height="220" tabindex="0" aria-label="Editable periodic waveform with ghosted neighbouring cycles" title="Click blank space to add a point. Right-click a point to delete it; two points are always kept."></canvas>
+                <div class="scope-legend"><span>−1 ghost</span><strong id="weaveWaveState">flat · no wobble</strong><span>+1 ghost</span></div>
+              </div>
+              <div class="preset-row" id="weaveWavePresets" role="group" aria-label="Wave presets">
+                <button type="button" data-wave-preset="flat" class="is-active">Flat</button>
+                <button type="button" data-wave-preset="sine">Sine</button>
+                <button type="button" data-wave-preset="triangle">Triangle</button>
+                <button type="button" data-wave-preset="sawtooth">Saw</button>
+                <button type="button" data-wave-preset="rounded-square">Rounded</button>
+                <button type="button" data-wave-preset="pulse">Pulse</button>
+                <button type="button" data-wave-preset="noise">Noise</button>
+                <button type="button" id="weaveNoiseRegenerate" title="Deal a fresh random variation of the noise wave.">Regenerate</button>
+              </div>
+              <div class="scope-subhead weave-texture-subhead"><span>Textures</span><strong>complete patterns</strong></div>
+              <div class="preset-row" id="weaveTexturePresets" role="group" aria-label="Fitted texture presets">
+                <span class="texture-loading">Loading textures…</span>
+              </div>
+              <p class="field-hint" id="weaveTextureHint">A texture replaces the whole pattern with a wave traced from a real print — shapes the basic presets can't draw. Your flow, speed, and nozzle stay yours.</p>
+              <div class="control-grid weave-pattern-controls">
+                <label class="field" id="weaveAmplitudeField" title="How far the wall moves inward and outward from the original form."><span>Amplitude <output id="weaveAmplitudeOutput">0.0 mm</output></span><input id="weaveAmplitude" type="range" value="0" min="0" max="15" step="0.1"></label>
+                <label class="field" id="weaveWavelengthField" title="Physical crest-to-crest spacing in millimetres; each closed ring rounds to a whole wave count."><span><span class="field-word">Wavelength (mm)</span> <button type="button" class="follow-chip" id="weaveWavelengthFollow" aria-pressed="true" title="Following the coil width at 3.5× — one crest every 3.5 coils. Type a value to take over; click to follow again.">auto</button></span><input id="weaveWavelength" type="number" value="18" min="0.1" step="0.5"></label>
+              </div>
+              <p class="physical-readout" id="weavePhysicalReadout">Slice the form to calculate whole waves from real ring circumferences.</p>
+              <div class="control-grid weave-pattern-controls">
+                <label class="field" id="weaveTwistField" title="How many waveform cycles the pattern turns between neighbouring layers."><span>Twist <output id="weaveTwistOutput">0 cycles · 0°</output></span><input id="weaveTwist" type="range" value="0" min="-1" max="1" step="0.01" aria-describedby="weaveTwistHint"></label>
+              </div>
+              <div class="preset-row weave-twist-presets" id="weaveTwistPresets" role="group" aria-label="Twist presets" aria-describedby="weaveTwistHint">
+                <button type="button" data-twist-preset="0" title="Align neighbouring wave peaks into vertical ribs.">Ribs · 0</button>
+                <button type="button" data-twist-preset="0.5" title="Place each layer's peaks over the previous layer's valleys.">Weave · 0.5</button>
+                <button type="button" data-twist-preset="0.1" title="Turn the waveform gradually into a rising spiral.">Spiral · +0.1</button>
+              </div>
+              <p class="field-hint" id="weaveTwistHint">Twist shifts the waveform continuously from layer to layer.</p>
+
+              <div class="scope-subhead" title="The pot's wall unrolled flat, like a fabric swatch: several neighbouring layers of the wave drawn side by side, so you can see ribs lining up, weave alternating, or the pattern drifting where the wave count changes — before any clay moves."><span>Pattern preview</span><strong id="weaveStripLabel">from the sliced form</strong></div>
+              <div class="unrolled-frame">
+                <button class="pattern-preview-expand" id="weavePatternExpand" type="button" aria-haspopup="dialog" aria-controls="weavePatternOverlay" title="Slice a form before expanding its pattern preview." disabled>Expand</button>
+                <canvas id="weaveUnrolledCanvas" width="640" height="230" aria-label="Several neighbouring layers of the pattern, unrolled flat"></canvas>
+                <p id="weaveUnrolledEmpty">Slice a form to see neighbouring layers of the pattern side by side — ribs line up, weave alternates, drift slides.</p>
+              </div>
+              <p class="physical-readout" id="weaveCombCaption">0.0 mm swing · one cycle ≈ 18.0 mm → — waves at the widest ring.</p>
+              <div class="weave-control-block follow-form-block" id="weaveFollowFormBlock">
+                <div class="scope-subhead"><span>Follow the form</span><strong>curvature response</strong></div>
+                <p class="field-hint">Shapes the wave by the form's own curves.</p>
+                <div class="scope-subhead compact-subhead"><span>Wave depth</span><strong>amplitude only</strong></div>
+                <div class="control-grid two-up">
+                  <label class="field" id="weaveFollowLobesField" title="Make the wave shallower or deeper on outward lobes. Zero leaves it unchanged."><span>On the lobes <output id="weaveFollowLobesOutput">unchanged</output></span><input id="weaveFollowLobes" type="range" value="0" min="-1" max="2" step="0.05"></label>
+                  <label class="field" id="weaveFollowCovesField" title="Make the wave shallower or deeper in inward coves. Zero leaves it unchanged."><span>In the coves <output id="weaveFollowCovesOutput">unchanged</output></span><input id="weaveFollowCoves" type="range" value="0" min="-1" max="2" step="0.05"></label>
+                </div>
+                <p class="physical-readout" id="weaveAmplitudeReadout">Local in/out swing is uniform until form following changes.</p>
+              </div>
+
+              <div class="scope-subhead"><span>Clay along the wall</span><strong>works with a flat wave</strong></div>
+              <div class="control-grid two-up">
+                <label class="field" title="Push less or more clay on outward lobes, independently of the wave. Zero leaves flow unchanged."><span>Flow on lobes <output id="weaveFlowLobesOutput">unchanged</output></span><input id="weaveFlowLobes" type="range" value="0" min="-0.75" max="2" step="0.05"></label>
+                <label class="field" title="Push less or more clay in inward coves, independently of the wave. Zero leaves flow unchanged."><span>Flow in coves <output id="weaveFlowCovesOutput">unchanged</output></span><input id="weaveFlowCoves" type="range" value="0" min="-0.75" max="2" step="0.05"></label>
+              </div>
+              <div class="scope-subhead"><span>Extrusion track</span><strong>baseline 1.0</strong></div>
+              <div class="scope-frame extrusion-frame">
+                <canvas id="weaveExtrusionCanvas" width="640" height="150" tabindex="0" aria-label="Editable periodic extrusion curve" title="Click blank space to add a point. Right-click a point to delete it; two points are always kept."></canvas>
+              </div>
+              <div class="preset-row" id="weaveExtrusionPresets" role="group" aria-label="Extrusion presets">
+                <button type="button" data-extrusion-preset="flat" class="is-active">Flat</button>
+                <button type="button" data-extrusion-preset="ridge-boost">Ridge boost</button>
+                <button type="button" data-extrusion-preset="trough-boost" title="Swells the clay in the wave's troughs — valleys round into soft beads instead of creases.">Trough boost</button>
+                <label class="compact-field" id="weaveExtrusionPhaseField" title="Shift the extrusion curve around the wall relative to the waveform."><span>Phase</span><input id="weaveExtrusionPhase" type="number" value="0" min="0" max="0.99" step="0.01" aria-describedby="weaveExtrusionPhaseHint"></label>
+              </div>
+              <p class="dependent-control-hint" id="weaveExtrusionPhaseHint" hidden>Extrusion phase has no effect while the extrusion track is flat.</p>
+              <div class="weave-control-block layer-rhythm-block" id="weaveLayerRhythmBlock">
+                <label class="switch-row">
+                  <span><strong>Skip layers</strong><small>Alternate patterned and plain wall layers without restarting the weave.</small></span>
+                  <input id="weaveLayerSkipEnabled" type="checkbox" role="switch" aria-controls="weaveLayerRhythmControls">
+                </label>
+                <div id="weaveLayerRhythmControls" class="layer-rhythm-controls" aria-describedby="weaveLayerRhythmSummary">
+                  <div class="control-grid two-up">
+                    <label class="field"><span>Start plain</span><input id="weaveLayerSkipStart" type="number" value="0" min="0" step="1" inputmode="numeric"><small>layers</small></label>
+                    <label class="field"><span>Pattern on</span><input id="weaveLayerSkipOn" type="number" value="2" min="1" step="1" inputmode="numeric"><small>layers</small></label>
+                    <label class="field"><span>Pattern off</span><input id="weaveLayerSkipOff" type="number" value="2" min="1" step="1" inputmode="numeric"><small>layers</small></label>
+                    <label class="field"><span>End plain</span><input id="weaveLayerSkipEnd" type="number" value="0" min="0" step="1" inputmode="numeric"><small>layers</small></label>
+                  </div>
+                  <p class="physical-readout" id="weaveLayerRhythmSummary">2 patterned, then 2 plain · repeats to the top.</p>
+                </div>
+              </div>
+
+              <div class="pattern-file-row">
+                <button class="secondary-button compact-button" id="weavePatternSave" type="button" title="Write the wave, the extrusion curve and every setting in this section except Pattern smoothness to a small file you can load onto another form.">Save pattern</button>
+                <button class="secondary-button compact-button" id="weavePatternLoad" type="button" title="Load a pattern file saved by Clayline. The form, its size and its settings stay as they are.">Load pattern</button>
+                <button class="secondary-button compact-button" id="weaveRestoreButton" type="button" title="Pull the pattern out of a print file Clayline saved. Only the pattern comes across: not the model, the size, the layers, or the range.">Restore pattern from G-code…</button>
+                <input id="weavePatternFile" type="file" accept="application/json,.json" hidden>
+                <input id="weaveRestoreFile" type="file" accept=".gcode,text/x-gcode,text/plain" hidden>
+              </div>
+              <p class="field-hint" id="weaveRestoreStatus" aria-live="polite">A print file Clayline saved gives up its pattern here. The form, its size, the layers and the range stay as they are.</p>
+              <details class="advanced-controls">
+                <summary>Advanced</summary>
+                <div class="control-grid">
+                  <label class="field" title="How finely the line follows the wave, as the spacing between its points. Auto keeps it at half the coil width, capped at 1 mm — finer means smoother waves and heavier files. Changing it means slicing the form again."><span>Pattern smoothness (mm)</span><input id="weaveSampleSpacing" type="number" value="1" min="0.05" step="0.05" data-unit="mm"></label>
+                </div>
+              </details>
+            </div>
+          </section>
+
+          <section class="rail-section weave-section" data-weave-section="inside">
             <div class="section-index">05</div>
             <div class="section-body">
-              <h2>Interior</h2>
-              <p class="section-copy">What the nozzle lays inside the wall.</p>
+              <h2>Inside and floor</h2>
+              <p class="section-copy">What the nozzle lays inside the wall, and under it.</p>
               <fieldset class="segmented weave-seam-control weave-interior-control" id="weaveInteriorControl" aria-label="Interior fill" aria-describedby="weaveInteriorHint">
                 <label><input type="radio" name="weaveInterior" value="hollow" checked><span>Hollow</span></label>
                 <label><input type="radio" name="weaveInterior" value="solid"><span>Solid</span></label>
@@ -621,124 +705,44 @@
                 <p class="physical-readout" id="weaveInfillSpacingReadout">Slice the form to read rib spacing — the sliced coil width sets it.</p>
                 <div class="control-grid two-up">
                   <label class="field" title="Dense fill over the bed and over any part of the form with open air below it, such as the underside of a shelf or a flare, this many layers thick. The whole layer goes dense, not only the part over the open air. Zero leaves an open lattice base."><span>Base layers</span><input id="weaveInfillBaseLayers" type="number" value="0" min="0" step="1" inputmode="numeric"><small>floor skin</small></label>
-                  <label class="field" title="Dense fill under any part of the form that has open air above it, the top and any shelf or dome on the way up, this many layers thick. The whole layer goes dense, not only the part under the open air. A layer under a wall that steps inward by more than half a coil goes dense too, so that wall has something to stand on. Zero leaves the form open at the top."><span>Cap layers</span><input id="weaveInfillCapLayers" type="number" value="0" min="0" step="1" inputmode="numeric"><small>roof skin</small></label>
-                  <label class="field" title="Just below each roof skin, rib spacing halves each layer so the roof has something to land on. Existing ribs stay exactly where they are; the new lines land midway. This is a ceiling, not a promise: the halving stops once the ribs reach the dense skin's own spacing, and stops early if the form has fewer sparse layers below the roof — so the ramp is often shorter than the number you type."><span>Ramp layers</span><input id="weaveInfillRampLayers" type="number" value="3" min="0" step="1" inputmode="numeric" aria-describedby="weaveInfillRampHint"><small>at most, below each roof</small><small class="dependent-control-hint" id="weaveInfillRampHint" hidden>No effect while Cap layers is 0.</small></label>
+                  <label class="field" title="Dense fill under any part of the form that has open air above it, the top and any shelf or dome on the way up, this many layers thick. The whole layer goes dense, not only the part under the open air. A layer under a wall that steps inward by more than half a coil goes dense too, so that wall has something to stand on. Zero leaves the form open at the top."><span>Roof layers</span><input id="weaveInfillCapLayers" type="number" value="0" min="0" step="1" inputmode="numeric"><small>roof skin</small></label>
+                  <label class="field" title="Just below each roof skin, rib spacing halves each layer so the roof has something to land on. Existing ribs stay exactly where they are; the new lines land midway. This is a ceiling, not a promise: the halving stops once the ribs reach the dense skin's own spacing, and stops early if the form has fewer sparse layers below the roof — so the ramp is often shorter than the number you type."><span>Roof ramp layers</span><input id="weaveInfillRampLayers" type="number" value="3" min="0" step="1" inputmode="numeric" aria-describedby="weaveInfillRampHint"><small>at most, below each roof</small><small class="dependent-control-hint" id="weaveInfillRampHint" hidden>No effect while Roof layers is 0.</small></label>
                 </div>
               </div>
+              <div class="scope-subhead"><span>Bottom</span><strong>spirals under the wall</strong></div>
+              <div class="control-grid two-up">
+                <label class="field" title="Printed before the wall starts. Zero adds none."><span>Bottom layers</span><input id="weaveBottomLayers" type="number" value="0" min="0" step="1" aria-describedby="weaveBottomLayersHint"><small class="dependent-control-hint" id="weaveBottomLayersHint" hidden>Bottom is available only when the print range starts at source layer 1.</small></label>
+                <label class="field" id="weaveBottomOverlapField" title="How much each neighbouring dense fill coil overlaps its neighbour — in the bottom, in a solid interior, and in an infill's base and cap skins. Sparse infill ribs are spaced by Rib spacing instead. More overlap closes the fill with more clay."><span>Fill overlap</span><input id="weaveBottomOverlap" type="number" value="0.2" min="0" max="0.95" step="0.05" aria-describedby="weaveBottomOverlapHint"><small class="dependent-control-hint" id="weaveBottomOverlapHint" hidden>Fill overlap spaces dense fill only — the bottom, a solid interior, or an infill's base and cap skins. Nothing here is laying dense fill.</small></label>
+              </div>
+              <label class="switch-row" id="weaveBottomAlternateRow">
+                <span><strong>Alternate bottom direction</strong><small id="weaveBottomAlternateHint">Crossing passes bond the base stronger.</small></span>
+                <input id="weaveBottomAlternate" type="checkbox" role="switch" checked aria-describedby="weaveBottomAlternateHint">
+              </label>
             </div>
           </section>
 
-          <section class="rail-section weave-section weave-scope-section" data-weave-section="oscilloscope">
+          <section class="rail-section weave-section" data-weave-section="print">
             <div class="section-index">06</div>
             <div class="section-body">
-              <h2>Weave pattern</h2>
-              <p class="section-copy">The trace is one wrapped cycle. Drag a point; ghost cycles expose the seam before clay does.</p>
-              <div class="scope-frame">
-                <canvas id="weaveWaveCanvas" width="640" height="220" tabindex="0" aria-label="Editable periodic waveform with ghosted neighbouring cycles" title="Click blank space to add a point. Right-click a point to delete it; two points are always kept."></canvas>
-                <div class="scope-legend"><span>−1 ghost</span><strong id="weaveWaveState">flat · no wobble</strong><span>+1 ghost</span></div>
-              </div>
-              <div class="preset-row" id="weaveWavePresets" role="group" aria-label="Wave presets">
-                <button type="button" data-wave-preset="flat" class="is-active">Flat</button>
-                <button type="button" data-wave-preset="sine">Sine</button>
-                <button type="button" data-wave-preset="triangle">Triangle</button>
-                <button type="button" data-wave-preset="sawtooth">Saw</button>
-                <button type="button" data-wave-preset="rounded-square">Rounded</button>
-                <button type="button" data-wave-preset="pulse">Pulse</button>
-                <button type="button" data-wave-preset="noise">Noise</button>
-                <button type="button" id="weaveNoiseRegenerate" title="Deal a fresh random variation of the noise wave.">Regenerate</button>
-              </div>
-              <div class="scope-subhead weave-texture-subhead"><span>Textures</span><strong>complete patterns</strong></div>
-              <div class="preset-row" id="weaveTexturePresets" role="group" aria-label="Fitted texture presets">
-                <span class="texture-loading">Loading textures…</span>
-              </div>
-              <p class="field-hint" id="weaveTextureHint">A texture replaces the whole pattern with a wave traced from a real print — shapes the basic presets can't draw. Your flow, speed, and nozzle stay yours.</p>
-              <div class="control-grid two-up weave-pattern-controls">
-                <label class="field" id="weaveAmplitudeField" title="How far the wall moves inward and outward from the original form."><span>Amplitude <output id="weaveAmplitudeOutput">0.0 mm</output></span><input id="weaveAmplitude" type="range" value="0" min="0" max="15" step="0.1" aria-describedby="weaveAmplitudeHint"><small class="dependent-control-hint" id="weaveAmplitudeHint" hidden>Amplitude has no visible effect while the wave is flat.</small></label>
-                <label class="field" id="weaveWavelengthField" title="Physical crest-to-crest spacing in millimetres; each closed ring rounds to a whole wave count."><span><span class="field-word">Wavelength (mm)</span> <button type="button" class="follow-chip" id="weaveWavelengthFollow" aria-pressed="true" title="Following the coil width at 3.5× — one crest every 3.5 coils. Type a value to take over; click to follow again.">auto</button></span><input id="weaveWavelength" type="number" value="18" min="0.1" step="0.5" aria-describedby="weaveWavelengthHint"><small class="dependent-control-hint" id="weaveWavelengthHint" hidden>Wavelength has no visible effect while the wave is flat.</small></label>
-                <label class="field" id="weaveTwistField" title="How many waveform cycles the pattern turns between neighbouring layers."><span>Twist <output id="weaveTwistOutput">0 cycles · 0°</output></span><input id="weaveTwist" type="range" value="0" min="-1" max="1" step="0.01" aria-describedby="weaveTwistHint"></label>
-              </div>
-              <div class="weave-control-block layer-rhythm-block" id="weaveLayerRhythmBlock">
-                <label class="switch-row">
-                  <span><strong>Skip layers</strong><small>Alternate patterned and plain wall layers without restarting the weave.</small></span>
-                  <input id="weaveLayerSkipEnabled" type="checkbox" role="switch" aria-controls="weaveLayerRhythmControls">
-                </label>
-                <div id="weaveLayerRhythmControls" class="layer-rhythm-controls" aria-describedby="weaveLayerRhythmSummary">
-                  <div class="control-grid two-up">
-                    <label class="field"><span>Start plain</span><input id="weaveLayerSkipStart" type="number" value="0" min="0" step="1" inputmode="numeric"><small>layers</small></label>
-                    <label class="field"><span>Pattern on</span><input id="weaveLayerSkipOn" type="number" value="2" min="1" step="1" inputmode="numeric"><small>layers</small></label>
-                    <label class="field"><span>Pattern off</span><input id="weaveLayerSkipOff" type="number" value="2" min="1" step="1" inputmode="numeric"><small>layers</small></label>
-                    <label class="field"><span>End plain</span><input id="weaveLayerSkipEnd" type="number" value="0" min="0" step="1" inputmode="numeric"><small>layers</small></label>
-                  </div>
-                  <p class="physical-readout" id="weaveLayerRhythmSummary">2 patterned, then 2 plain · repeats to the top.</p>
-                </div>
-              </div>
-              <div class="weave-control-block follow-form-block" id="weaveFollowFormBlock">
-                <div class="scope-subhead"><span>Follow the form</span><strong>curvature response</strong></div>
-                <p class="field-hint">Use the same base-form curvature to shape the wave and clay flow independently.</p>
-                <div class="scope-subhead compact-subhead"><span>Wave depth</span><strong>amplitude only</strong></div>
-                <div class="control-grid two-up">
-                  <label class="field" id="weaveFollowLobesField" title="Make the wave shallower or deeper on outward lobes. Zero leaves it unchanged."><span>On the lobes <output id="weaveFollowLobesOutput">unchanged</output></span><input id="weaveFollowLobes" type="range" value="0" min="-1" max="2" step="0.05" aria-describedby="weaveFollowLobesHint"><small class="dependent-control-hint" id="weaveFollowLobesHint" hidden>Wave depth has no visible effect while the wave is flat.</small></label>
-                  <label class="field" id="weaveFollowCovesField" title="Make the wave shallower or deeper in inward coves. Zero leaves it unchanged."><span>In the coves <output id="weaveFollowCovesOutput">unchanged</output></span><input id="weaveFollowCoves" type="range" value="0" min="-1" max="2" step="0.05" aria-describedby="weaveFollowCovesHint"><small class="dependent-control-hint" id="weaveFollowCovesHint" hidden>Wave depth has no visible effect while the wave is flat.</small></label>
-                </div>
-                <div class="scope-subhead compact-subhead"><span>Clay flow</span><strong>works with a flat wave</strong></div>
-                <div class="control-grid two-up">
-                  <label class="field" title="Push less or more clay on outward lobes, independently of the wave. Zero leaves flow unchanged."><span>Flow on lobes <output id="weaveFlowLobesOutput">unchanged</output></span><input id="weaveFlowLobes" type="range" value="0" min="-0.75" max="2" step="0.05"></label>
-                  <label class="field" title="Push less or more clay in inward coves, independently of the wave. Zero leaves flow unchanged."><span>Flow in coves <output id="weaveFlowCovesOutput">unchanged</output></span><input id="weaveFlowCoves" type="range" value="0" min="-0.75" max="2" step="0.05"></label>
-                </div>
-              </div>
-              <div class="preset-row weave-twist-presets" id="weaveTwistPresets" role="group" aria-label="Twist presets" aria-describedby="weaveTwistHint">
-                <button type="button" data-twist-preset="0" title="Align neighbouring wave peaks into vertical ribs.">Ribs · 0</button>
-                <button type="button" data-twist-preset="0.5" title="Place each layer's peaks over the previous layer's valleys.">Weave · 0.5</button>
-                <button type="button" data-twist-preset="0.1" title="Turn the waveform gradually into a rising spiral.">Spiral · +0.1</button>
-              </div>
-              <p class="field-hint" id="weaveTwistHint">Twist shifts the waveform continuously from layer to layer.</p>
-              <p class="physical-readout" id="weavePhysicalReadout">Slice the form to calculate whole waves from real ring circumferences.</p>
-              <p class="physical-readout" id="weaveAmplitudeReadout">Local in/out swing is uniform until form following changes.</p>
-
-              <div class="scope-subhead"><span>Extrusion track</span><strong>baseline 1.0</strong></div>
-              <div class="scope-frame extrusion-frame">
-                <canvas id="weaveExtrusionCanvas" width="640" height="150" tabindex="0" aria-label="Editable periodic extrusion curve" title="Click blank space to add a point. Right-click a point to delete it; two points are always kept."></canvas>
-              </div>
-              <div class="preset-row" id="weaveExtrusionPresets" role="group" aria-label="Extrusion presets">
-                <button type="button" data-extrusion-preset="flat" class="is-active">Flat</button>
-                <button type="button" data-extrusion-preset="ridge-boost">Ridge boost</button>
-                <button type="button" data-extrusion-preset="trough-boost" title="Swells the clay in the wave's troughs — valleys round into soft beads instead of creases.">Trough boost</button>
-                <label class="compact-field" id="weaveExtrusionPhaseField" title="Shift the extrusion curve around the wall relative to the waveform."><span>Phase</span><input id="weaveExtrusionPhase" type="number" value="0" min="0" max="0.99" step="0.01" aria-describedby="weaveExtrusionPhaseHint"></label>
-              </div>
-              <p class="dependent-control-hint" id="weaveExtrusionPhaseHint" hidden>Extrusion phase has no effect while the extrusion track is flat.</p>
-
-              <div class="scope-subhead" title="The pot's wall unrolled flat, like a fabric swatch: several neighbouring layers of the wave drawn side by side, so you can see ribs lining up, weave alternating, or the pattern drifting where the wave count changes — before any clay moves."><span>Pattern preview</span><strong id="weaveStripLabel">from the sliced form</strong></div>
-              <div class="unrolled-frame">
-                <button class="pattern-preview-expand" id="weavePatternExpand" type="button" aria-haspopup="dialog" aria-controls="weavePatternOverlay" title="Slice a form before expanding its pattern preview." disabled>Expand</button>
-                <canvas id="weaveUnrolledCanvas" width="640" height="230" aria-label="Several neighbouring layers of the pattern, unrolled flat"></canvas>
-                <p id="weaveUnrolledEmpty">Slice a form to see neighbouring layers of the pattern side by side — ribs line up, weave alternates, drift slides.</p>
-              </div>
-              <p class="physical-readout" id="weaveCombCaption">0.0 mm swing · one cycle ≈ 18.0 mm → — waves at the widest ring.</p>
-
-              <div class="pattern-file-row">
-                <button class="secondary-button compact-button" id="weavePatternSave" type="button" title="Write the wave, the extrusion curve and every setting in this section to a small file you can load onto another form.">Save pattern</button>
-                <button class="secondary-button compact-button" id="weavePatternLoad" type="button" title="Load a pattern file saved by Clayline. The form, its size and its settings stay as they are.">Load pattern</button>
-                <button class="secondary-button compact-button" id="weaveRestoreButton" type="button" title="Pull the pattern out of a print file Clayline saved. Only the pattern comes across: not the model, the size, the layers, or the range.">Restore pattern from G-code…</button>
-                <input id="weavePatternFile" type="file" accept="application/json,.json" hidden>
-                <input id="weaveRestoreFile" type="file" accept=".gcode,text/x-gcode,text/plain" hidden>
-              </div>
-              <p class="field-hint" id="weaveRestoreStatus" aria-live="polite">A print file Clayline saved gives up its pattern here. The form, its size, the layers and the range stay as they are.</p>
-            </div>
-          </section>
-
-
-          <section class="rail-section weave-section" data-weave-section="printer">
-            <div class="section-index">07</div>
-            <div class="section-body">
-              <h2>Printer</h2>
-              <label class="field"><span>Printer</span><select id="weaveProfile"><option value="potterbot-xl" selected>PotterBot 10 XL · verified reference</option><option value="generic-reprap-paste">Generic RepRap paste · unverified</option><option value="generic-marlin-paste">Generic Marlin paste · unverified</option></select></label>
-              <label class="field"><span>Clay flow <output id="weaveFlowOutput">1.00×</output></span><input id="weaveFlow" type="range" value="1" min="0.5" max="1.5" step="0.01"></label>
-              <label class="field" title="Start charge before the first line, in the printer's E units. The profile's start block pushes this much clay out over the bed centre before printing so the barrel is under pressure. Blank keeps the profile's own charge; 0 skips the charge entirely. The profile's amount shows as the placeholder."><span>Start charge (E)</span><input id="weaveStartCharge" type="number" min="0" step="100" placeholder="profile"></label>
-              <label class="switch-row" id="weaveKeepFlowingRow" title="On every crossing from one line to the next, the lift, the move across and the lowering, the ram keeps pushing clay at the rate it prints, and every line starts and ends at full flow. The clay laid on the way counts in the clay, weight and time, and shows as clay in the preview. Turn it off to stop the push on every crossing as before: each line then ends with a short stretch of no clay and the next one builds up slowly.">
-                <span><strong>Keep clay flowing on crossings</strong><small id="weaveKeepFlowingHint">The ram keeps pushing at the print rate while the nozzle crosses, so the next line starts at full pressure.</small></span>
-                <input id="weaveKeepFlowing" type="checkbox" role="switch" checked aria-describedby="weaveKeepFlowingHint">
+              <h2>Print</h2>
+              <p class="section-copy">Which layers print, and how separate pieces take turns.</p>
+              <div class="weave-fact-line" id="weaveSliceFacts" aria-live="polite"><span>Layers —</span><span>Rings —</span><span>Samples —</span></div>
+              <label class="switch-row">
+                <span><strong>Print selected layers</strong><small>Layer numbers are one-based; both ends included. The selected wall band is rebased to the bed.</small></span>
+                <input id="weaveRangeEnabled" type="checkbox" role="switch" disabled>
               </label>
-              <p class="profile-fact" id="weaveProfileFact">Profile truth supplies speeds, bounds, start/end blocks, and pressure travel.</p>
+              <div class="control-grid two-up">
+                <label class="field"><span>From layer</span><input id="weaveRangeFrom" type="number" value="1" min="1" step="1" disabled></label>
+                <label class="field"><span>To layer</span><input id="weaveRangeTo" type="number" value="1" min="1" step="1" disabled></label>
+              </div>
+              <p class="physical-readout" id="weaveRangeReadout" aria-live="polite">Slice the form to choose a print range.</p>
+              <label class="switch-row" id="weaveStackPiecesRow" title="Where the form stands in separate pieces, the nozzle prints a few layers of one piece before it crosses to the next, so it crosses less often. It only goes ahead where no part of the nozzle can reach a taller piece, treating the nozzle as a cone that widens 45° from its tip up to the wider part above it, and the coil as wide as the clay flow lays it. To cross, it lifts above the tallest clay; with Keep clay flowing on crossings, the ram pauses for the extra climb and drop, so clay does not pile up where the next line starts. A small piece may get several layers in a row, each on clay laid moments before. For Nozzle sticks out, fit the nozzle you print with and measure from its tip up to the bottom of the first wider part — the adapter, cap or collar. Not checked: how fast your clay firms up, or how well a layer sticks to one that has waited.">
+                <span><strong>Stack pieces <span class="experimental-mark">★ Experimental</span></strong><small id="weaveStackPiecesHint">Prints a few layers of one piece before moving to the next, as far as the nozzle clears.</small></span>
+                <input id="weaveStackPieces" type="checkbox" role="switch" aria-describedby="weaveStackPiecesHint" aria-controls="weaveStackPiecesNest">
+              </label>
+              <div class="nested-option" id="weaveStackPiecesNest" hidden>
+                <label class="field" title="With the nozzle you print with fitted, measure from its tip straight up to the bottom of the first wider part — the adapter, cap or collar. Stack pieces never lets clay stand within 2 mm of that part. Until you measure, 10 mm."><span>Nozzle sticks out (mm)</span><input id="weaveNozzleClearance" type="number" value="10" min="3" max="100" step="1"></label>
+              </div>
             </div>
           </section>
         </div>

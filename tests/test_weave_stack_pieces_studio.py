@@ -3,8 +3,8 @@
 Pete, 2026-10-06: "at least do some number of multiple rings in each island so
 that you don't have to travel that much? I think it should be an option at
 least (and maybe have a star or something next to it that says experimental?)"
-The switch sits in the Slice section under Nozzle opening, because how far the
-nozzle sticks out is a nozzle fact; its length field shows only while it is on.
+The switch sits in 06 Print, after Print selected layers (it moved there from
+Slice in the 2026-10-07 regroup); its length field shows only while it is on.
 Its keys ride in the pattern and are left out at their defaults, so a job with
 the switch off sends exactly the pattern it always sent.
 """
@@ -27,18 +27,18 @@ def _function(name: str, following: str) -> str:
     return WEAVE[start : WEAVE.index(following, start + 1)]
 
 
-def _slice_section() -> str:
-    start = HTML.index('data-weave-section="slice"')
+def _print_section() -> str:
+    start = HTML.index('data-weave-section="print"')
     return HTML[start : HTML.index("</section>", start)]
 
 
-def test_the_switch_sits_under_nozzle_opening_with_its_star_and_one_hint() -> None:
-    section = _slice_section()
-    nozzle = section.index('id="weaveNozzle"')
+def test_the_switch_sits_in_print_with_its_star_and_one_hint() -> None:
+    section = _print_section()
+    assert "<h2>Print</h2>" in section
+    range_switch = section.index('id="weaveRangeEnabled"')
     switch = section.index('id="weaveStackPieces"')
     field = section.index('id="weaveNozzleClearance"')
-    advanced = section.index("<summary>Advanced</summary>")
-    assert nozzle < switch < field < advanced
+    assert range_switch < switch < field
 
     row = re.search(
         r'<label class="switch-row" id="weaveStackPiecesRow"[^>]*>.*?</label>', section, re.S
@@ -55,10 +55,10 @@ def test_the_switch_sits_under_nozzle_opening_with_its_star_and_one_hint() -> No
     ) in text
     tooltip = re.search(r'title="([^"]*)"', text).group(1)
     assert "Not checked: how fast your clay firms up, or how well a layer sticks" in tooltip
-    # The guard waits where another piece can go, and says it does not where none can.
-    assert "5 seconds" in tooltip
-    assert "when no other piece can go, the lowest one goes next anyway" in tooltip
-    assert "never starts" not in tooltip
+    # No wait between a piece's layers (Pete, 2026-10-07): the tooltip says a
+    # small piece may stack quickly, and promises no pause.
+    assert "seconds" not in tooltip
+    assert "A small piece may get several layers in a row" in tooltip
     # With clay flowing, a crossing above the tallest clay pauses the ram.
     assert "the ram pauses for the extra climb and drop" in tooltip
 

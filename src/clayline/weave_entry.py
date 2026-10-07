@@ -33,6 +33,8 @@ from shapely.geometry.base import BaseGeometry
 from clayline.weave_continuity import (
     CONTINUITY_TOLERANCE_MM,
     ConnectorProof,
+    DirectStepGates,
+    FillStrip,
     FloatArray,
     GateFailure,
     build_wall_ride,
@@ -90,6 +92,8 @@ def choose_layer_entry(
     bead_width: float,
     allow_reverse: bool = True,
     wall_ride: bool = True,
+    fill_strip: FillStrip | None = None,
+    gates: DirectStepGates | None = None,
 ) -> LayerEntry | GateFailure:
     """Open this layer's fill from the climb column, or say why nothing can.
 
@@ -113,6 +117,15 @@ def choose_layer_entry(
     be printed once in one pass only from one of those two points.  Without the
     ride, an opening more than a bead away is a :class:`GateFailure` saying so,
     and the caller breaks the line there instead.
+
+    ``fill_strip`` lets a direct step cross the band between the wall line and
+    the ribs' inset to land on a rib's end (see
+    :class:`~clayline.weave_continuity.FillStrip`).  Only a planned stretch
+    passes it; without it every proof is exactly what it always was.
+
+    ``gates`` are this layer's direct-step gates already built from the same
+    walls, clay, region and strip, for a caller asking about several steps on
+    one layer; the proof is the same one :func:`prove_direct_wall_entry` makes.
     """
 
     points = np.asarray(fill_points, dtype=np.float64)
@@ -144,14 +157,20 @@ def choose_layer_entry(
 
     failure: GateFailure | None = None
     if nearest_distance <= bead_width:
-        direct = prove_direct_wall_entry(
-            previous_seam=climb_xy,
-            fill_start=(float(nearest_start[0]), float(nearest_start[1])),
-            lower_wall=lower_wall,
-            upper_wall=upper_wall,
-            lower_deposition=lower_deposition,
-            current_region=current_region,
-            bead_width=bead_width,
+        target = (float(nearest_start[0]), float(nearest_start[1]))
+        direct = (
+            prove_direct_wall_entry(
+                previous_seam=climb_xy,
+                fill_start=target,
+                lower_wall=lower_wall,
+                upper_wall=upper_wall,
+                lower_deposition=lower_deposition,
+                current_region=current_region,
+                bead_width=bead_width,
+                fill_strip=fill_strip,
+            )
+            if gates is None
+            else gates.prove(climb_xy, target)
         )
         # Nothing can beat this and there is no reason to look: a direct step
         # to the NEAREST end is at most one bead, and every other route to

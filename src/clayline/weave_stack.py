@@ -18,8 +18,7 @@ two questions, without building or emitting any path.
 
 * **In what order.**  Leapfrog: keep printing the lowest column while the
   nozzle clears every piece that will still print below it; otherwise switch
-  to the lowest column that can print.  A slump guard keeps a piece's next
-  layer from starting less than five seconds after its layer below started.
+  to the lowest column that can print.
 
 The nozzle is modelled as a 45 degree cone from a tip radius of half the
 opening plus 1.5 mm, wider than the measured PotterBot cones, and nothing may
@@ -49,8 +48,6 @@ TIP_WALL_MM = 1.5
 CONE_MARGIN_MM = 1.0
 #: How close clay may come below the first wider part of the head.
 WIDE_PART_MARGIN_MM = 2.0
-#: A piece's next layer may not start sooner than this after its layer below.
-SLUMP_GUARD_SECONDS = 5.0
 #: A ring is its track's own continuation when it covers this much of the
 #: smaller of the two footprints.
 LINEAGE_OVERLAP_FRACTION = 0.25
@@ -138,18 +135,13 @@ class PieceLayer:
     layer_index: int
     z: float
     region: BaseGeometry = field(compare=False)
-    seconds: float
 
 
 @dataclass(frozen=True, slots=True)
 class StackPlan:
-    """The print order of one interval and what the slump guard did to it."""
+    """The print order of one interval."""
 
     order: tuple[tuple[int, int], ...]
-    #: Times the guard turned the head away from a layer the nozzle cleared.
-    guard_holds: int
-    #: Times every column was held, so a layer started early anyway.
-    guard_overrides: int
 
     @property
     def chunks(self) -> tuple[tuple[int, int, int], ...]:
@@ -216,32 +208,27 @@ def plan_order(
     rule: ClearanceRule,
     *,
     head_xy: tuple[float, float] | None = None,
-    guard_seconds: float = SLUMP_GUARD_SECONDS,
 ) -> StackPlan:
     """Leapfrog through the columns of one interval.
 
     Every column holds the same consecutive layers.  A column's next layer may
     print when the nozzle there clears every layer the other columns will
-    still print below it — so the lowest column can always print and the order
-    never jams — and when its own layer below started at least
-    ``guard_seconds`` ago.  No column climbs above a column the guard is
-    holding, or will hold again before it is finished, so short pieces take
-    turns.  When every column is held the lowest prints anyway, which is the
-    order the layer-by-layer route takes.
+    still print below it, so the lowest column can always print and the order
+    never jams.  The column being printed keeps going while it may; otherwise
+    the lowest column that may print goes next, and of equals the one nearest
+    the head.  Pete (2026-10-07) had the five-second wait between a piece's
+    layers taken out: his clay usually stands it, and he runs jobs like these
+    at a quarter of the profile's speed.
     """
 
     total = len(columns)
     if total == 0:
-        return StackPlan((), 0, 0)
+        return StackPlan(())
     position = [0] * total
-    started: dict[tuple[int, int], float] = {}
-    clock = 0.0
     order: list[tuple[int, int]] = []
     current: int | None = None
     head: BaseGeometry | None = None if head_xy is None else Point(head_xy)
     verdicts: dict[tuple[int, int, int, int], bool] = {}
-    holds = 0
-    overrides = 0
 
     def pending(column: int) -> bool:
         return position[column] < len(columns[column])
@@ -267,86 +254,28 @@ def plan_order(
                     return False
         return True
 
-    def rested(column: int) -> bool:
-        index = position[column]
-        if index == 0:
-            return True
-        return clock - started[(column, index - 1)] >= guard_seconds - _EPS
-
     def nearness(column: int) -> float:
         return 0.0 if head is None else float(next_layer(column).region.distance(head))
 
-    def will_hold(column: int) -> bool:
-        """Whether the guard will hold this column again before it is finished.
-
-        A layer quicker than the guard needs another piece to print before the
-        layer above it can start.  Climbing past such a column now would leave
-        it to finish alone, its quick layers back to back.
-        """
-
-        layers = columns[column]
-        return any(
-            layers[index].seconds < guard_seconds - _EPS
-            for index in range(position[column], len(layers) - 1)
-        )
-
     while any(pending(column) for column in range(total)):
         open_columns = [column for column in range(total) if pending(column)]
-        cleared = [column for column in open_columns if clear(column)]
-        held = [column for column in cleared if not rested(column)]
-        # Columns no other may climb above: one the guard holds now, and one
-        # it will hold again, so short pieces keep taking turns to the end.
-        waiting = [column for column in open_columns if column in held or will_hold(column)]
-
-        def allowed(
-            column: int,
-            cleared: list[int] = cleared,
-            held: list[int] = held,
-            waiting: list[int] = waiting,
-        ) -> bool:
-            return (
-                column in cleared
-                and column not in held
-                and all(
-                    next_layer(column).layer_index <= next_layer(other).layer_index
-                    for other in waiting
-                    if other != column
-                )
-            )
-
-        if current is not None and pending(current) and allowed(current):
+        if current is not None and pending(current) and clear(current):
             chosen = current
         else:
-            options = [column for column in open_columns if allowed(column)]
-            if current is not None and pending(current) and current in held:
-                holds += 1
-            if options:
-                chosen = min(
-                    options,
-                    key=lambda column: (next_layer(column).layer_index, nearness(column), column),
-                )
-            else:
-                # Every column the nozzle clears is held.  The lowest prints
-                # anyway, and of equals the one whose layer below started
-                # longest ago — the order the layer-by-layer route takes.
-                overrides += 1
-                chosen = min(
-                    cleared,
-                    key=lambda column: (
-                        next_layer(column).layer_index,
-                        -(clock - started.get((column, position[column] - 1), -1e9)),
-                        nearness(column),
-                        column,
-                    ),
-                )
+            # The lowest open column always clears (nothing pending lies below
+            # it), so this is never empty; falling back to every open column
+            # keeps the loop total if that ever stopped being true.
+            options = [column for column in open_columns if clear(column)] or open_columns
+            chosen = min(
+                options,
+                key=lambda column: (next_layer(column).layer_index, nearness(column), column),
+            )
         piece = next_layer(chosen)
-        started[(chosen, position[chosen])] = clock
-        clock += piece.seconds
         order.append((chosen, piece.layer_index))
         position[chosen] += 1
         head = piece.region
         current = chosen
-    return StackPlan(tuple(order), holds, overrides)
+    return StackPlan(tuple(order))
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,17 +299,15 @@ def plan_band(
     band: WallBand,
     ring_of: Callable[[RingProvenance], Ring],
     wall_points_of: Callable[[RingProvenance], np.ndarray],
-    seconds_of: Callable[[RingProvenance], float],
     *,
     filled: bool,
     seam: SeamPolicy,
     rule: ClearanceRule,
     first_stackable_layer: int = 0,
-    guard_seconds: float = SLUMP_GUARD_SECONDS,
 ) -> tuple[StackedInterval, ...]:
     """Cut one band where its tracks stop being separate pieces, and plan each run.
 
-    Everything here is decided from outlines, heights and print times before
+    Everything here is decided from outlines and heights before
     any path is built, so the order the file prints in and the order the
     preview draws are the same plan.  A filled piece needs a chained seam (its
     line climbs where its wall closed); a hollow one may not scatter its seam.
@@ -427,17 +354,16 @@ def plan_band(
                         ring.provenance.layer_index,
                         ring.z,
                         region,
-                        seconds_of(ring.provenance),
                     )
                 )
             columns.append(layers)
         if any(len(layers) != stop - start for layers in columns):
             intervals.append(StackedInterval(first, last, None))
             continue
-        plan = plan_order(columns, rule, guard_seconds=guard_seconds)
+        plan = plan_order(columns, rule)
         if all(chunk_first == chunk_last for _column, chunk_first, chunk_last in plan.chunks):
-            # Nothing stacks — the pieces stand too close, or the guard held
-            # every lead — so the interval prints exactly as it always has.
+            # Nothing stacks — the pieces stand too close for the nozzle — so
+            # the interval prints exactly as it always has.
             intervals.append(StackedInterval(first, last, None))
             continue
         intervals.append(
@@ -451,19 +377,9 @@ def plan_band(
     return tuple(intervals)
 
 
-def path_seconds(points: np.ndarray, speed_mm_s: float) -> float:
-    """How long a printed polyline takes at ``speed_mm_s``."""
-
-    coordinates = np.asarray(points, dtype=np.float64)
-    if len(coordinates) < 2 or speed_mm_s <= 0.0:
-        return 0.0
-    return float(np.hypot(*np.diff(coordinates[:, :2], axis=0).T).sum()) / speed_mm_s
-
-
 __all__ = [
     "CONE_MARGIN_MM",
     "LINEAGE_OVERLAP_FRACTION",
-    "SLUMP_GUARD_SECONDS",
     "TIP_WALL_MM",
     "WIDE_PART_MARGIN_MM",
     "ClearanceRule",
@@ -472,7 +388,6 @@ __all__ = [
     "StackedInterval",
     "clay_footprint",
     "lineage_breaks",
-    "path_seconds",
     "plan_band",
     "plan_order",
     "tip_radius_mm",
