@@ -2,6 +2,20 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.8.1 — 2026-10-06
+
+### New
+- **Stack pieces ★ Experimental.** A new switch in Weave's Slice section,
+  right under Nozzle opening, off by default. Where a form stands in separate
+  pieces, the nozzle prints a few layers of one piece before it crosses to the
+  next, so it crosses less often. It only goes ahead as far as no part of the
+  nozzle can reach the taller piece: measure how far your nozzle sticks out
+  below the adapter and type it in **Nozzle sticks out** (10 mm until you do).
+  A piece's next layer never starts within 5 seconds of the one below it, and
+  pieces that join higher up both reach the joining layer first. Not checked:
+  how fast your clay firms up, or how well a layer sticks after waiting, so
+  watch the first print closely.
+
 ## 0.8.0 — 2026-10-06
 
 ### New

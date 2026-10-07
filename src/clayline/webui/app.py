@@ -1653,6 +1653,9 @@ def _modulate_weave_payload(
                 maximum=50_000,
             ),
             zblend_path=zblend_path,
+            # Stack pieces plans with the clay flow (it widens the beads the
+            # nozzle clears); nothing else in the trace reads it.
+            flow_multiplier=_flow_multiplier(payload) if pattern.settings.stack_pieces else 1.0,
         )
         _attach_top_follow_ghost(trace, zblend_path)
         engine_at = time.perf_counter()
@@ -1687,14 +1690,7 @@ def _modulate_weave_payload(
             },
         }
 
-    flow_value = payload.get(
-        "flow_multiplier", payload.get("flow", _defaults.DEFAULT_FLOW_MULTIPLIER)
-    )
-    if isinstance(flow_value, bool) or not isinstance(flow_value, (int, float)):
-        raise UiRequestError("flow_multiplier must be a number")
-    flow = float(flow_value)
-    if not math.isfinite(flow) or flow <= 0:
-        raise UiRequestError("flow_multiplier must be finite and positive")
+    flow = _flow_multiplier(payload)
     prime_mm = _optional_finite(payload, "prime_mm", minimum=0.0)
     end_early_mm = _optional_finite(payload, "end_early_mm", minimum=0.0)
     start_charge_e = _optional_finite(payload, "start_charge_e", minimum=0.0)
@@ -2917,6 +2913,20 @@ def _finite(
     maximum: float | None = None,
 ) -> float:
     return _mapping_finite(payload, key, default, minimum=minimum, maximum=maximum)
+
+
+def _flow_multiplier(payload: dict[str, Any]) -> float:
+    """The request's clay flow (``flow_multiplier``, or the older ``flow``)."""
+
+    flow_value = payload.get(
+        "flow_multiplier", payload.get("flow", _defaults.DEFAULT_FLOW_MULTIPLIER)
+    )
+    if isinstance(flow_value, bool) or not isinstance(flow_value, (int, float)):
+        raise UiRequestError("flow_multiplier must be a number")
+    flow = float(flow_value)
+    if not math.isfinite(flow) or flow <= 0:
+        raise UiRequestError("flow_multiplier must be finite and positive")
+    return flow
 
 
 def _optional_finite(

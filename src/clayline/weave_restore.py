@@ -296,6 +296,18 @@ def _validate_capsule_projection(
         raise ValueError(
             "G-code readable header 'keep_clay_flowing' disagrees with its restore capsule"
         )
+    # Stack pieces: present only when on, mirroring the capsule's pattern.
+    if decoded.pattern.settings.stack_pieces:
+        expected["parameter.weave_stack_pieces"] = "true"
+        expected["parameter.nozzle_clearance_mm"] = str(
+            decoded.pattern.settings.nozzle_clearance_mm
+        )
+    else:
+        for key in ("parameter.weave_stack_pieces", "parameter.nozzle_clearance_mm"):
+            if key in facts:
+                raise ValueError(
+                    f"G-code readable header {key!r} disagrees with its restore capsule"
+                )
     # Bed-axis stretch: present only when not 1.0, mirroring the capsule.
     for key, factor in (
         ("parameter.source_scale_x", decoded.scale_x),

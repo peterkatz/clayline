@@ -31,6 +31,7 @@ The Model box also takes print files. One Clayline saved brings back every setti
 | Setting | What it does |
 |---|---|
 | **Nozzle opening** | The nozzle you fitted. Coil width and layer height follow it until you type your own. |
+| **Stack pieces ★ Experimental** | Off by default. Where the form stands in separate pieces, prints a few layers of one piece before crossing to the next, only as far as the nozzle clears the taller piece. Type how far your nozzle sticks out below the adapter in **Nozzle sticks out** (10 mm until you measure). Watch the first print: how fast your clay firms up isn't checked. |
 | **Layer height** | Starts at 30% of the nozzle. Type a value to take over; click **AUTO** to follow the nozzle again. |
 | **First layer Z** | The nozzle height for the first layer, which sets how hard the first coil is pressed onto the bed. |
 | **Coil width** (Advanced) | Follows the nozzle. A sensible range is about 0.8 to 1.5 times the nozzle opening. Enter a measured width from a test line. |

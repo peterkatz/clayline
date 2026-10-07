@@ -19,7 +19,14 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from clayline.weave_models import CurvePoint, Pattern, Ring, SeamPolicy, WeaveSettings
+from clayline.weave_models import (
+    DEFAULT_NOZZLE_CLEARANCE_MM,
+    CurvePoint,
+    Pattern,
+    Ring,
+    SeamPolicy,
+    WeaveSettings,
+)
 
 FloatArray = NDArray[np.float64]
 
@@ -76,6 +83,8 @@ _OPTIONAL_SETTINGS_KEYS = {
     "infill_base_layers",
     "infill_cap_layers",
     "infill_ramp_layers",
+    "stack_pieces",
+    "nozzle_clearance_mm",
 }
 _CURVE_KEYS = {"u", "value"}
 _PRESET_NAMES = (
@@ -693,6 +702,15 @@ def pattern_to_json(pattern: Pattern) -> str:
             infill_cap_layers=pattern.settings.infill_cap_layers,
             infill_ramp_layers=pattern.settings.infill_ramp_layers,
         )
+    # Stack pieces is off by default and then writes nothing, so every pattern
+    # from before it existed keeps its canonical bytes.  On, it writes itself
+    # and the nozzle length only where that differs from the 10 mm default —
+    # the layer-rhythm precedent: a length typed and then switched off is not
+    # kept, because with stacking off it shapes nothing.
+    if pattern.settings.stack_pieces:
+        payload["settings"]["stack_pieces"] = True
+        if pattern.settings.nozzle_clearance_mm != DEFAULT_NOZZLE_CLEARANCE_MM:
+            payload["settings"]["nozzle_clearance_mm"] = float(pattern.settings.nozzle_clearance_mm)
     if pattern.wavelength_follows_nozzle is not None:
         payload["settings"]["wavelength_follows_nozzle"] = pattern.wavelength_follows_nozzle
     return json.dumps(
@@ -906,6 +924,18 @@ def pattern_from_json(text: str) -> Pattern:
             3
             if "infill_ramp_layers" not in settings_payload
             else _strict_int(settings_payload["infill_ramp_layers"], "settings.infill_ramp_layers")
+        ),
+        stack_pieces=(
+            False
+            if "stack_pieces" not in settings_payload
+            else _strict_bool(settings_payload["stack_pieces"], "settings.stack_pieces")
+        ),
+        nozzle_clearance_mm=(
+            DEFAULT_NOZZLE_CLEARANCE_MM
+            if "nozzle_clearance_mm" not in settings_payload
+            else _strict_number(
+                settings_payload["nozzle_clearance_mm"], "settings.nozzle_clearance_mm"
+            )
         ),
     )
     return Pattern(

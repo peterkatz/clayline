@@ -73,6 +73,8 @@ class SlicedFormFacade(SlicedForm):
         layer_skip_on: int | None = None,
         layer_skip_off: int | None = None,
         layer_skip_end: int | None = None,
+        stack_pieces: bool | None = None,
+        nozzle_clearance_mm: float | None = None,
         profile: str | Path | Profile | None = None,
         profile_prime_mm: float | None = None,
         profile_end_early_mm: float | None = None,
@@ -95,6 +97,9 @@ class SlicedFormFacade(SlicedForm):
         rebases the chosen wall band to ``first_layer_height`` without slicing
         the mesh again. ``keep_clay_flowing`` keeps the ram pushing at the
         print rate from the first line to the last (off by default).
+        ``stack_pieces`` (experimental, off by default) prints a few layers of
+        one piece before crossing to the next, as far as a nozzle sticking out
+        ``nozzle_clearance_mm`` below its first wider part clears.
         """
 
         from clayline.weave_workflow import build_weave_result
@@ -138,6 +143,8 @@ class SlicedFormFacade(SlicedForm):
             ("layer_skip_on", layer_skip_on),
             ("layer_skip_off", layer_skip_off),
             ("layer_skip_end", layer_skip_end),
+            ("stack_pieces", stack_pieces),
+            ("nozzle_clearance_mm", nozzle_clearance_mm),
         ):
             if value is not None:
                 values[key] = value

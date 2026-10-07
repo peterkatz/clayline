@@ -30,6 +30,7 @@ from clayline.thread_protection_audit import (
     ThreadProtectionAudit,
     validate_thread_protection_audit,
 )
+from clayline.weave_stack import WIDE_PART_MARGIN_MM, tip_radius_mm
 
 _COMMAND = re.compile(r"^\s*([GMT]\d+)\b", re.IGNORECASE)
 _WORD = re.compile(r"(?:^|\s)([XYZEF])(-?(?:\d+(?:\.\d*)?|\.\d+))(?=\s|$)")
@@ -351,6 +352,25 @@ def lint_gcode(
     # the key absent nothing below behaves any differently.
     keep_clay_flowing = _keep_clay_flowing_header(header, issue)
     crossing_bead = _full_bead_e_per_mm(header, profile, issue) if keep_clay_flowing else None
+    # Stack pieces: a piece may stand taller than the next line printed, so the
+    # Weave climb rule holds within each line, and every motion is replayed
+    # against the nozzle cone over the clay laid so far.  Absent, nothing below
+    # behaves any differently.
+    cone_replay = _stack_pieces_replay(header, issue)
+    # With Stack pieces on, a line may start lower than the one before it only
+    # after a crossing that rose the lift above all the clay laid so far: the
+    # previous line's last height, and the highest the nozzle has been since
+    # it last laid clay.
+    previous_line_z: float | None = None
+    peak_since_clay: float | None = None
+    # With both on, a crossing climbing above the tallest clay rests the ram
+    # for the height beyond an ordinary crossing's (emit._flowing_crossing_parts).
+    stacked_layer = _header_float(header, "layer_height_mm")
+    stacked_flow = (
+        _StackedCrossingFlow(lift=profile.travel_policy.lift, layer=stacked_layer)
+        if keep_clay_flowing and cone_replay is not None and stacked_layer is not None
+        else None
+    )
     # A crossing onto the first layer carries that layer's fuller bead.
     first_layer_flow_factor = _header_float(
         header, "parameter.first_layer_flow_factor", fallback=1.0
@@ -392,6 +412,13 @@ def lint_gcode(
         if stripped.startswith("; CLAYLINE_STROKE_BEGIN "):
             if active_stroke:
                 issue("stroke_marker", "stroke markers cannot nest", line_number)
+            if cone_replay is not None:
+                # Each line climbs on its own; the next may start on a lower
+                # piece, once the crossing before it has cleared all the clay.
+                if last_weave_path_z is not None:
+                    previous_line_z = last_weave_path_z
+                last_weave_path_z = None
+                last_weave_path_shaped = False
             active_stroke = True
             stroke_tail_started = False
             stroke_last_print_had_e = None
@@ -658,6 +685,24 @@ def lint_gcode(
                 if weave_z_monotonic and target[2] is not None:
                     target_z = float(target[2])
                     if (
+                        cone_replay is not None
+                        and last_weave_path_z is None
+                        and previous_line_z is not None
+                        and target_z < previous_line_z - 1e-7
+                        and cone_replay.top is not None
+                        and (
+                            peak_since_clay is None
+                            or peak_since_clay
+                            < cone_replay.top + profile.travel_policy.lift - _STACKED_Z_TOLERANCE_MM
+                        )
+                    ):
+                        issue(
+                            "weave_z_monotonic",
+                            "a line starts lower than the line before it without first crossing "
+                            "the lift above all the clay laid so far",
+                            line_number,
+                        )
+                    if (
                         not shaped_motion
                         and last_weave_path_z is not None
                         and target_z < last_weave_path_z - 1e-7
@@ -792,12 +837,30 @@ def lint_gcode(
             # A crossing fragment shorter than one E step carries its clay
             # forward on the next E word, exactly as a print fragment does.
             carried_forward = deferred is not None and deferred.group(1) == "true"
-            if delta_e is None:
-                # Dry only if another line follows: the job's first approach
-                # comes before any clay, and nothing crosses after the last line.
-                if seen_deposition and length > 1e-9 and not carried_forward:
-                    dry_crossing_lines.append(line_number)
-            elif crossing_bead is not None:
+            vertical = moved and length > 1e-9 and not _xy_changed(old, target)
+            if stacked_flow is not None and not vertical:
+                stacked_flow.other()
+            # Dry only if another line follows: the job's first approach comes
+            # before any clay, and nothing crosses after the last line.  With
+            # Stack pieces on, the ram may rest straight up or down above an
+            # ordinary crossing's height (``_StackedCrossingFlow``).
+            if (
+                delta_e is None
+                and seen_deposition
+                and length > 1e-9
+                and not carried_forward
+                and not (
+                    stacked_flow is not None
+                    and vertical
+                    and stacked_flow.rest(float(old[2]), float(target[2]), last_print_z)
+                )
+            ):
+                dry_crossing_lines.append(line_number)
+            if stacked_flow is not None and vertical and (delta_e is not None or carried_forward):
+                finding = stacked_flow.flow(float(old[2]), float(target[2]), last_print_z)
+                if finding is not None:
+                    issue("crossing_flow", finding, line_number)
+            if delta_e is not None and crossing_bead is not None:
                 layer_match = _LAYER.search(comment)
                 first_layer = layer_match is not None and int(layer_match.group(1)) == 0
                 e_per_mm = crossing_bead[0] * (first_layer_flow_factor if first_layer else 1.0)
@@ -829,6 +892,10 @@ def lint_gcode(
                         crossing_line,
                     )
             flowing_crossing_feeds.clear()
+            if stacked_flow is not None and old[2] is not None:
+                finding = stacked_flow.line_start(float(old[2]))
+                if finding is not None:
+                    issue("crossing_flow", finding, line_number)
             if "note=prime ramp" in comment:
                 issue(
                     "crossing_flow",
@@ -941,6 +1008,30 @@ def lint_gcode(
                 "e_deferred is only valid on an E-less body print/carry motion",
                 line_number,
             )
+
+        if (
+            cone_replay is not None
+            and block == "body"
+            and not pressure
+            and kind is not None
+            and all(value is not None for value in (*old, *target))
+        ):
+            start = (float(old[0]), float(old[1]), float(old[2]))
+            end = (float(target[0]), float(target[1]), float(target[2]))
+            finding = cone_replay.check(start, end)
+            if finding is not None:
+                issue("weave_stack_clearance", finding, line_number)
+            # Clay that stays where it is laid.  Clay pushed out on a crossing
+            # hangs from the nozzle and is not a surface it can meet.
+            if kind in {"print", "carry"} and (
+                (delta_e is not None and delta_e > 1e-9) or e_deferred
+            ):
+                cone_replay.lay(start, end)
+                peak_since_clay = None
+            else:
+                peak_since_clay = max(
+                    start[2], end[2], -math.inf if peak_since_clay is None else peak_since_clay
+                )
 
         if (
             block == "body"
@@ -2280,6 +2371,203 @@ def _xy_changed(
         before is None or after is None or not math.isclose(before, after, abs_tol=1e-9)
         for before, after in zip(old[:2], new[:2], strict=True)
     )
+
+
+#: The final check holds the nozzle cone this far clear of the clay's edge.
+STACK_REPLAY_MARGIN_MM = 0.25
+#: Heights in the file are written to six decimals; this covers their rounding.
+_STACKED_Z_TOLERANCE_MM = 1e-4
+#: Longest step between the points a sloped motion is checked at.
+_STACK_REPLAY_STEP_MM = 0.5
+
+
+def _stack_pieces_replay(header: dict[str, str], issue: Any) -> _ConeReplay | None:
+    """Read ``weave_stack_pieces``: absent is off, ``true`` is on with its nozzle facts.
+
+    Not ``stack_*``: that prefix belongs to the stacked-page header family.
+    """
+
+    raw = header.get("parameter.weave_stack_pieces")
+    if raw is None:
+        if "parameter.nozzle_clearance_mm" in header:
+            issue("header", "nozzle_clearance_mm is written only with weave_stack_pieces=true")
+        return None
+    if raw != "true":
+        issue("header", f"weave_stack_pieces={raw!r}; the key is written only as true")
+        return None
+    sticks_out = _header_float(header, "parameter.nozzle_clearance_mm")
+    bead = _header_float(header, "bead_width_mm")
+    if sticks_out is None or bead is None or sticks_out <= WIDE_PART_MARGIN_MM or bead <= 0.0:
+        issue("header", "weave_stack_pieces=true needs a nozzle_clearance_mm and a bead width")
+        return None
+    # More clay per millimetre lays a wider bead at the same layer height, so
+    # the clay the nozzle must clear is the coil width times the clay flow.
+    flow = _header_float(header, "flow_multiplier", fallback=1.0)
+    widest = bead * max(1.0, 1.0 if flow is None else flow)
+    return _ConeReplay(tip_radius=tip_radius_mm(bead), bead_width=widest, sticks_out=sticks_out)
+
+
+class _StackedCrossingFlow:
+    """Where a flowing crossing may rest the ram, with Stack pieces on.
+
+    A stacked crossing climbs above the tallest clay laid so far.  The ram
+    pushes clay only for the climb an ordinary crossing between two layers
+    has (the lift and one layer above the line it left) and for the last lift
+    down onto the next line; it rests for the height between, so clay neither
+    stands as a rod nor piles where the next line starts.  Both directions are
+    held: the clay may not flow further than that, and the ram may not rest
+    where it should flow.
+    """
+
+    def __init__(self, *, lift: float, layer: float) -> None:
+        self.lift = lift
+        self.layer = layer
+        self._rest_floor: float | None = None
+        self._descent_top: float | None = None
+
+    def rest(self, old_z: float, new_z: float, line_z: float | None) -> bool:
+        """Whether a dry, straight-up-or-down crossing motion is that rest."""
+
+        if new_z > old_z:
+            self._descent_top = None
+            return (
+                line_z is not None
+                and old_z >= line_z + self.lift + self.layer - _STACKED_Z_TOLERANCE_MM
+            )
+        self._descent_top = None
+        self._rest_floor = new_z if self._rest_floor is None else min(self._rest_floor, new_z)
+        return True
+
+    def flow(self, old_z: float, new_z: float, line_z: float | None) -> str | None:
+        """What is wrong with clay pushed on a straight-up-or-down crossing motion."""
+
+        if new_z > old_z:
+            self._descent_top = None
+            ceiling = None if line_z is None else line_z + self.lift + self.layer
+            if ceiling is not None and new_z > ceiling + _STACKED_Z_TOLERANCE_MM:
+                return (
+                    f"a crossing pushes clay climbing {new_z - line_z:.6g} mm above the line "
+                    f"it left; with Stack pieces on only the lift and one layer "
+                    f"({self.lift + self.layer:.6g} mm) may carry clay"
+                )
+            return None
+        if self._descent_top is None:
+            self._descent_top = old_z
+        if self._descent_top - new_z > self.lift + _STACKED_Z_TOLERANCE_MM:
+            return (
+                f"a crossing pushes clay coming down {self._descent_top - new_z:.6g} mm; with "
+                f"Stack pieces on only the last {self.lift:.6g} mm onto the next line may"
+            )
+        return None
+
+    def other(self) -> None:
+        """A crossing motion that is not straight up or down."""
+
+        self._descent_top = None
+
+    def line_start(self, z: float) -> str | None:
+        """Where a line starts: the ram may not have rested within the last lift."""
+
+        floor, self._rest_floor = self._rest_floor, None
+        self._descent_top = None
+        if floor is not None and floor < z + self.lift - _STACKED_Z_TOLERANCE_MM:
+            return (
+                "the ram rests within the last lift above the next line although "
+                "keep_clay_flowing=true"
+            )
+        return None
+
+
+class _ConeReplay:
+    """Every motion, in file order, against the nozzle cone over the clay so far.
+
+    The nozzle is a 45 degree cone from its tip radius up to where it sticks
+    out to; nothing may stand within 2 mm of the wider part above that.  This is
+    the planner's cone without the planner's 1 mm margin, held to a quarter of
+    a millimetre, measured independently from the written file: clay is every
+    extruding print or carry segment, grouped by the height it was laid at.
+    """
+
+    def __init__(self, *, tip_radius: float, bead_width: float, sticks_out: float) -> None:
+        self.tip_radius = tip_radius
+        self.bead_width = bead_width
+        self.max_lead = sticks_out - WIDE_PART_MARGIN_MM
+        self.top: float | None = None
+        self._segments: dict[float, list[tuple[tuple[float, float], tuple[float, float]]]] = {}
+        self._geometry: dict[float, tuple[int, Any]] = {}
+
+    def lay(self, start: tuple[float, float, float], end: tuple[float, float, float]) -> None:
+        height = round(max(start[2], end[2]), 6)
+        self._segments.setdefault(height, []).append(((start[0], start[1]), (end[0], end[1])))
+        self.top = height if self.top is None else max(self.top, height)
+
+    def _clay_at(self, height: float) -> Any:
+        import shapely
+
+        segments = self._segments[height]
+        cached = self._geometry.get(height)
+        if cached is None or cached[0] != len(segments):
+            geometry = shapely.multilinestrings([list(segment) for segment in segments])
+            cached = (len(segments), geometry)
+            self._geometry[height] = cached
+        return cached[1]
+
+    def check(
+        self, start: tuple[float, float, float], end: tuple[float, float, float]
+    ) -> str | None:
+        import shapely
+
+        lowest = min(start[2], end[2])
+        if self.top is None or self.top <= lowest + 1e-6:
+            return None
+        flat = abs(end[2] - start[2]) <= 1e-6
+        if flat:
+            probes = [
+                (
+                    shapely.linestrings([start[:2], end[:2]])
+                    if math.dist(start[:2], end[:2]) > 1e-9
+                    else shapely.points(start[:2]),
+                    start[2],
+                )
+            ]
+        else:
+            steps = max(1, math.ceil(math.dist(start, end) / _STACK_REPLAY_STEP_MM))
+            probes = [
+                (
+                    shapely.points(
+                        (
+                            start[0] + (end[0] - start[0]) * index / steps,
+                            start[1] + (end[1] - start[1]) * index / steps,
+                        )
+                    ),
+                    start[2] + (end[2] - start[2]) * index / steps,
+                )
+                for index in range(steps + 1)
+            ]
+        for height in self._segments:
+            if height <= lowest + 1e-6:
+                continue
+            clay = None
+            for probe, tip_z in probes:
+                lead = height - tip_z
+                if lead <= 1e-6:
+                    continue
+                if lead > self.max_lead + 1e-6:
+                    return (
+                        f"clay stands {lead:.3f} mm above the nozzle tip, higher than "
+                        f"{self.max_lead:.3f} mm below the first wider part"
+                    )
+                if clay is None:
+                    clay = self._clay_at(height)
+                distance = float(shapely.distance(probe, clay))
+                room = distance - self.bead_width / 2.0 - (self.tip_radius + lead)
+                if room < STACK_REPLAY_MARGIN_MM - 1e-6:
+                    return (
+                        f"the nozzle cone comes within {room:.3f} mm of clay standing "
+                        f"{lead:.3f} mm above its tip, where {STACK_REPLAY_MARGIN_MM:g} mm "
+                        "is the least allowed"
+                    )
+        return None
 
 
 def _keep_clay_flowing_header(header: dict[str, str], issue: Any) -> bool:

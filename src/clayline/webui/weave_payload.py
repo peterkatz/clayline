@@ -67,6 +67,8 @@ _SETTING_KEYS = (
     "layer_skip_on",
     "layer_skip_off",
     "layer_skip_end",
+    "stack_pieces",
+    "nozzle_clearance_mm",
 )
 
 
@@ -115,6 +117,7 @@ def resolve_pattern(payload: dict[str, Any]) -> Pattern:
             "bottom_alternate",
             "profile_blend",
             "layer_skip_enabled",
+            "stack_pieces",
         }:
             if not isinstance(value, bool):
                 raise ValueError(f"{key} must be a boolean")
@@ -211,6 +214,8 @@ def pattern_payload(
             "layer_skip_on": pattern.settings.layer_skip_on,
             "layer_skip_off": pattern.settings.layer_skip_off,
             "layer_skip_end": pattern.settings.layer_skip_end,
+            "stack_pieces": pattern.settings.stack_pieces,
+            "nozzle_clearance_mm": pattern.settings.nozzle_clearance_mm,
         },
         "scope": {
             "u": [_rounded(value) for value in sample_u],
@@ -724,6 +729,7 @@ def drag_trace_payload(
     *,
     max_points: int = 20_000,
     zblend_path: ZBlendPath | None = None,
+    flow_multiplier: float = 1.0,
 ) -> dict[str, Any]:
     """Build a transient trace from the exact core modulation arrays.
 
@@ -840,6 +846,9 @@ def drag_trace_payload(
         # on every slider drag (measured 7.0 MB peak against 5.7 MB on a
         # 33-layer hollow preview).
         interior_filled = pattern.settings.interior != "hollow"
+        # Stack pieces orders the layers of separate pieces from their wall
+        # outlines, so those are kept for a hollow form too when it is on.
+        keep_modulated = interior_filled or pattern.settings.stack_pieces
         modulated_by_address: dict[RingProvenance, ModulatedRing] = {}
         for layer in sliced.layers:
             for ring in layer.rings:
@@ -866,7 +875,7 @@ def drag_trace_payload(
                         pattern.settings,
                     ),
                 )
-                if interior_filled:
+                if keep_modulated:
                     modulated_by_address[ring.provenance] = modulated
                 xyz = np.column_stack(
                     (
@@ -908,7 +917,7 @@ def drag_trace_payload(
         interior = build_interior_strokes(
             sliced,
             pattern.settings,
-            modulated_by_address=modulated_by_address,
+            modulated_by_address=modulated_by_address if interior_filled else {},
         )
         for stroke in interior.strokes:
             xyz = np.column_stack(
@@ -928,7 +937,64 @@ def drag_trace_payload(
             ).append((xyz, layers, flow, stroke.label))
 
     paths: list[tuple[FloatArray, np.ndarray[Any, Any], np.ndarray[Any, Any], str]] = []
+    # Stack pieces: where separate pieces print a few layers of one at a time,
+    # the trace follows that same plan — asked of the one function the form
+    # stack asks — so the scrubber steps through the order the print runs.
+    stacked_order: dict[int, tuple[tuple[int, int], ...]] = {}
+    stacked_layers: set[int] = set()
+    if pattern.settings.stack_pieces and not pattern.settings.z_blend:
+        from clayline.form_stack import stack_plan_for_band
+        from clayline.profiles import load_profile
+
+        profile = load_profile(sliced.profile_name)
+        for band in sliced.wall_bands:
+            for interval in stack_plan_for_band(
+                band,
+                sliced,
+                pattern,
+                profile,
+                modulated_by_address,
+                fill_points=lambda address: tuple(
+                    np.asarray(xyz[:, :2], dtype=np.float64)
+                    for xyz, _layers, _flow, _label in interior_by_island.get(
+                        address.layer_index, {}
+                    ).get(address.island_index, ())
+                ),
+                first_stackable_layer=(
+                    0 if pattern.settings.interior != "hollow" else pattern.settings.bottom_layers
+                ),
+                # The clay flow widens the beads the plan clears, so the
+                # trace plans with the flow the print file will.
+                flow_multiplier=flow_multiplier,
+            ):
+                if interval.plan is None:
+                    continue
+                stacked_order[interval.first_layer] = tuple(
+                    (layer, interval.columns[column][layer - interval.first_layer].island_index)
+                    for column, layer in interval.plan.order
+                )
+                stacked_layers.update(range(interval.first_layer, interval.last_layer + 1))
+
+    def piece_paths(
+        layer_index: int, island_index: int
+    ) -> list[tuple[FloatArray, np.ndarray[Any, Any], np.ndarray[Any, Any], str]]:
+        """One piece's fill, then its own wall, on one layer."""
+
+        found = list(interior_by_island.get(layer_index, {}).get(island_index, ()))
+        found.extend(
+            wall
+            for wall, island in zip(
+                wall_paths.get(layer_index, ()), wall_islands.get(layer_index, ()), strict=True
+            )
+            if island == island_index
+        )
+        return found
+
     for layer_index in range(len(sliced.layers)):
+        if layer_index in stacked_layers:
+            for layer, island in stacked_order.get(layer_index, ()):
+                paths.extend(piece_paths(layer, island))
+            continue
         walls = list(wall_paths.get(layer_index, ()))
         islands = list(wall_islands.get(layer_index, ()))
         by_island = interior_by_island.get(layer_index)

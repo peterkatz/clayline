@@ -2287,6 +2287,13 @@ input[type="range"] {
   margin: 0;
 }
 
+.experimental-mark {
+  margin-left: 4px;
+  color: var(--clay);
+  font-weight: 560;
+  white-space: nowrap;
+}
+
 .nested-option {
   margin: 0 0 4px 18px;
   padding-left: 12px;

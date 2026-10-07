@@ -85,7 +85,19 @@
     interiorNeedsLayers:
       "A solid or infill interior needs discrete layers. Turn Vase mode · spiral rise off to fill the interior.",
     infillRamp: "No effect while Cap layers is 0.",
+    // Stack pieces is refused by the engine beside vase mode and profile
+    // blend (weave_models._validate_stack_exclusions); the switch says why.
+    stackNeedsLayers:
+      "Vase mode climbs in one unbroken coil, so there are no layers of one piece to print ahead. Turn Vase mode off to stack pieces.",
+    stackProfileBlend:
+      "This pattern was fitted with profile blend, which rides the wall up and down, so a layer has no one height to clear the nozzle from. Choose another pattern to stack pieces.",
   });
+
+  // How far the nozzle sticks out when the potter has not measured it, and
+  // the range the engine accepts (weave_models.NOZZLE_CLEARANCE_*).
+  const NOZZLE_CLEARANCE_DEFAULT_MM = 10;
+  const NOZZLE_CLEARANCE_MIN_MM = 3;
+  const NOZZLE_CLEARANCE_MAX_MM = 100;
 
   // The tightest rib spacing this control offers, in coil widths. The engine
   // refuses anything at or below 1.0 bead width — ribs a coil apart or closer
@@ -436,6 +448,7 @@
     setControlValue("#weaveBottomLayers", root.bottom_layers);
     $("#weaveBottomAlternate").checked = root.bottom_alternate !== false;
     $("#weaveKeepFlowing").checked = root.keep_clay_flowing !== false;
+    setStackControls(root);
     setInteriorControls(root);
     $("#weaveLayerSkipEnabled").checked = Boolean(root.layer_skip_enabled);
     setControlValue("#weaveLayerSkipStart", root.layer_skip_start ?? 0);
@@ -628,6 +641,7 @@
       else delete pattern.settings.bottom_alternate;
       applyLayerRhythmSettings(pattern.settings);
       applyInteriorSettings(pattern.settings);
+      applyStackSettings(pattern.settings);
       return pattern;
     }
     const followLobes = 1 + numberValue("#weaveFollowLobes", 0);
@@ -659,6 +673,7 @@
     if ($("#weaveBottomAlternate").checked) settings.bottom_alternate = true;
     applyLayerRhythmSettings(settings);
     applyInteriorSettings(settings);
+    applyStackSettings(settings);
     // 1.00x is the frozen engine default. Omit it so legacy pattern files,
     // restore capsules, and default G-code headers remain byte-identical.
     if (topFollowSlope !== 1) {
@@ -735,6 +750,61 @@
     settings.layer_skip_on = rhythm.on;
     settings.layer_skip_off = rhythm.off;
     settings.layer_skip_end = rhythm.end;
+  }
+
+  // Stack pieces: the switch and how far the nozzle sticks out. Clamped here,
+  // at the one place the request and every sync read, to the range the engine
+  // accepts, so a typed 2 is sent as 3 rather than refused.
+  function stackValues() {
+    const typed = numberValue("#weaveNozzleClearance", NOZZLE_CLEARANCE_DEFAULT_MM);
+    return {
+      on: $("#weaveStackPieces").checked && !$("#weaveStackPieces").disabled,
+      sticksOut: Math.min(NOZZLE_CLEARANCE_MAX_MM, Math.max(NOZZLE_CLEARANCE_MIN_MM, typed)),
+    };
+  }
+
+  // The layer-rhythm discipline again: both keys are deleted, then written
+  // only when the switch is on, and the length only when it is not the 10 mm
+  // default, so a pattern with stacking off keeps its bytes. Never written
+  // beside vase mode or profile blend, which the engine refuses it with.
+  function applyStackSettings(settings) {
+    delete settings.stack_pieces;
+    delete settings.nozzle_clearance_mm;
+    const stack = stackValues();
+    if (!stack.on || settings.z_blend || settings.profile_blend) return;
+    settings.stack_pieces = true;
+    if (stack.sticksOut !== NOZZLE_CLEARANCE_DEFAULT_MM) {
+      settings.nozzle_clearance_mm = stack.sticksOut;
+    }
+  }
+
+  function setStackControls(settings) {
+    $("#weaveStackPieces").checked = Boolean(settings.stack_pieces);
+    setControlValue(
+      "#weaveNozzleClearance",
+      settings.nozzle_clearance_mm ?? NOZZLE_CLEARANCE_DEFAULT_MM,
+    );
+  }
+
+  // Beside the slice controls the switch reads only vase mode and the loaded
+  // pattern's profile blend, the two things the engine refuses it with. Vase
+  // mode wins: turning it on clears and grays the switch, and the hint says why.
+  function syncStackControls() {
+    const vase = $("#weaveZBlend").checked;
+    const profileBlend = loadedProfileBlend() && checkedValue("weaveInterior", "hollow") === "hollow";
+    const blocked = vase || profileBlend;
+    const control = $("#weaveStackPieces");
+    if (blocked && control.checked) control.checked = false;
+    setDependencyDisabled(
+      "#weaveStackPieces",
+      blocked,
+      vase ? DISABLED_REASONS.stackNeedsLayers : DISABLED_REASONS.stackProfileBlend,
+    );
+    $("#weaveStackPiecesHint").textContent = blocked
+      ? (vase ? DISABLED_REASONS.stackNeedsLayers : DISABLED_REASONS.stackProfileBlend)
+      : "Prints a few layers of one piece before moving to the next, as far as the nozzle clears.";
+    $("#weaveStackPiecesNest").hidden = !control.checked;
+    control.setAttribute("aria-expanded", String(control.checked));
   }
 
   function interiorValues() {
@@ -3494,6 +3564,7 @@
           : "The wall climbs in one continuous coil — no layer seams.";
     const levelRimDisabled = zBlend.disabled || !zBlend.checked;
     $("#weaveLevelRimNest").hidden = !zBlend.checked;
+    syncStackControls();
     const levelRimHint = !$("#weaveLevelRim").checked && S.islandEmergence
         ? "Off — the wall's Z contour follows the form's top"
         : "Taper wobble to zero across one final top-Z revolution.";
@@ -4141,6 +4212,7 @@
     setControlValue("#weaveBottomLayers", settings.bottom_layers);
     $("#weaveBottomAlternate").checked = Boolean(settings.bottom_alternate);
     setInteriorControls(settings);
+    setStackControls(settings);
     $("#weaveLayerSkipEnabled").checked = Boolean(settings.layer_skip_enabled);
     setControlValue("#weaveLayerSkipStart", settings.layer_skip_start ?? 0);
     setControlValue("#weaveLayerSkipOn", settings.layer_skip_on ?? 2);
@@ -5020,6 +5092,22 @@
     });
     $("#weaveLayerSkipEnabled").addEventListener("change", () => {
       beginMetric(); syncControls(); scheduleModulation("settle");
+    });
+    // Stack pieces changes only the order the rings print in, so the slice
+    // stays and only the final path is rebuilt.
+    $("#weaveStackPieces").addEventListener("change", () => {
+      beginMetric(); syncControls(); scheduleModulation("settle");
+    });
+    $("#weaveNozzleClearance").addEventListener("input", () => {
+      beginMetric(); syncControls(); scheduleModulation("settle");
+    });
+    // A typed length outside the range is sent clamped (stackValues); once
+    // the potter is done typing, the field shows the length the job uses.
+    $("#weaveNozzleClearance").addEventListener("change", () => {
+      const { sticksOut } = stackValues();
+      if (numberValue("#weaveNozzleClearance") !== sticksOut) {
+        setControlValue("#weaveNozzleClearance", sticksOut);
+      }
     });
     [
       "#weaveLayerSkipStart",

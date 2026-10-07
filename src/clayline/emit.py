@@ -499,6 +499,53 @@ def _crossing_area(settings: EmissionSettings, move: Move) -> float:
     return area
 
 
+def _stacks_pieces(settings: EmissionSettings) -> bool:
+    """True when the job prints with Stack pieces on (its header key says so)."""
+
+    return settings.parameters.get("weave_stack_pieces") == "true"
+
+
+def _flowing_crossing_parts(
+    move: Move,
+    start: EmissionPoint | None,
+    end: EmissionPoint,
+    profile: Profile,
+    settings: EmissionSettings,
+) -> tuple[tuple[EmissionPoint, bool], ...]:
+    """A flowing crossing motion as ``(point, flowing)`` parts, in order.
+
+    Every crossing motion is one flowing part, except with Stack pieces on.  A
+    stacked crossing climbs above the tallest clay laid so far, which can be
+    many layers above the line it leaves or the one it lands on, and clay
+    pushed while the nozzle climbs straight up stands as a rod, and while it
+    comes straight down piles where the next line starts.  So the clay flows
+    only for as much climb as a crossing between two layers always has — the
+    lift and one layer above the line it left — and only for the last lift
+    down onto the next line; the height between, the ram rests.  Clay pushed
+    on the traverse hangs and drags as on every crossing.
+    """
+
+    whole = ((end, True),)
+    if (
+        start is None
+        or not _stacks_pieces(settings)
+        or move.kind not in {MoveKind.TRAVEL_LIFT, MoveKind.TRAVEL_APPROACH}
+        or abs(end.x - start.x) > 1e-9
+        or abs(end.y - start.y) > 1e-9
+    ):
+        return whole
+    lift = profile.travel_policy.lift
+    if end.z > start.z:
+        flowing_top = start.z + lift + settings.layer_height
+        if end.z <= flowing_top + 1e-9:
+            return whole
+        return ((EmissionPoint(end.x, end.y, flowing_top), True), (end, False))
+    flowing_from = end.z + lift
+    if start.z <= flowing_from + 1e-9:
+        return whole
+    return ((EmissionPoint(end.x, end.y, flowing_from), False), (end, True))
+
+
 def _next_print_feed(moves: tuple[Move, ...], start: int, profile: Profile) -> float | None:
     """Print feed of the first PRINT move at or after ``start``; None when none follows."""
 
@@ -770,21 +817,38 @@ def _prepare_events(
                 # millimetre at the next line's print feed, the same E per
                 # second as printing that line.  The move keeps its crossing
                 # kind, so it is still counted as a travel and checked as one.
-                events.append(
-                    EmissionMotion(
-                        point=point,
-                        command="G1",
-                        extrude=True,
-                        area_mm2=_crossing_area(settings, move),
-                        feed_mm_s=flowing_feed,
-                        kind=move.kind,
-                        page=move.page_index,
-                        layer=move.layer_index,
-                        stroke=move.stroke_id,
-                        comment=move.comment,
-                        source_move=move,
+                for part, flowing in _flowing_crossing_parts(
+                    move, current, point, profile, settings
+                ):
+                    events.append(
+                        EmissionMotion(
+                            point=part,
+                            command="G1",
+                            extrude=True,
+                            area_mm2=_crossing_area(settings, move),
+                            feed_mm_s=flowing_feed,
+                            kind=move.kind,
+                            page=move.page_index,
+                            layer=move.layer_index,
+                            stroke=move.stroke_id,
+                            comment=move.comment,
+                            source_move=move,
+                        )
+                        if flowing
+                        else EmissionMotion(
+                            point=part,
+                            command="G0",
+                            extrude=False,
+                            area_mm2=0.0,
+                            feed_mm_s=profile.speed_travel,
+                            kind=move.kind,
+                            page=move.page_index,
+                            layer=move.layer_index,
+                            stroke=move.stroke_id,
+                            comment=move.comment,
+                            source_move=move,
+                        )
                     )
-                )
             current = point
             index += 1
             # Nothing stopped, so nothing is re-primed or dwelt on before the

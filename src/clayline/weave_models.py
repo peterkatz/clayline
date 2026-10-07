@@ -44,6 +44,11 @@ TOP_LAYER_RULES = (TOP_LAYER_NEAREST, TOP_LAYER_BELOW)
 HOLLOWS_KEEP = "keep"
 HOLLOWS_IGNORE = "ignore"
 HOLLOWS_RULES = (HOLLOWS_KEEP, HOLLOWS_IGNORE)
+# How far the nozzle sticks out below the first wider part, when the potter
+# has not measured it (no maker publishes the length; 2026-10-06 research).
+DEFAULT_NOZZLE_CLEARANCE_MM = 10.0
+NOZZLE_CLEARANCE_MIN_MM = 3.0
+NOZZLE_CLEARANCE_MAX_MM = 100.0
 
 
 class SeamPolicy(StrEnum):
@@ -559,6 +564,14 @@ class WeaveSettings:
     infill_base_layers: int = 0
     infill_cap_layers: int = 0
     infill_ramp_layers: int = 3
+    # Stack pieces (experimental, Pete 2026-10-06): where the form stands in
+    # separate pieces, print a few layers of one piece before crossing to the
+    # next, as far as the nozzle clears the taller piece.  Off is the frozen
+    # default and writes exactly what 0.8.0 wrote.  ``nozzle_clearance_mm`` is
+    # how far the nozzle sticks out below the first wider part (adapter, cap or
+    # collar); no maker publishes it, so 10 mm stands until the potter measures.
+    stack_pieces: bool = False
+    nozzle_clearance_mm: float = DEFAULT_NOZZLE_CLEARANCE_MM
 
     def __post_init__(self) -> None:
         numeric = {
@@ -579,6 +592,7 @@ class WeaveSettings:
             "profile_custom_high": self.profile_custom_high,
             "infill_spacing_beads": self.infill_spacing_beads,
             "infill_angle_deg": self.infill_angle_deg,
+            "nozzle_clearance_mm": self.nozzle_clearance_mm,
         }
         if any(isinstance(value, (bool, np.bool_)) for value in numeric.values()):
             raise ValueError("Weave numeric settings cannot be booleans")
@@ -595,10 +609,11 @@ class WeaveSettings:
             or not isinstance(self.bottom_alternate, bool)
             or not isinstance(self.profile_blend, bool)
             or not isinstance(self.layer_skip_enabled, bool)
+            or not isinstance(self.stack_pieces, bool)
         ):
             raise ValueError(
                 "z_blend, follow_top_edge, level_rim, bottom_alternate, and "
-                "profile_blend, and layer_skip_enabled must be booleans"
+                "profile_blend, layer_skip_enabled, and stack_pieces must be booleans"
             )
         if isinstance(self.bottom_layers, bool) or not isinstance(self.bottom_layers, int):
             raise ValueError("bottom_layers must be an integer")
@@ -668,7 +683,14 @@ class WeaveSettings:
             )
         if min(infill_counts) < 0:
             raise ValueError("infill base, cap, and ramp layer counts cannot be negative")
+        if not (NOZZLE_CLEARANCE_MIN_MM <= self.nozzle_clearance_mm <= NOZZLE_CLEARANCE_MAX_MM):
+            raise ValueError(
+                f"Nozzle sticks out must be between {NOZZLE_CLEARANCE_MIN_MM:g} and "
+                f"{NOZZLE_CLEARANCE_MAX_MM:g} mm: measure from the nozzle tip up to the "
+                "bottom of the first wider part."
+            )
         _validate_interior_exclusions(self)
+        _validate_stack_exclusions(self)
         object.__setattr__(self, "amplitude", float(self.amplitude))
         object.__setattr__(self, "wavelength", float(self.wavelength))
         object.__setattr__(self, "twist", float(self.twist))
@@ -693,6 +715,7 @@ class WeaveSettings:
         # 45° draw the same rib set, and wrapping it would silently rewrite an
         # artist's recorded value.
         object.__setattr__(self, "infill_angle_deg", float(self.infill_angle_deg))
+        object.__setattr__(self, "nozzle_clearance_mm", float(self.nozzle_clearance_mm))
         object.__setattr__(self, "seam", seam)
 
 
@@ -731,6 +754,31 @@ def _validate_interior_exclusions(settings: WeaveSettings) -> None:
             f"Profile blend rides the wall up and down in Z, and {named} lays its fill flat. "
             "A flat pass beside a raised wall bead can drag the nozzle. Keep the interior "
             "hollow, or turn profile blend off."
+        )
+
+
+def _validate_stack_exclusions(settings: WeaveSettings) -> None:
+    """Refuse Stack pieces where there are no separate flat layers to stack.
+
+    Vase mode (and its Z-blend top, the follow-top-edge morph that only acts
+    under it) climbs in one unbroken coil, so there is no layer of one piece to
+    print ahead of another.  Profile blend rides the wall up and down in Z, so
+    a layer has no single height to measure the nozzle's clearance from.
+    """
+
+    if not settings.stack_pieces:
+        return
+    if settings.z_blend:
+        raise ValueError(
+            "Stack pieces prints a few flat layers of one piece at a time, and vase mode "
+            "(with its Z-blend top) climbs in one unbroken coil, so there are no layers to "
+            "stack. Turn vase mode off, or turn Stack pieces off."
+        )
+    if settings.profile_blend:
+        raise ValueError(
+            "Stack pieces measures how far the nozzle clears a taller piece from each "
+            "layer's height, and profile blend rides the wall up and down in Z, so that "
+            "height is not one number. Turn profile blend off, or turn Stack pieces off."
         )
 
 

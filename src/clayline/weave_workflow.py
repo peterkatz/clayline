@@ -327,6 +327,7 @@ def prepare_weave_result(
         resolved_profile,
         job_id=job_id,
         zblend_path=zblend_path,
+        flow_multiplier=flow_multiplier,
     )
     if resolved_pattern.settings.bottom_layers == 0:
         first_deposited_layer = _first_deposited_stream_layer(
@@ -360,6 +361,7 @@ def prepare_weave_result(
                 resolved_profile,
                 job_id=job_id,
                 zblend_path=zblend_path,
+                flow_multiplier=flow_multiplier,
             )
     range_facts = layer_range_payload(selected)
     snapshot_prime_mm = (
@@ -542,6 +544,13 @@ def prepare_weave_result(
                 # reproducibility header would claim an effect it did not have —
                 # the very thing this block refuses to do for a solid form.
                 parameters["infill_angle_deg"] = resolved_pattern.settings.infill_angle_deg
+    if resolved_pattern.settings.stack_pieces:
+        # Written only when on, so every other job's header keeps its bytes.
+        # The final check reads both: with them, a line may stand lower than
+        # one printed before it, and every motion is replayed against the
+        # nozzle cone over the clay laid so far.
+        parameters["weave_stack_pieces"] = "true"
+        parameters["nozzle_clearance_mm"] = resolved_pattern.settings.nozzle_clearance_mm
     parameters.update(
         chunk_parameter_value(PATTERN_PARAMETER, pattern_header_projection(resolved_pattern))
     )
