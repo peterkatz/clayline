@@ -8,7 +8,7 @@ keep the public values immutable in normal use.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 
@@ -49,6 +49,10 @@ HOLLOWS_RULES = (HOLLOWS_KEEP, HOLLOWS_IGNORE)
 DEFAULT_NOZZLE_CLEARANCE_MM = 10.0
 NOZZLE_CLEARANCE_MIN_MM = 3.0
 NOZZLE_CLEARANCE_MAX_MM = 100.0
+# Up to three weaves on one wall (2026-10-18, Pete: "at most I'd only want to
+# apply three weaves to any object"): the pattern's own, and at most two more.
+MAX_EXTRA_WEAVES = 2
+TOO_MANY_EXTRA_WEAVES = "A pattern can carry at most two extra weaves (three in all)."
 
 
 class SeamPolicy(StrEnum):
@@ -135,6 +139,11 @@ class FormWarningCode(StrEnum):
     # emitter actually took, because the welds below are clay it can land on.
     WALL_OVER_RIBS = "wall_over_ribs"
     PIECES_APART = "pieces_apart"
+    # 2026-10-18 (multi-weave plan §2): an extra weave's clay track adds to the
+    # wall's own clay, and two thinning tracks could ask for less than none.
+    # The total is held inside a quarter to three times a plain coil, and the
+    # potter is told which weave and which layers, because the clay changed.
+    EXTRA_WEAVE_CLAY_HELD = "extra_weave_clay_held"
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,6 +274,22 @@ class Ring:
 
     Closed rings repeat their first point exactly as the final row.  Open rings
     never do.  ``sample_count`` excludes the repeated closure row.
+
+    ``hold_circumference`` is the length of the widest ring of the part of the
+    form this ring belongs to, recorded when the form is sliced, so Keep the
+    same number of waves fits one count there and holds it up the whole part.
+    It is None on open rings and on rings not made by slicing a form.
+
+    ``hold_u_offset`` is where on this ring, as a fraction of it from its own
+    seam, its part's seam carries on: where the ring below it across a band
+    break had its seam, plus that ring's own offset.  Every band of the form
+    starts its seams afresh, so where a part carries on across a band break
+    (a cup's floor, an ear beside the wall) the seam can land somewhere else
+    round the ring; a weave that keeps the same number of waves counts its
+    waves from here instead, so its crests carry straight on.  It is 0.0 on
+    every ring of a part's first band, on open rings, and on rings not made by
+    slicing a form, and only a weave that keeps the same number of waves
+    reads it.
     """
 
     provenance: RingProvenance
@@ -277,6 +302,8 @@ class Ring:
     circumference: float
     signed_area: float
     centroid: Point
+    hold_circumference: float | None = None
+    hold_u_offset: float = 0.0
 
     def __post_init__(self) -> None:
         points = _readonly_float_array(self.points, columns=2, label="ring points")
@@ -294,6 +321,21 @@ class Ring:
             raise ValueError(f"ring closure endpoint {requirement} the first point")
         if self.circumference <= 0 or not np.isfinite(self.circumference):
             raise ValueError("ring circumference must be finite and positive")
+        if self.hold_circumference is not None:
+            if isinstance(self.hold_circumference, (bool, np.bool_)) or not isinstance(
+                self.hold_circumference, (int, float, np.integer, np.floating)
+            ):
+                raise ValueError("ring hold_circumference must be a number or None")
+            if not np.isfinite(self.hold_circumference) or self.hold_circumference <= 0:
+                raise ValueError("ring hold_circumference must be finite and positive")
+            object.__setattr__(self, "hold_circumference", float(self.hold_circumference))
+        if isinstance(self.hold_u_offset, (bool, np.bool_)) or not isinstance(
+            self.hold_u_offset, (int, float, np.integer, np.floating)
+        ):
+            raise ValueError("ring hold_u_offset must be a number")
+        if not np.isfinite(self.hold_u_offset) or not 0.0 <= self.hold_u_offset < 1.0:
+            raise ValueError("ring hold_u_offset must be finite and in [0, 1)")
+        object.__setattr__(self, "hold_u_offset", float(self.hold_u_offset))
         if not np.isfinite(points).all() or not np.isfinite(normals).all():
             raise ValueError("ring geometry must be finite")
         if u[0] != 0.0 or u[-1] != 1.0 or np.any(np.diff(u) <= 0.0):
@@ -572,6 +614,16 @@ class WeaveSettings:
     # collar); no maker publishes it, so 10 mm stands until the potter measures.
     stack_pieces: bool = False
     nozzle_clearance_mm: float = DEFAULT_NOZZLE_CLEARANCE_MM
+    # Use this weave (2026-10-18, multi-weave plan): off parks the weave
+    # unprinted and keeps its settings.  On is the frozen default and writes
+    # nothing, so every pattern from before it existed keeps its bytes.
+    wave_on: bool = True
+    # Keep the same number of waves (2026-10-18, docs/plan-steady-wave-count.md):
+    # on, every closed ring of a part of the form takes the count fitted at that
+    # part's widest ring, so the ridges stack up a taper instead of stepping.
+    # Off is the frozen default and writes nothing: each ring rounds its own
+    # count, the look Pete chose on 2026-07-17.
+    hold_wave_count: bool = False
 
     def __post_init__(self) -> None:
         numeric = {
@@ -615,6 +667,10 @@ class WeaveSettings:
                 "z_blend, follow_top_edge, level_rim, bottom_alternate, and "
                 "profile_blend, layer_skip_enabled, and stack_pieces must be booleans"
             )
+        if not isinstance(self.wave_on, bool):
+            raise ValueError("wave_on must be a boolean")
+        if not isinstance(self.hold_wave_count, bool):
+            raise ValueError("hold_wave_count must be a boolean")
         if isinstance(self.bottom_layers, bool) or not isinstance(self.bottom_layers, int):
             raise ValueError("bottom_layers must be an integer")
         layer_skip_counts = (
@@ -802,6 +858,10 @@ class Pattern:
     name: str | None = None
     seed: int | None = None
     wavelength_follows_nozzle: bool | None = None
+    # Weaves 2 and 3, in the potter's order (2026-10-18, Pete: "at most I'd
+    # only want to apply three weaves to any object").  Empty is every
+    # pattern from before them, and writes nothing.
+    extra_weaves: tuple[ExtraWeave, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.settings, WeaveSettings):
@@ -848,10 +908,125 @@ class Pattern:
             raise ValueError("pattern versions 1 and 2 require neutral curvature flow")
         if self.version < 4 and self.settings.profile_blend:
             raise ValueError("pattern versions 1 through 3 require profile_blend off")
+        try:
+            extra_weaves = tuple(self.extra_weaves)
+        except TypeError as exc:
+            raise ValueError("extra weaves must be iterable ExtraWeave values") from exc
+        if any(not isinstance(extra, ExtraWeave) for extra in extra_weaves):
+            raise ValueError("extra weaves must contain only ExtraWeave values")
+        if len(extra_weaves) > MAX_EXTRA_WEAVES:
+            raise ValueError(TOO_MANY_EXTRA_WEAVES)
         object.__setattr__(self, "wave", wave)
         object.__setattr__(self, "extrusion", extrusion)
+        object.__setattr__(self, "extra_weaves", extra_weaves)
         if self.name is not None:
             object.__setattr__(self, "name", self.name.strip())
+
+    def weave_views(self) -> tuple[Pattern, ...]:
+        """Every weave as a single-weave pattern, Weave 1 first.
+
+        Weave 1 is this pattern itself.  Each extra weave stands on Weave 1's
+        whole-wall settings with its own fields in place, its own Clay along
+        the wall among them (2026-10-18, after Pete's question quoted in
+        docs/plan-multi-weave.md).
+        """
+
+        if not self.extra_weaves:
+            return (self,)
+        return (self, *(extra.on_wall(self.settings) for extra in self.extra_weaves))
+
+
+@dataclass(frozen=True, slots=True)
+class ExtraWeave:
+    """Weave 2 or 3: a wave of its own, summed onto the same wall.
+
+    It holds only what a weave owns: its wave and clay track, amplitude,
+    wavelength and its Auto switch, twist, the clay track's phase, Wave depth
+    on lobes and coves, Clay along the wall (its flow on lobes and in coves),
+    the Skip layers rhythm, Use this weave, and Keep the same number of
+    waves.  The rest is the whole wall's and stays on the pattern's own
+    settings.
+    """
+
+    wave: tuple[CurvePoint, ...] = field(default_factory=_flat_wave)
+    extrusion: tuple[CurvePoint, ...] = field(default_factory=_flat_extrusion)
+    amplitude: float = 0.0
+    wavelength: float = 18.0
+    twist: float = 0.0
+    extrusion_phase_offset: float = 0.0
+    follow_lobes: float = 1.0
+    follow_coves: float = 1.0
+    # Clay along the wall, this weave's own (2026-10-18, see the plan): more
+    # or less clay on the form's lobes and in its coves, even with a flat
+    # wave.  One is neutral and writes nothing, so every extra weave saved
+    # before keeps its bytes.
+    flow_lobes: float = 1.0
+    flow_coves: float = 1.0
+    layer_skip_enabled: bool = False
+    layer_skip_start: int = 0
+    layer_skip_on: int = 2
+    layer_skip_off: int = 2
+    layer_skip_end: int = 0
+    wavelength_follows_nozzle: bool = False
+    wave_on: bool = True
+    # Keep the same number of waves, this weave's own: Weave 1's switch never
+    # holds this weave's count, nor this one Weave 1's.
+    hold_wave_count: bool = False
+    name: str | None = None
+    seed: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.wavelength_follows_nozzle, bool):
+            raise ValueError("an extra weave's wavelength_follows_nozzle must be true or false")
+        if not isinstance(self.hold_wave_count, bool):
+            raise ValueError("an extra weave's hold_wave_count must be true or false")
+        # Checked as a throwaway single-weave pattern on a default wall, so an
+        # extra weave's limits are Weave 1's and can never drift from them.
+        single = self.on_wall(WeaveSettings())
+        object.__setattr__(self, "wave", single.wave)
+        object.__setattr__(self, "extrusion", single.extrusion)
+        object.__setattr__(self, "name", single.name)
+        for key in (
+            "amplitude",
+            "wavelength",
+            "twist",
+            "extrusion_phase_offset",
+            "follow_lobes",
+            "follow_coves",
+            "flow_lobes",
+            "flow_coves",
+        ):
+            object.__setattr__(self, key, getattr(single.settings, key))
+
+    def on_wall(self, wall: WeaveSettings) -> Pattern:
+        """This weave alone, on ``wall``'s whole-wall settings."""
+
+        return Pattern(
+            wave=self.wave,
+            extrusion=self.extrusion,
+            settings=replace(
+                wall,
+                amplitude=self.amplitude,
+                wavelength=self.wavelength,
+                twist=self.twist,
+                extrusion_phase_offset=self.extrusion_phase_offset,
+                follow_lobes=self.follow_lobes,
+                follow_coves=self.follow_coves,
+                flow_lobes=self.flow_lobes,
+                flow_coves=self.flow_coves,
+                layer_skip_enabled=self.layer_skip_enabled,
+                layer_skip_start=self.layer_skip_start,
+                layer_skip_on=self.layer_skip_on,
+                layer_skip_off=self.layer_skip_off,
+                layer_skip_end=self.layer_skip_end,
+                wave_on=self.wave_on,
+                hold_wave_count=self.hold_wave_count,
+            ),
+            version=4,
+            name=self.name,
+            seed=self.seed,
+            wavelength_follows_nozzle=self.wavelength_follows_nozzle,
+        )
 
 
 def _readonly_float_array(value: FloatArray, *, columns: int, label: str) -> FloatArray:
@@ -913,10 +1088,13 @@ __all__ = [
     "HOLLOWS_IGNORE",
     "HOLLOWS_KEEP",
     "HOLLOWS_RULES",
+    "MAX_EXTRA_WEAVES",
+    "TOO_MANY_EXTRA_WEAVES",
     "TOP_LAYER_BELOW",
     "TOP_LAYER_NEAREST",
     "TOP_LAYER_RULES",
     "CurvePoint",
+    "ExtraWeave",
     "FormWarning",
     "FormWarningCode",
     "LayerSpan",

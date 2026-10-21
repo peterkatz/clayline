@@ -17,7 +17,7 @@ plain language; this README is the developer's view.
 won't slice or a print that went wrong belongs under [Issues](https://github.com/peterkatz/clayline/issues), with the
 drawing or model and the settings you used.
 
-This is release `0.8.2`; [CHANGELOG.md](CHANGELOG.md) lists what each release
+This is release `0.9.0`; [CHANGELOG.md](CHANGELOG.md) lists what each release
 changed. The software pipeline has substantial local verification, and full
 tiles and Weave forms have been printed and accepted on the PotterBot. It is not
 on PyPI.
@@ -177,7 +177,11 @@ seed for reproducible Noise, for example `--wave noise --wave-seed 8675309`.
 Wavelength is physical spacing in millimetres. Every closed ring uses its own
 half-up rounded whole wave count so the seam closes exactly. On a taper, that
 keeps approximate peak spacing constant while ribs and over-under alignment
-intentionally drift as circumference changes.
+intentionally drift as circumference changes. A weave whose settings carry
+`"hold_wave_count": true` (the studio's **Keep the same number of waves**, off
+by default and set per weave) instead fits one count, by the same rounding, at
+the widest ring of each continuing part of the form and holds it on every
+closed ring of that part, so ribs stack up a taper while the spacing narrows.
 
 Print only a test or trimmed wall band with one-based, inclusive layer numbers:
 
@@ -199,6 +203,20 @@ clayline weave --from previous.gcode model.obj -o reprint.gcode
 If the original mesh sits beside the G-code under the filename recorded in its
 header, the mesh argument may be omitted. Restore compares SHA-256 content—not
 just the filename—and warns honestly before continuing with a different mesh.
+
+Without the model, ask for the form to be made from the print file itself:
+
+```console
+clayline weave --from previous.gcode --form-from-print -o again.gcode
+```
+
+This happens only when no model is given and none sits beside the print file.
+The form is the printed surface, pattern and all, written beside the output
+(into the current folder when no output is named) as `previous-as-printed.obj`
+at the size and place it printed, and it holds only the layers that printed.
+Every weave is switched off so the pattern isn't laid on twice. A `MADE form
+from …` line says so. A print Clayline can't make a form from stops with an
+`ERROR:` line saying why.
 
 ## Previewed G-code in ten minutes
 

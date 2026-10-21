@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 import XCTest
 @testable import Clayline
 
@@ -172,5 +173,29 @@ final class FileTypeAndImportTests: XCTestCase {
             XCTAssertFalse(ClaylineOpenRequest(raw: raw).isPrintFile, raw)
         }
         XCTAssertFalse(ClaylineOpenRequest(raw: nil).isPrintFile)
+    }
+
+    /// Load pattern stamps its own one-shot marker, so the panel it opens
+    /// offers saved pattern files instead of the Model box's meshes, projects
+    /// and print files (where a pattern was greyed out), and a pattern never
+    /// goes on File → Open Recent.
+    func testOpenRequestParsesThePatternMarker() {
+        let request = ClaylineOpenRequest(raw: "weave:pattern")
+        XCTAssertTrue(request.isPattern)
+        XCTAssertFalse(request.isPrintFile)
+        XCTAssertFalse(request.isProject)
+        XCTAssertFalse(request.isReferencePhoto)
+        XCTAssertFalse(request.isDrawingPicker)
+        XCTAssertFalse(request.addsToOpenRecent)
+        XCTAssertEqual(request.mode, .weave)
+        for raw in ["weave:", "weave:gcode", "weave:project", "tiles:patterns"] {
+            XCTAssertFalse(ClaylineOpenRequest(raw: raw).isPattern, raw)
+        }
+        XCTAssertFalse(ClaylineOpenRequest(raw: nil).isPattern)
+        XCTAssertEqual(ClaylineFileTypes.patternTypes, [.json])
+        // A saved pattern is named name.clayline-weave.json and is JSON.
+        let saved = UTType(filenameExtension: "json")
+        XCTAssertEqual(saved, .json)
+        XCTAssertFalse(ClaylineFileTypes.allowedContentTypes(for: .weave).contains(.json))
     }
 }

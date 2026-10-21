@@ -100,6 +100,14 @@ class SlicedFormFacade(SlicedForm):
         ``stack_pieces`` (experimental, off by default) prints a few layers of
         one piece before crossing to the next, as far as a nozzle sticking out
         ``nozzle_clearance_mm`` below its first wider part clears.
+
+        A pattern can carry up to two extra weaves.  The overrides that set
+        one weave's own settings (``extrusion``, ``amplitude``,
+        ``wavelength``, ``twist``, ``extrusion_phase_offset``,
+        ``follow_lobes``, ``follow_coves``, ``flow_lobes``, ``flow_coves``
+        and the ``layer_skip_*`` group) always set Weave 1, the pattern's
+        own; each extra weave keeps the settings its pattern gives it, its
+        own Clay along the wall included, and no override drops one.
         """
 
         from clayline.weave_workflow import build_weave_result
@@ -160,6 +168,7 @@ class SlicedFormFacade(SlicedForm):
             if settings.follow_lobes != 1.0 or settings.follow_coves != 1.0
             else base.version
         )
+        # replace() keeps every other field, the extra weaves included.
         resolved = replace(base, version=version, settings=settings)
         return build_weave_result(
             self,

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ClaylineCommands: Commands {
     @ObservedObject var actions: WebActions
+    @ObservedObject var recentFiles: RecentFilesStore
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -9,6 +10,25 @@ struct ClaylineCommands: Commands {
                 actions.openDocuments()
             }
             .keyboardShortcut("o", modifiers: .command)
+            .disabled(!actions.isReady)
+
+            // As in other Mac apps: the last ten projects, models, drawings
+            // and print files opened or saved, newest first. Choosing one
+            // opens it as if it had been picked again.
+            Menu("Open Recent") {
+                ForEach(recentFiles.entries) { entry in
+                    Button(entry.title) {
+                        actions.openRecent(entry.url)
+                    }
+                }
+                if !recentFiles.urls.isEmpty {
+                    Divider()
+                }
+                Button("Clear Menu") {
+                    recentFiles.clear()
+                }
+                .disabled(recentFiles.urls.isEmpty)
+            }
             .disabled(!actions.isReady)
 
             // Only a copy of the app that carries the example drawings

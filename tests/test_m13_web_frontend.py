@@ -217,7 +217,7 @@ def test_layer_rhythm_controls_are_grouped_with_the_weave_pattern_and_persist_ca
         assert f'id="{control}"' in pattern_section
         assert f"#{control}" in WEAVE
     assert "Skip layers" in pattern_section
-    assert "without restarting the weave" in pattern_section
+    assert "Leave this weave off some layers without restarting it." in pattern_section
     assert "applyLayerRhythmSettings(pattern.settings)" in WEAVE
     assert "settings.layer_skip_enabled = true" in WEAVE
     assert ".layer-rhythm-controls" in CSS
@@ -1657,11 +1657,11 @@ def test_no_new_project_string_speaks_to_a_developer() -> None:
 
 def test_an_opened_print_file_keeps_its_rule_until_its_model_comes_or_the_job_changes() -> None:
     restore = _function("restoreFromGcode", "function ensureRestoreProfileOption")
-    # Waiting for the file's own model whether none is loaded or the loaded one is not
-    # it: loading it keeps the file's top rule and its declined stop.
-    assert (
-        "S.restoreAwaitingMesh = Boolean(payload.needs_mesh) || source.match === false;" in restore
-    )
+    # Waiting for the file's own model whether none is loaded, the loaded one is not
+    # it, or a form made from another print stands in for it: loading it keeps the
+    # file's top rule and its declined stop.
+    assert "const needsMesh = Boolean(payload.needs_mesh) || overForm;" in restore
+    assert "S.restoreAwaitingMesh = needsMesh || source.match === false;" in restore
     # A project brings its own model and job, so nothing is waiting after it opens.
     open_project = _function("openWeaveProject", "function bindHistoryFieldCommits")
     assert "S.restoreAwaitingMesh = false;" in open_project

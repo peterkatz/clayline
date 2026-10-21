@@ -160,6 +160,50 @@
     target: { x: 0, y: 0, z: 0 },
   };
 
+  // --- 3D mouse --------------------------------------------------------
+  // Pete's 3Dconnexion 3D mouse moves this view exactly as it moves the
+  // sculpture in Refab, with Refab's own numbers: its SpaceMouseMapping
+  // table and gains, its ContentView smoothing and speed at their defaults,
+  // and its ViewportCamera turn, zoom and pan factors. The Mac shell
+  // (SpaceMouseBridge.swift) hands every driver report to
+  // window.claylineSpaceMouse.motion as raw tx, ty, tz, rx, ry, rz in the
+  // driver's Z-up frame:
+  //   tx  slide left/right    -> slide the view across the screen
+  //   ty  push/pull           -> zoom toward the target
+  //   tz  lift up/down        -> slide the view up the screen
+  //   rx  tilt forward/back   -> turn about the screen's right axis (pitch)
+  //   ry  tilt left/right     -> turn about the line of sight (roll)
+  //   rz  twist               -> turn about the screen's up axis (yaw)
+  // Refab turns the sculpture about the screen axes and keeps its camera
+  // upright. Here the bed has to turn with the form, so the same picture is
+  // made by turning the camera the opposite way about the same point
+  // (applySpaceMouseTurn, laid over the turntable pose). Nothing in the scene
+  // moves: the placed form, its gizmo, the trace and every pick keep their
+  // own world coordinates. A 3D-mouse move is a view change only, like an
+  // orbit with the mouse: no placement field, no gizmo commit, no undo step.
+  const SPACE_MOUSE = Object.freeze({
+    smoothing: 0.6, // Refab's Smoothing slider default
+    speed: 0.5 * 2, // Refab's Speed slider default, times its own x2
+    orbitGain: 0.02,
+    panGain: 0.015,
+    zoomGain: 0.012,
+    axisLimit: 500, // the driver's full deflection is about 350
+    degreesPerUnit: 0.35, // ViewportCameraState.spinModel
+    zoomPerUnit: 0.0025, // ViewportCameraState.zoom
+    zoomLimit: 400,
+    panPerUnit: 0.004, // ViewportCameraState.pan: radius * 0.004 * distanceScale
+    refabDistancePerRadius: 3.25, // Refab's camera sits radius * 3.25 * distanceScale out
+    refabFovDegrees: 42, // and sees through a 42 degree lens
+    panLimitRadii: 6, // ViewportCameraState.pan's bound, in form radii
+    panLimit: 100000,
+    maxReportsPerCall: 10,
+  });
+  const spaceMouse = {
+    smoothed: [0, 0, 0, 0, 0, 0],
+    turn: new THREE.Quaternion(), // identity: the plain upright turntable view
+    pivot: null, // THREE.Vector3 the turn is about, fixed while it is held
+  };
+
   const pointer = {
     active: false,
     mode: null, // "rotate" | "pan"
@@ -205,33 +249,28 @@
       target.y + horizontal * Math.sin(azimuth),
       target.z + radius * Math.sin(elevation),
     );
-    camera.up.set(0, 0, 1); // locked — no roll, ever.
+    camera.up.set(0, 0, 1); // the turntable itself never rolls
     camera.lookAt(target.x, target.y, target.z);
+    applySpaceMouseTurn();
+    // Picks between frames see the pose just set, not last frame's.
+    camera.updateMatrixWorld();
   }
 
   function cameraBasis() {
-    // World-space right/up for the current camera pose — used by panning.
-    const forward = {
-      x: cam.target.x - camera.position.x,
-      y: cam.target.y - camera.position.y,
-      z: cam.target.z - camera.position.z,
+    // World-space right/up/view of the upright turntable camera, straight
+    // from its angles (view points from the target toward the camera). Mouse
+    // and 3D-mouse panning slide the target along these; a 3D-mouse turn is
+    // laid over the whole pose afterwards (applySpaceMouseTurn), and it
+    // carries these same directions onto the screen's right and up.
+    const ca = Math.cos(cam.azimuth);
+    const sa = Math.sin(cam.azimuth);
+    const ce = Math.cos(cam.elevation);
+    const se = Math.sin(cam.elevation);
+    return {
+      right: { x: -sa, y: ca, z: 0 },
+      up: { x: -se * ca, y: -se * sa, z: ce },
+      view: { x: ce * ca, y: ce * sa, z: se },
     };
-    const flen = Math.hypot(forward.x, forward.y, forward.z) || 1;
-    forward.x /= flen; forward.y /= flen; forward.z /= flen;
-    const worldUp = { x: 0, y: 0, z: 1 };
-    let right = {
-      x: forward.y * worldUp.z - forward.z * worldUp.y,
-      y: forward.z * worldUp.x - forward.x * worldUp.z,
-      z: forward.x * worldUp.y - forward.y * worldUp.x,
-    };
-    const rlen = Math.hypot(right.x, right.y, right.z) || 1;
-    right.x /= rlen; right.y /= rlen; right.z /= rlen;
-    const up = {
-      x: right.y * forward.z - right.z * forward.y,
-      y: right.z * forward.x - right.x * forward.z,
-      z: right.x * forward.y - right.y * forward.x,
-    };
-    return { right, up };
   }
 
   function onPointerDown(event) {
@@ -298,6 +337,146 @@
     const factor = Math.exp(event.deltaY * 0.0015);
     cam.radius = clamp(cam.radius * factor, MIN_RADIUS, MAX_RADIUS);
     applyCameraPose();
+  }
+
+  // The 3D mouse's turn, laid over the upright turntable pose: the camera is
+  // carried the opposite way about the pivot, which shows the same picture
+  // as Refab turning the sculpture (and here the bed) by spaceMouse.turn.
+  function applySpaceMouseTurn() {
+    if (!camera || !spaceMouse.pivot) return;
+    const back = spaceMouse.turn.clone().invert();
+    camera.position.sub(spaceMouse.pivot).applyQuaternion(back).add(spaceMouse.pivot);
+    camera.quaternion.premultiply(back);
+  }
+
+  function clearSpaceMouseTurn() {
+    spaceMouse.turn.identity();
+    spaceMouse.pivot = null;
+  }
+
+  // Refab's SpaceMouseMapping.cameraDeltas, axis for axis.
+  function spaceMouseDeltas(motion) {
+    const [tx, ty, tz, rx, ry, rz] = motion;
+    return {
+      orbitX: rz * SPACE_MOUSE.orbitGain, // twist -> yaw
+      orbitY: rx * SPACE_MOUSE.orbitGain, // tilt forward/back -> pitch
+      roll: ry * SPACE_MOUSE.orbitGain, // tilt left/right -> roll
+      panX: tx * SPACE_MOUSE.panGain, // slide left/right -> across
+      panY: tz * SPACE_MOUSE.panGain, // lift -> view content up
+      zoom: -ty * SPACE_MOUSE.zoomGain, // push/pull -> zoom
+    };
+  }
+
+  // Where the form is and how big: the turn's pivot and the pan's bound.
+  // Refab measures its model; here that is the placed form or the sliced
+  // path on show, then the bed, then the view itself.
+  function spaceMouseFrame() {
+    const box = new THREE.Box3();
+    if (traceActive && traceGroup) box.expandByObject(traceGroup);
+    if (meshObject && meshObject.visible) box.expandByObject(meshObject);
+    if (box.isEmpty() && lastBedBounds) {
+      box.set(
+        new THREE.Vector3(lastBedBounds.minX, lastBedBounds.minY, 0),
+        new THREE.Vector3(lastBedBounds.maxX, lastBedBounds.maxY, 0),
+      );
+    }
+    const finite = !box.isEmpty()
+      && [box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z].every(Number.isFinite);
+    if (!finite) {
+      return { center: new THREE.Vector3(cam.target.x, cam.target.y, cam.target.z), radius: cam.radius };
+    }
+    return {
+      center: box.getCenter(new THREE.Vector3()),
+      radius: Math.max(1, box.getSize(new THREE.Vector3()).length() / 2),
+    };
+  }
+
+  // ViewportCameraState.spinModel: delta * 0.35 degrees about a world axis.
+  function turnSpaceMouseView(delta, axis) {
+    if (!Number.isFinite(delta) || delta === 0) return;
+    const angle = (delta * SPACE_MOUSE.degreesPerUnit * Math.PI) / 180;
+    const about = new THREE.Vector3(axis.x, axis.y, axis.z).normalize();
+    spaceMouse.turn.premultiply(new THREE.Quaternion().setFromAxisAngle(about, angle)).normalize();
+  }
+
+  // ViewportCameraState.zoom: the same multiplier on the camera distance,
+  // kept inside the distances the scroll wheel keeps to.
+  function zoomSpaceMouseView(delta) {
+    if (!Number.isFinite(delta)) return;
+    const limit = SPACE_MOUSE.zoomLimit;
+    const multiplier = Math.exp(clamp(delta, -limit, limit) * SPACE_MOUSE.zoomPerUnit);
+    cam.radius = clamp(cam.radius * multiplier, MIN_RADIUS, MAX_RADIUS);
+  }
+
+  // ViewportCameraState.pan: radius * 0.004 * distanceScale per unit, where
+  // Refab's camera sits radius * 3.25 * distanceScale from its target, so
+  // each unit slides 0.004 / 3.25 of the camera distance. The lens ratio
+  // makes that the same share of this narrower view as of Refab's. Like
+  // Refab's, the slide stops six form radii out; a view the mouse already
+  // took further is never pulled back.
+  function panSpaceMouseView(deltaX, deltaY, frame) {
+    if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return;
+    const lens = Math.tan((camera.fov * Math.PI) / 360)
+      / Math.tan((SPACE_MOUSE.refabFovDegrees * Math.PI) / 360);
+    const step = SPACE_MOUSE.panPerUnit * (cam.radius / SPACE_MOUSE.refabDistancePerRadius) * lens;
+    const { right, up } = cameraBasis();
+    const across = -deltaX * step;
+    const upward = deltaY * step;
+    const next = new THREE.Vector3(
+      cam.target.x + right.x * across + up.x * upward,
+      cam.target.y + right.y * across + up.y * upward,
+      cam.target.z + right.z * across + up.z * upward,
+    );
+    if (![next.x, next.y, next.z].every(Number.isFinite)) return;
+    const bound = Math.min(SPACE_MOUSE.panLimit, frame.radius * SPACE_MOUSE.panLimitRadii);
+    const before = frame.center.distanceTo(cam.target);
+    const after = frame.center.distanceTo(next);
+    const limit = Math.max(bound, before);
+    if (after > limit) next.sub(frame.center).multiplyScalar(limit / after).add(frame.center);
+    cam.target = { x: next.x, y: next.y, z: next.z };
+  }
+
+  function spaceMouseViewShowing() {
+    if (disposed || !renderer || !camera || !hostEl || !hostEl.isConnected) return false;
+    if (document.visibilityState === "hidden") return false;
+    if (!hostEl.getClientRects().length) return false;
+    return hostEl.clientWidth > 0 && hostEl.clientHeight > 0;
+  }
+
+  // One call per batch of driver reports. `reports` is how many reports the
+  // shell folded into this one while the page was busy; each is applied as
+  // Refab applies one, so the view travels as far as it would have there.
+  // Returns true when the view moved.
+  function spaceMouseMotion(tx, ty, tz, rx, ry, rz, reports) {
+    const raw = [tx, ty, tz, rx, ry, rz].map(Number);
+    if (!raw.every(Number.isFinite)) return false;
+    // A gizmo drag reads the camera to place the form; the view holds still
+    // under it so the 3D mouse can never move the form.
+    if (gizmoDrag || !spaceMouseViewShowing()) return false;
+    const count = clamp(Math.floor(Number(reports)) || 1, 1, SPACE_MOUSE.maxReportsPerCall);
+    const limit = SPACE_MOUSE.axisLimit;
+    const sample = raw.map((value) => clamp(value, -limit, limit));
+    const blend = Math.max(0.08, 1 - 0.9 * SPACE_MOUSE.smoothing);
+    const frame = spaceMouseFrame();
+    for (let report = 0; report < count; report += 1) {
+      const smoothed = spaceMouse.smoothed;
+      for (let axis = 0; axis < 6; axis += 1) {
+        smoothed[axis] += blend * (sample[axis] - smoothed[axis]);
+      }
+      const deltas = spaceMouseDeltas(smoothed.map((value) => value * SPACE_MOUSE.speed));
+      if (deltas.orbitX !== 0 || deltas.orbitY !== 0 || deltas.roll !== 0) {
+        if (!spaceMouse.pivot) spaceMouse.pivot = frame.center.clone();
+        const screen = cameraBasis();
+        // ViewportCameraState.spinYaw / spinPitch / roll.
+        turnSpaceMouseView(-deltas.orbitX, screen.up);
+        turnSpaceMouseView(deltas.orbitY, screen.right);
+        turnSpaceMouseView(deltas.roll, screen.view);
+      }
+      if (deltas.panX !== 0 || deltas.panY !== 0) panSpaceMouseView(deltas.panX, deltas.panY, frame);
+      if (deltas.zoom !== 0) zoomSpaceMouseView(deltas.zoom);
+    }
+    applyCameraPose();
+    return true;
   }
 
   function onContextMenu(event) {
@@ -1832,6 +2011,8 @@
     },
 
     resetView() {
+      // Framing starts from the plain upright view: a 3D-mouse turn goes too.
+      clearSpaceMouseTurn();
       const bounds = [];
       if (lastBedBounds) {
         bounds.push(
@@ -1944,8 +2125,16 @@
       cam.elevation = DEFAULT_ELEVATION;
       cam.radius = DEFAULT_RADIUS;
       cam.target = { x: 0, y: 0, z: 0 };
+      clearSpaceMouseTurn();
     },
   };
 
   window.claylineViewport3d = api;
+  // The Mac shell's 3D-mouse entry point (SpaceMouseBridge.swift). `deltas`
+  // and `tuning` are read-only views of Refab's table and numbers.
+  window.claylineSpaceMouse = Object.freeze({
+    motion: spaceMouseMotion,
+    deltas: (tx, ty, tz, rx, ry, rz) => spaceMouseDeltas([tx, ty, tz, rx, ry, rz].map(Number)),
+    tuning: SPACE_MOUSE,
+  });
 })();

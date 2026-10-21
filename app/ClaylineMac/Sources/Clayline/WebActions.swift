@@ -5,11 +5,51 @@ import WebKit
 
 @MainActor
 final class WebActions: ObservableObject {
-    static let maximumSVGBytes = 8 * 1_024 * 1_024
-    static let maximumMeshBytes = 64 * 1_024 * 1_024
-    static let maximumProjectBytes = 96 * 1_024 * 1_024
+    nonisolated static let maximumSVGBytes = 8 * 1_024 * 1_024
+    nonisolated static let maximumMeshBytes = 64 * 1_024 * 1_024
+    nonisolated static let maximumProjectBytes = 96 * 1_024 * 1_024
+    nonisolated static let maximumPrintFileBytes = 128 * 1_024 * 1_024
+
+    /// The most the shell hands the page of each kind of file, from Finder,
+    /// the Dock and File → Open Recent alike. One table, so an open panel
+    /// never puts on the list a file the menu could not open again.
+    nonisolated static func maximumBytes(for kind: ClaylineDocumentKind) -> Int {
+        switch kind {
+        case .svg: maximumSVGBytes
+        case .mesh: maximumMeshBytes
+        case .project: maximumProjectBytes
+        case .printFile: maximumPrintFileBytes
+        }
+    }
+
+    /// Whether File → Open Recent could open this file again: a kind the
+    /// shell hands over, no larger than that kind's bound. A file that cannot
+    /// be measured is left off.
+    nonisolated static func reopenRouteCanCarry(_ url: URL) -> Bool {
+        guard let kind = ClaylineFileTypes.kind(for: url),
+              let size = try? url.resolvingSymlinksInPath()
+                .resourceValues(forKeys: [.fileSizeKey]).fileSize
+        else {
+            return false
+        }
+        return size <= maximumBytes(for: kind)
+    }
+
+    /// An SVG's text the way the page's own picker reads it (Blob.text()):
+    /// UTF-8, with a byte that is not replaced rather than refused and a
+    /// leading byte-order mark dropped. So a drawing that opens from the
+    /// picker opens from Finder and File → Open Recent too.
+    nonisolated static func svgText(from data: Data) -> String {
+        var text = String(decoding: data, as: UTF8.self)
+        if text.unicodeScalars.first == "\u{FEFF}" {
+            text.unicodeScalars.removeFirst()
+        }
+        return text
+    }
 
     @Published private(set) var isReady = false
+    /// File → Open Recent. The menu watches it itself.
+    let recentFiles: RecentFilesStore
     var onMeshSelected: ((URL) -> Void)?
     /// The project the page has just taken, so the shell can remember the
     /// folder and put the name in the window title.
@@ -20,6 +60,10 @@ final class WebActions: ObservableObject {
     /// Where each imported design was read from, so an edit can be written back
     /// over the artist's own file instead of copied into Downloads.
     private var svgSources = SVGSourceIndex()
+
+    init(recentFiles: RecentFilesStore? = nil) {
+        self.recentFiles = recentFiles ?? RecentFilesStore()
+    }
 
     func attach(_ webView: WKWebView) {
         self.webView = webView
@@ -102,6 +146,27 @@ final class WebActions: ObservableObject {
         }
     }
 
+    /// A file an open panel has just handed the page goes on File → Open
+    /// Recent; so does a project once it is saved.
+    func noteRecentFile(_ url: URL) {
+        recentFiles.note(url)
+    }
+
+    /// File → Open Recent: the file opens exactly as if it had been chosen
+    /// again, and goes back to the top of the list once it has. One that is
+    /// gone is said so and leaves the list.
+    func openRecent(_ url: URL) {
+        guard let file = recentFiles.fileToReopen(url) else {
+            presentMissingRecentFile(url)
+            return
+        }
+        importDocuments([file])
+    }
+
+    /// How a recent file that is gone is reported. Replaceable so the menu
+    /// can be tested without a dialog.
+    var reportMissingRecentFile: (@MainActor (URL) -> Void)?
+
     func importDocuments(_ urls: [URL]) {
         guard let selection = ClaylineFileTypes.importSelection(from: urls) else { return }
         guard isReady, webView != nil else {
@@ -123,6 +188,10 @@ final class WebActions: ObservableObject {
         case .project:
             if let url = selection.urls.first {
                 importProject(url)
+            }
+        case .printFile:
+            if let url = selection.urls.first {
+                importPrintFile(url)
             }
         }
         if selection.ignoredCount > 0 {
@@ -161,33 +230,41 @@ final class WebActions: ObservableObject {
 
     /// A project has been read through and is on the bed: the one way the
     /// shell hears it, whether the file came from the Open panel, Finder, or
-    /// a menu. The folder and the window title follow from here.
+    /// a menu. The folder, the window title and File → Open Recent follow
+    /// from here.
     func projectWasOpened(at url: URL) {
+        recentFiles.note(url)
         onProjectOpened?(url)
     }
 
     private func importSVGs(_ urls: [URL]) {
         guard isReady, let webView else { return }
 
+        let maximumBytes = Self.maximumBytes(for: .svg)
+        var read: [URL] = []
         let files = urls.compactMap { url -> [String: String]? in
-            guard let data = try? Data(contentsOf: url),
-                  data.count <= Self.maximumSVGBytes,
-                  let svg = String(data: data, encoding: .utf8)
-            else {
+            guard let data = Self.readBoundedBinaryFile(url, maximumBytes: maximumBytes) else {
                 return nil
             }
             // Recorded before the page is told about it, because the page will
             // ask to save by this same name and only the shell knows the path.
             svgSources.remember(url)
-            return ["name": url.lastPathComponent, "svg": svg]
+            read.append(url)
+            return ["name": url.lastPathComponent, "svg": Self.svgText(from: data)]
         }
-        guard !files.isEmpty,
-              let data = try? JSONSerialization.data(withJSONObject: files),
+        // Not one drawing could be read: say so, rather than a menu item or a
+        // Finder open that does nothing.
+        guard !files.isEmpty else {
+            presentImportFailure(.svg)
+            return
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: files),
               let json = String(data: data, encoding: .utf8)
         else {
             return
         }
         webView.evaluateJavaScript("window.claylineDesktop.importFiles(\(json))")
+        read.forEach { recentFiles.note($0) }
     }
 
     func restoreMesh(_ url: URL) {
@@ -203,7 +280,7 @@ final class WebActions: ObservableObject {
         }
 
         let filename = url.lastPathComponent
-        let maximumBytes = Self.maximumMeshBytes
+        let maximumBytes = Self.maximumBytes(for: .mesh)
         Task { @MainActor [weak self, weak webView] in
             let base64 = await Task.detached(priority: .userInitiated) {
                 Self.readBoundedBinaryFile(url, maximumBytes: maximumBytes)?
@@ -218,7 +295,7 @@ final class WebActions: ObservableObject {
             }
             guard let base64 else {
                 if showFailure {
-                    self.presentMeshImportFailure()
+                    self.presentImportFailure(.mesh)
                 }
                 return
             }
@@ -238,12 +315,14 @@ final class WebActions: ObservableObject {
                     in: nil,
                     contentWorld: .page
                 ) as? Bool
-                if accepted != true, showFailure {
-                    self.presentMeshImportFailure()
+                if accepted == true {
+                    self.recentFiles.note(url)
+                } else if showFailure {
+                    self.presentImportFailure(.mesh)
                 }
             } catch {
                 if showFailure {
-                    self.presentMeshImportFailure()
+                    self.presentImportFailure(.mesh)
                 }
             }
         }
@@ -262,7 +341,7 @@ final class WebActions: ObservableObject {
         }
 
         let filename = url.lastPathComponent
-        let maximumBytes = Self.maximumProjectBytes
+        let maximumBytes = Self.maximumBytes(for: .project)
         Task { @MainActor [weak self, weak webView] in
             let base64 = await Task.detached(priority: .userInitiated) {
                 Self.readBoundedBinaryFile(url, maximumBytes: maximumBytes)?
@@ -276,7 +355,7 @@ final class WebActions: ObservableObject {
                 return
             }
             guard let base64 else {
-                self.presentProjectImportFailure()
+                self.presentImportFailure(.project)
                 return
             }
 
@@ -294,10 +373,10 @@ final class WebActions: ObservableObject {
                 if accepted == true {
                     self.projectWasOpened(at: url)
                 } else {
-                    self.presentProjectImportFailure()
+                    self.presentImportFailure(.project)
                 }
             } catch {
-                self.presentProjectImportFailure()
+                self.presentImportFailure(.project)
             }
         }
     }
@@ -325,12 +404,67 @@ final class WebActions: ObservableObject {
         return data.count <= maximumBytes ? data : nil
     }
 
+    /// A print file from Finder, the Dock or File → Open Recent goes to Weave
+    /// as bytes, bounded and passed as a WebKit argument exactly like a mesh.
+    /// The page then reads it as its Model box reads one: a file Clayline
+    /// wrote brings back its whole job, another slicer's is rebuilt into a
+    /// form.
+    private func importPrintFile(_ url: URL) {
+        guard isReady,
+              let webView,
+              ClaylineFileTypes.kind(for: url) == .printFile
+        else {
+            return
+        }
+
+        let filename = url.lastPathComponent
+        let maximumBytes = Self.maximumBytes(for: .printFile)
+        Task { @MainActor [weak self, weak webView] in
+            let base64 = await Task.detached(priority: .userInitiated) {
+                Self.readBoundedBinaryFile(url, maximumBytes: maximumBytes)?
+                    .base64EncodedString()
+            }.value
+            guard let self,
+                  let webView,
+                  self.isReady,
+                  self.webView === webView
+            else {
+                return
+            }
+            guard let base64 else {
+                self.presentImportFailure(.printFile)
+                return
+            }
+
+            let payload: [String: Any] = [
+                "name": filename,
+                "base64": base64,
+            ]
+            do {
+                let accepted = try await webView.callAsyncJavaScript(
+                    "return window.claylineDesktop && window.claylineDesktop.importPrintFile(payload)",
+                    arguments: ["payload": payload],
+                    in: nil,
+                    contentWorld: .page
+                ) as? Bool
+                if accepted == true {
+                    self.recentFiles.note(url)
+                } else {
+                    self.presentImportFailure(.printFile)
+                }
+            } catch {
+                self.presentImportFailure(.printFile)
+            }
+        }
+    }
+
     private func presentIgnoredFilesNotice(_ selection: ClaylineImportSelection) {
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = switch selection.kind {
         case .mesh: "Weave opens one mesh at a time"
         case .project: "Clayline opens one project at a time"
+        case .printFile: "Weave opens one print file at a time"
         case .svg: "Some files were not opened"
         }
         alert.informativeText = switch selection.kind {
@@ -338,9 +472,41 @@ final class WebActions: ObservableObject {
             "Clayline opened the first supported mesh and ignored \(selection.ignoredCount) other file(s)."
         case .project:
             "Clayline opened the first project and ignored \(selection.ignoredCount) other file(s)."
+        case .printFile:
+            "Clayline opened the first print file and ignored \(selection.ignoredCount) other file(s)."
         case .svg:
             "Clayline opened the supported SVG batch and ignored \(selection.ignoredCount) other file(s)."
         }
+        alert.addButton(withTitle: "OK")
+        if let window = webView?.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    /// How a file the shell could not hand the page is reported. Replaceable
+    /// so a test can see it without a dialog.
+    var reportImportFailure: (@MainActor (ClaylineDocumentKind) -> Void)?
+
+    private func presentImportFailure(_ kind: ClaylineDocumentKind) {
+        if let reportImportFailure {
+            reportImportFailure(kind)
+            return
+        }
+        switch kind {
+        case .svg: presentDrawingImportFailure()
+        case .mesh: presentMeshImportFailure()
+        case .project: presentProjectImportFailure()
+        case .printFile: presentPrintFileImportFailure()
+        }
+    }
+
+    private func presentDrawingImportFailure() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Drawing could not be opened"
+        alert.informativeText = "Choose readable SVG drawings no larger than 8 MiB each."
         alert.addButton(withTitle: "OK")
         if let window = webView?.window {
             alert.beginSheetModal(for: window)
@@ -355,6 +521,36 @@ final class WebActions: ObservableObject {
         alert.messageText = "Project could not be opened"
         alert.informativeText =
             "Choose one Clayline project file no larger than 96 MiB."
+        alert.addButton(withTitle: "OK")
+        if let window = webView?.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    private func presentPrintFileImportFailure() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Print file could not be opened"
+        alert.informativeText = "Choose one readable G-code file no larger than 128 MiB."
+        alert.addButton(withTitle: "OK")
+        if let window = webView?.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    private func presentMissingRecentFile(_ url: URL) {
+        if let reportMissingRecentFile {
+            reportMissingRecentFile(url)
+            return
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "“\(url.lastPathComponent)” can’t be found."
+        alert.informativeText = "It may have been moved or deleted."
         alert.addButton(withTitle: "OK")
         if let window = webView?.window {
             alert.beginSheetModal(for: window)

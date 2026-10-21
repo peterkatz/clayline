@@ -33,6 +33,14 @@
     draw: "clayline.draw-settings.v2",
     weave: "clayline.weave-settings.v1",
   });
+  // Every settings version each mode opens, oldest first; the last is the
+  // newest this release knows. A Weave job with extra weaves is written as
+  // v2 and one weave as v1, so a one-weave project is the file it always was
+  // and a Clayline from before extra weaves answers a v2 one as newer.
+  const SETTINGS_SCHEMAS = Object.freeze({
+    draw: Object.freeze(["clayline.draw-settings.v2"]),
+    weave: Object.freeze(["clayline.weave-settings.v1", "clayline.weave-settings.v2"]),
+  });
   const MANIFEST_NAME = "project.json";
   const SOURCE_FOLDER = "sources";
   const REFERENCE_FOLDER = "references";
@@ -398,6 +406,32 @@
     throw refuse(`${what} ${JSON.stringify(found)} is not ${expected}`);
   }
 
+  // One rule for a mode's settings: any version it opens is read as is,
+  // anything later than the newest is newer, and everything else is damaged.
+  function checkSettingsSchema(found, mode) {
+    const accepted = SETTINGS_SCHEMAS[mode];
+    if (accepted.includes(found)) return;
+    checkSchema(found, accepted[accepted.length - 1], `${mode} settings schema`);
+  }
+
+  // The version a Weave job is written as: v2 exactly when its pattern carries
+  // something Clayline 0.8.3 cannot read: extra weaves, Weave 1 switched off,
+  // or any weave keeping the same number of waves (with extra weaves it is v2
+  // already, so Weave 1's own switch is the one left to ask).
+  function weaveSettingsSchemaFor(settings) {
+    let pattern = null;
+    try {
+      pattern = JSON.parse(settings.pattern_json);
+    } catch (_error) {
+      pattern = null;
+    }
+    const weaves = pattern?.extra_weaves;
+    return (Array.isArray(weaves) && weaves.length) || pattern?.settings?.wave_on === false
+      || pattern?.settings?.hold_wave_count === true
+      ? "clayline.weave-settings.v2"
+      : "clayline.weave-settings.v1";
+  }
+
   function plainName(path, folder) {
     if (typeof path !== "string") return null;
     const head = `${folder}/`;
@@ -428,9 +462,10 @@
     if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
       throw new Error("Clayline project: settings snapshot is missing");
     }
-    if (settings.schema !== SETTINGS_SCHEMA[mode]) {
+    const expected = mode === "weave" ? weaveSettingsSchemaFor(settings) : SETTINGS_SCHEMA[mode];
+    if (settings.schema !== expected) {
       throw new Error(
-        `Clayline project: ${mode} settings must be ${SETTINGS_SCHEMA[mode]}, `
+        `Clayline project: ${mode} settings must be ${expected}, `
         + `not ${JSON.stringify(settings.schema)}`,
       );
     }
@@ -518,7 +553,7 @@
     if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
       throw refuse("settings are missing");
     }
-    checkSchema(settings.schema, SETTINGS_SCHEMA[mode], `${mode} settings schema`);
+    checkSettingsSchema(settings.schema, mode);
 
     const sourceRows = Array.isArray(manifest.sources) ? manifest.sources : [];
     const referenceRows = Array.isArray(manifest.references) ? manifest.references : [];

@@ -65,11 +65,14 @@ BANNED_PATH_PARTS = {
     "output",
     "tests",
 }
+# disable-library-validation is not listed: the app loads 3Dconnexion's own
+# signed driver framework (/Library/Frameworks/3DconnexionClient.framework,
+# team 9D93Y2RD6L) so a 3D mouse can move the 3D view, and a hardened-runtime
+# app may only load another team's library with that exception (0.8.3).
 DANGEROUS_ENTITLEMENTS = {
     "com.apple.security.cs.allow-dyld-environment-variables",
     "com.apple.security.cs.allow-jit",
     "com.apple.security.cs.disable-executable-page-protection",
-    "com.apple.security.cs.disable-library-validation",
     "com.apple.security.get-task-allow",
 }
 ENGINE_FALLBACKS = (
@@ -180,6 +183,12 @@ def _audit_plist(info: dict[str, Any], resources: Path, audit: Audit) -> Path | 
         "com.clayline.project" in declared_types,
         "CFBundleDocumentTypes must declare the Clayline project type",
     )
+    # File → Open Recent and the Dock list print files, and Finder offers
+    # Clayline under Open With for them.
+    audit.require(
+        "com.clayline.gcode" in declared_types,
+        "CFBundleDocumentTypes must declare the G-code print file type",
+    )
 
     exported_types = info.get("UTExportedTypeDeclarations", [])
     exported_project = next(
@@ -199,6 +208,22 @@ def _audit_plist(info: dict[str, Any], resources: Path, audit: Audit) -> Path | 
         isinstance(exported_project_tags, dict)
         and "clayline" in exported_project_tags.get("public.filename-extension", []),
         "UTExportedTypeDeclarations must map com.clayline.project to .clayline",
+    )
+    exported_gcode = next(
+        (
+            item
+            for item in exported_types
+            if isinstance(item, dict) and item.get("UTTypeIdentifier") == "com.clayline.gcode"
+        ),
+        None,
+    )
+    exported_gcode_tags = (
+        exported_gcode.get("UTTypeTagSpecification", {}) if isinstance(exported_gcode, dict) else {}
+    )
+    audit.require(
+        isinstance(exported_gcode_tags, dict)
+        and "gcode" in exported_gcode_tags.get("public.filename-extension", []),
+        "UTExportedTypeDeclarations must map com.clayline.gcode to .gcode",
     )
 
     imported_types = info.get("UTImportedTypeDeclarations", [])

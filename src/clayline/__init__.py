@@ -1,6 +1,6 @@
 """Clayline's stable public contracts and one-true-pipeline facade."""
 
-__version__ = "0.8.2"
+__version__ = "0.9.0"
 
 from clayline.api import (
     DesignFacade,
@@ -60,9 +60,11 @@ from clayline.wave import (
     preset_pattern,
     ring_phase,
     ring_wave_count,
+    settings_wave_count,
 )
 from clayline.weave_models import (
     CurvePoint,
+    ExtraWeave,
     FormWarning,
     FormWarningCode,
     LayerSpan,
@@ -96,6 +98,7 @@ __all__ = [
     "CurvePoint",
     "Design",
     "DesignFacade",
+    "ExtraWeave",
     "ExtrusionMode",
     "FormWarning",
     "FormWarningCode",
@@ -167,6 +170,7 @@ __all__ = [
     "ring_phase",
     "ring_wave_count",
     "select_layer_range",
+    "settings_wave_count",
     "texture_preset_names",
     "texture_presets",
     "write_pipeline_outputs",

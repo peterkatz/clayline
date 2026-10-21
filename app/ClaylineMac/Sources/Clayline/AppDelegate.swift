@@ -9,6 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator.startIfNeeded()
     }
 
+    /// Finder, the Dock and Open With: projects, models, drawings and print
+    /// files, each routed by its kind, and each on File → Open Recent once it
+    /// has opened.
     func application(_ application: NSApplication, open urls: [URL]) {
         coordinator.webActions.importDocuments(urls)
     }

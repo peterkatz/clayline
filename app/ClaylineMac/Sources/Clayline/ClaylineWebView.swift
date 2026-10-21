@@ -59,7 +59,7 @@ struct ClaylineWebView: NSViewRepresentable {
         private var didBegin = false
         /// Every download in flight, by the WKDownload that is writing it.
         private var stagedDownloads: [ObjectIdentifier: StagedDownload] = [:]
-        /// A project the Open panel has handed to the page but the page has
+        /// A project an open panel has handed to the page but the page has
         /// not read yet. It becomes the window's document only if it opens.
         private var projectAwaitingThePage: URL?
         private var didFinishInitialNavigation = false
@@ -106,6 +106,8 @@ struct ClaylineWebView: NSViewRepresentable {
             guard !didBegin else { return }
             didBegin = true
             actions.attach(webView)
+            // A 3Dconnexion 3D mouse drives the studio's 3D view from here on.
+            SpaceMouseBridge.shared.attach(webView)
             actions.onMeshSelected = { [weak self] url in
                 self?.settingsStore.rememberMeshURL(url)
             }
@@ -132,6 +134,7 @@ struct ClaylineWebView: NSViewRepresentable {
             healthSession?.invalidateAndCancel()
             healthSession = nil
             actions.detach(webView)
+            SpaceMouseBridge.shared.detach(webView)
             webView.configuration.userContentController.removeScriptMessageHandler(
                 forName: StudioSettingsStore.messageHandlerName
             )
@@ -420,6 +423,10 @@ struct ClaylineWebView: NSViewRepresentable {
                 panel.title = "Open a Clayline Print File"
                 panel.allowedContentTypes = ClaylineFileTypes.printFileTypes
                 panel.allowsMultipleSelection = false
+            } else if request.isPattern {
+                panel.title = "Load a Saved Pattern"
+                panel.allowedContentTypes = ClaylineFileTypes.patternTypes
+                panel.allowsMultipleSelection = false
             } else {
                 panel.title = mode == .weave
                     ? "Open One Mesh, Project, or Print File"
@@ -457,19 +464,7 @@ struct ClaylineWebView: NSViewRepresentable {
             panel.resolvesAliases = true
 
             let remember: ([URL]?) -> Void = { [weak self] urls in
-                guard let url = urls?.first else { return }
-                if request.isProject {
-                    // The page has not read a byte of it yet; it reports back
-                    // when it has, and the window follows it only then.
-                    self?.projectAwaitingThePage = url
-                } else if mode == .weave, !request.isReferencePhoto {
-                    self?.settingsStore.rememberMeshURL(url)
-                } else if request.isDrawingPicker {
-                    self?.settingsStore.rememberDrawingFolder(
-                        for: url,
-                        gallery: ClaylineGallery.bundledURL()
-                    )
-                }
+                self?.rememberPanelChoice(urls, for: request)
             }
 
             if let window = webView.window {
@@ -484,6 +479,34 @@ struct ClaylineWebView: NSViewRepresentable {
                     remember(urls)
                     completionHandler(urls)
                 }
+            }
+        }
+
+        /// What an open panel's choice leaves behind in the shell, once the
+        /// panel closes and before the page has read the file.
+        func rememberPanelChoice(_ urls: [URL]?, for request: ClaylineOpenRequest) {
+            guard let urls, let url = urls.first else { return }
+            if request.awaitsThePage(url) {
+                // A project, from the Open Project panel or Weave's Model box:
+                // the page has not read a byte of it yet. It reports back when
+                // it has, and the window, the save folder and File → Open
+                // Recent follow it only then.
+                projectAwaitingThePage = url
+                return
+            }
+            if request.mode == .weave, !request.isReferencePhoto, !request.isPattern {
+                settingsStore.rememberMeshURL(url)
+            } else if request.isDrawingPicker {
+                settingsStore.rememberDrawingFolder(
+                    for: url,
+                    gallery: ClaylineGallery.bundledURL()
+                )
+            }
+            // File → Open Recent lists what this panel opened, and only what
+            // the menu could open again. The store itself leaves out
+            // patterns, photos and the gallery.
+            for chosen in urls where request.notesOnPick(chosen) {
+                actions.noteRecentFile(chosen)
             }
         }
 
@@ -593,6 +616,9 @@ struct ClaylineWebView: NSViewRepresentable {
             }
             if landed {
                 rememberProject(staged.destination)
+                // A saved project goes on File → Open Recent; an exported
+                // print file, mesh or pattern does not.
+                actions.noteRecentFile(staged.destination)
                 actions.reportProjectSaveResult(ok: true, name: staged.destination.lastPathComponent)
             } else {
                 presentSaveFailure("Clayline kept the project that was already there.")

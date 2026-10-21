@@ -7,6 +7,7 @@ import json
 import math
 import sys
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,7 @@ from clayline.models import Bounds, Design, Profile, Severity, Warning
 from clayline.profiles import available_profiles, emission_defaults, load_profile
 from clayline.report import render_report_text
 from clayline.wave import load_pattern, preset_pattern
-from clayline.weave_api import sliced_form_stats
+from clayline.weave_api import MeshFormFacade, sliced_form_stats
 from clayline.weave_models import (
     HOLLOWS_IGNORE,
     HOLLOWS_KEEP,
@@ -197,6 +198,15 @@ def build_parser() -> argparse.ArgumentParser:
         dest="from_gcode",
         type=Path,
         help="restore Weave settings from a prior Clayline G-code header",
+    )
+    weave.add_argument(
+        "--form-from-print",
+        action="store_true",
+        help=(
+            "with --from, when its model is neither given nor beside the print file, make "
+            "the form from the printed surface, write it beside the output (into the "
+            "current folder when no output is named), and switch every weave off"
+        ),
     )
     weave.add_argument(
         "--profile",
@@ -648,24 +658,61 @@ def _plan_command(args: argparse.Namespace) -> int:
 
 def _weave_command(args: argparse.Namespace) -> int:
     recipe = None
+    if args.form_from_print and args.from_gcode is None:
+        raise ValueError("--form-from-print makes the form from the print file --from names")
+    if args.form_from_print and args.dry_run:
+        raise ValueError(
+            "--dry-run writes nothing, and --form-from-print writes a form; leave one out"
+        )
     if args.from_gcode is not None:
         from clayline.weave_restore import parse_weave_gcode
 
         recipe = parse_weave_gcode(args.from_gcode)
     mesh_path = args.mesh
+    # docs/plan-form-from-print-file.md, "CLI": only when asked, and only when
+    # no model is at hand, does the print's own surface become the form.
+    make_form = False
     if mesh_path is None and recipe is not None:
         candidate = args.from_gcode.expanduser().resolve().parent / recipe.source_mesh_name
         if candidate.is_file():
             mesh_path = candidate
+        elif args.form_from_print:
+            make_form = True
         else:
             raise ValueError(
                 f"restored recipe needs source mesh {recipe.source_mesh_name!r}; "
                 "pass the matching mesh path after the G-code"
             )
-    if mesh_path is None:
+    if mesh_path is None and not make_form:
         raise ValueError("weave requires a mesh path, or --from with its matching mesh")
+    if args.form_from_print and mesh_path is not None:
+        where = "given" if args.mesh is not None else f"beside {args.from_gcode.name}"
+        print(
+            f"NOTE: {mesh_path.name} is {where}, so it is the form; "
+            "--form-from-print is not needed.",
+            file=sys.stderr,
+        )
 
     provided = getattr(args, "_provided_options", frozenset())
+    if make_form:
+        placed = [flag for flag in _PLACEMENT_FLAGS if flag in provided]
+        if placed:
+            raise ValueError(
+                f"the form made from {args.from_gcode.name} stays the size and in the place "
+                f"it printed; leave out {', '.join(placed)}"
+            )
+        # Weave 1's own flags have no weave to set unless a new pattern comes.
+        if "--wave" not in provided and "--wave-seed" not in provided:
+            unused = [
+                flag
+                for flag in _WEAVE_ONE_FLAGS
+                if flag in provided and not (flag == "--extrusion" and args.extrusion == "pattern")
+            ]
+            if unused:
+                raise ValueError(
+                    f"every weave is off on the form made from {args.from_gcode.name}; "
+                    f"leave out {', '.join(unused)}, or give --wave for a new pattern"
+                )
 
     def restored(option: str, current: Any, saved: Any) -> Any:
         if recipe is None or option in provided:
@@ -707,21 +754,27 @@ def _weave_command(args: argparse.Namespace) -> int:
     scale_x = restored("--scale-x", args.scale_x, None if recipe is None else recipe.scale_x)
     scale_y = restored("--scale-y", args.scale_y, None if recipe is None else recipe.scale_y)
     scale_z = restored("--scale-z", args.scale_z, None if recipe is None else recipe.scale_z)
-    form = load_mesh(
-        mesh_path,
-        up=up,
-        scale=scale,
-        fit_height=fit_height,
-        offset=offset,
-        rotation_deg=rotation_deg,
-        rotation_x_deg=rotation_x_deg,
-        rotation_y_deg=rotation_y_deg,
-        scale_x=1.0 if scale_x is None else scale_x,
-        scale_y=1.0 if scale_y is None else scale_y,
-        scale_z=1.0 if scale_z is None else scale_z,
-        profile=profile,
-    )
-    if recipe is not None:
+    write_form = None
+    if make_form:
+        assert recipe is not None
+        form, write_form = _form_from_print_file(args, recipe, profile)
+    else:
+        form = load_mesh(
+            mesh_path,
+            up=up,
+            scale=scale,
+            fit_height=fit_height,
+            offset=offset,
+            rotation_deg=rotation_deg,
+            rotation_x_deg=rotation_x_deg,
+            rotation_y_deg=rotation_y_deg,
+            scale_x=1.0 if scale_x is None else scale_x,
+            scale_y=1.0 if scale_y is None else scale_y,
+            scale_z=1.0 if scale_z is None else scale_z,
+            profile=profile,
+        )
+    # A form made from the print is never the model the file names.
+    if recipe is not None and not make_form:
         from clayline.weave_restore import mesh_restore_warning
 
         mismatch = mesh_restore_warning(recipe, form)
@@ -776,13 +829,40 @@ def _weave_command(args: argparse.Namespace) -> int:
 
     if recipe is not None and "--wave" not in provided and "--wave-seed" not in provided:
         pattern = recipe.pattern
+        if make_form:
+            from clayline.form_from_print import weaves_off
+
+            # The pattern is in the printed surface; laid again it would be on twice.
+            if pattern.settings.wave_on or any(extra.wave_on for extra in pattern.extra_weaves):
+                print(
+                    "WARNING [form_from_print] weaves are off: the pattern is already in the form",
+                    file=sys.stderr,
+                )
+            pattern = weaves_off(pattern)
     else:
         pattern = _load_weave_cli_pattern(args.wave, args.wave_seed)
-    layer_range = (
-        tuple(args.layer_range)
-        if args.layer_range is not None
-        else (None if recipe is None else recipe.layer_range)
-    )
+        flag = "--wave" if "--wave" in provided else "--wave-seed"
+        if recipe is not None and recipe.pattern.extra_weaves:
+            # The restored file printed more than one weave; a new wave
+            # replaces all of them, so say so rather than drop them quietly.
+            print(
+                f"NOTE: {flag} replaces the pattern restored from {args.from_gcode.name}, "
+                f"{_extra_weave_names(recipe.pattern)} included.",
+                file=sys.stderr,
+            )
+        if make_form:
+            print(
+                f"NOTE: {flag} lays its pattern over the one already in the form.",
+                file=sys.stderr,
+            )
+    weave_one_note = _weave_one_flags_note(pattern, provided, args.extrusion)
+    if weave_one_note is not None:
+        print(weave_one_note, file=sys.stderr)
+    if args.layer_range is not None:
+        layer_range = tuple(args.layer_range)
+    else:
+        # A form made from the print holds only the layers that printed.
+        layer_range = None if recipe is None or make_form else recipe.layer_range
     wet_density = restored(
         "--wet-density",
         args.wet_density,
@@ -870,6 +950,8 @@ def _weave_command(args: argparse.Namespace) -> int:
         return 1
     if args.strict and any(warning.severity is Severity.WARNING for warning in result.warnings):
         return 2
+    if write_form is not None:
+        write_form()
     for path in (
         None if args.output is None else result.write_gcode(args.output),
         None if args.preview is None else result.preview(args.preview),
@@ -879,6 +961,156 @@ def _weave_command(args: argparse.Namespace) -> int:
         if path is not None:
             print(f"WROTE {path}", file=sys.stderr)
     return 0
+
+
+# The flags that place a model.  A form made from a print stays where and as
+# big as it printed, so none of them applies to it.
+_PLACEMENT_FLAGS = (
+    "--up",
+    "--scale",
+    "--scale-x",
+    "--scale-y",
+    "--scale-z",
+    "--fit-height",
+    "--offset",
+)
+
+# Why a print file gave no form, in the words the studio uses for each reason;
+# any other reason gets the plain "couldn't".
+_NO_FORM_WHY = {
+    "stack_pieces": "Clayline can't yet make a form from {name}: it was printed with Stack pieces",
+    "splits_or_joins": (
+        "Clayline can't yet make a form from {name}: its form splits or joins up the way"
+    ),
+    "profile_missing": (
+        "Clayline can't make a form from {name}: it was made with a printer that is no "
+        "longer in the list"
+    ),
+    "profile_changed": (
+        "Clayline can't make a form from {name}: its printer's bed has changed since it printed"
+    ),
+    "changed_file": (
+        "{name} has been changed since Clayline wrote it, so Clayline can't make a form from it"
+    ),
+}
+
+
+def _form_from_print_file(
+    args: argparse.Namespace, recipe: Any, profile: Any
+) -> tuple[MeshFormFacade, Callable[[], None]]:
+    """Make the form from the print file's printed surface and place it.
+
+    It is placed as it printed: up axis Z, scale and stretch 1, nothing
+    turned, at the offset the print file gives.  It is loaded from a
+    temporary folder, and the function returned writes it beside the first
+    output named (the current folder when none is), under the print file's
+    name; it is called only once the run has succeeded, so a refused run
+    leaves no form behind.
+    """
+
+    import tempfile
+    from dataclasses import replace
+
+    from clayline.form_from_print import AS_PRINTED, form_from_print
+
+    source = args.from_gcode.expanduser().resolve()
+    made = form_from_print(
+        source.read_text(encoding="utf-8"), print_file=source.name, recipe=recipe
+    )
+    if made.kind != AS_PRINTED:
+        why = _NO_FORM_WHY.get(made.reason or "", "Clayline couldn't make a form from {name}")
+        raise ValueError(
+            f"{why.format(name=source.name)}. Pass {recipe.source_mesh_name} after the "
+            "print file to go on with the job."
+        )
+    assert made.name is not None and made.obj_text is not None and made.offset is not None
+    assert made.layers is not None
+    obj_text = made.obj_text
+    if args.layer_range is not None:
+        first, last = args.layer_range
+        if not 1 <= first <= last <= made.layers:
+            raise ValueError(
+                f"--layer-range {first} {last} does not fit the form made "
+                f"from {args.from_gcode.name}: it has {made.layers} layers"
+            )
+    named = (args.output, args.preview, args.plan_png, args.report)
+    folder = next(
+        (path.expanduser().resolve().parent for path in named if path is not None),
+        Path.cwd(),
+    )
+    path = folder / made.name
+
+    def write() -> None:
+        print(
+            f"MADE form from {source.name}: {recipe.source_mesh_name} is not beside it, "
+            "so the printed surface is the form",
+            file=sys.stderr,
+        )
+        folder.mkdir(parents=True, exist_ok=True)
+        path.write_text(obj_text, encoding="utf-8")
+        print(f"WROTE {path}", file=sys.stderr)
+
+    # Loaded under its own name, so the job records the form written.
+    with tempfile.TemporaryDirectory() as scratch:
+        staged = Path(scratch) / made.name
+        staged.write_text(obj_text, encoding="utf-8")
+        form = load_mesh(
+            staged,
+            up="z",
+            scale=1.0,
+            fit_height=None,
+            offset=(made.offset.x, made.offset.y),
+            rotation_deg=0.0,
+            rotation_x_deg=0.0,
+            rotation_y_deg=0.0,
+            scale_x=1.0,
+            scale_y=1.0,
+            scale_z=1.0,
+            profile=profile,
+        )
+    return replace(form, source_path=path), write
+
+
+# The flags that set one weave's own settings.  They always address Weave 1,
+# the pattern's own; extra weaves come only from a pattern file or --from.
+_WEAVE_ONE_FLAGS = (
+    "--amplitude",
+    "--wavelength",
+    "--twist",
+    "--extrusion",
+    "--extrusion-phase",
+    "--follow-lobes",
+    "--follow-coves",
+    "--layer-skip",
+    "--layer-skip-start",
+    "--layer-skip-on",
+    "--layer-skip-off",
+    "--layer-skip-end",
+)
+
+
+def _extra_weave_names(pattern: Any) -> str:
+    return "Weave 2" if len(pattern.extra_weaves) == 1 else "Weaves 2 and 3"
+
+
+def _weave_one_flags_note(pattern: Any, provided: frozenset[str], extrusion: str) -> str | None:
+    """One note when a pattern with extra weaves gets a flag that sets Weave 1 only."""
+
+    if not pattern.extra_weaves:
+        return None
+    flags = [
+        flag
+        for flag in _WEAVE_ONE_FLAGS
+        if flag in provided and not (flag == "--extrusion" and extrusion == "pattern")
+    ]
+    if not flags:
+        return None
+    one_extra = len(pattern.extra_weaves) == 1
+    return (
+        f"NOTE: {', '.join(flags)} {'sets' if len(flags) == 1 else 'set'} Weave 1 only; "
+        f"{_extra_weave_names(pattern)} {'keeps its' if one_extra else 'keep their'} own "
+        "settings from the pattern."
+    )
 
 
 def _load_weave_cli_pattern(value: str, seed: int | None):

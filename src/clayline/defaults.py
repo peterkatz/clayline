@@ -168,6 +168,20 @@ def weave_bead_width_for(nozzle_mm: float) -> float:
 # behavior and every golden stay byte-identical.
 DEFAULT_WEAVE_UI_AMPLITUDE_MM = 1.0
 
+# Up to three weaves on one wall (Pete 2026-10-18: "at most I'd only want to
+# apply three weaves to any object"): the pattern's own and two more.  Equal
+# to 1 + clayline.weave_models.MAX_EXTRA_WEAVES, held there by a test so this
+# module stays a leaf.
+DEFAULT_WEAVE_MAX_WEAVES = 3
+# A new weave starts at a clearly different scale from Weave 1: a 1 mm sine,
+# untwisted, with a flat clay track and neutral Wave depth.  It sits at the
+# Auto spacing (3.5 coils, following the nozzle) when Weave 1 is longer than
+# this many times that spacing, or still flat, and otherwise at this many
+# times Weave 1's wavelength, typed.  Served only; the engine's extra-weave
+# defaults stay what a pattern file without them reads as.
+DEFAULT_NEW_WEAVE_WAVE_PRESET = "sine"
+DEFAULT_NEW_WEAVE_LONG_MULTIPLE = 4
+
 
 def weave_wavelength_for(bead_width_mm: float) -> float:
     """Served-defaults-only wavelength: 3.5 coil widths per crest.
@@ -319,6 +333,17 @@ def ui_defaults() -> dict[str, Any]:
             "layer_skip_end": DEFAULT_WEAVE_LAYER_SKIP_END,
             "seam": DEFAULT_WEAVE_SEAM,
             "pinned_seam_angle": DEFAULT_WEAVE_PINNED_SEAM_ANGLE_DEG,
+            "max_weaves": DEFAULT_WEAVE_MAX_WEAVES,
+            "new_weave": {
+                "wave": DEFAULT_NEW_WEAVE_WAVE_PRESET,
+                "amplitude": DEFAULT_WEAVE_UI_AMPLITUDE_MM,
+                "twist": DEFAULT_WEAVE_TWIST_CYCLES_PER_LAYER,
+                "extrusion": DEFAULT_WEAVE_EXTRUSION_PRESET,
+                "extrusion_phase": DEFAULT_WEAVE_EXTRUSION_PHASE_OFFSET,
+                "follow_lobes": DEFAULT_WEAVE_FOLLOW_LOBES,
+                "follow_coves": DEFAULT_WEAVE_FOLLOW_COVES,
+                "long_multiple": DEFAULT_NEW_WEAVE_LONG_MULTIPLE,
+            },
         },
     }
 
@@ -334,6 +359,8 @@ __all__ = [
     "DEFAULT_LAYERS",
     "DEFAULT_LAYER_HEIGHT_MM",
     "DEFAULT_MODULATION_WAVELENGTH_MM",
+    "DEFAULT_NEW_WEAVE_LONG_MULTIPLE",
+    "DEFAULT_NEW_WEAVE_WAVE_PRESET",
     "DEFAULT_NOZZLE_DIAMETER_MM",
     "DEFAULT_OVERLAP_FRACTION",
     "DEFAULT_PAGE_GAP_MM",
@@ -367,6 +394,7 @@ __all__ = [
     "DEFAULT_WEAVE_LAYER_SKIP_ON",
     "DEFAULT_WEAVE_LAYER_SKIP_START",
     "DEFAULT_WEAVE_LEVEL_RIM",
+    "DEFAULT_WEAVE_MAX_WEAVES",
     "DEFAULT_WEAVE_PINNED_SEAM_ANGLE_DEG",
     "DEFAULT_WEAVE_PROFILE",
     "DEFAULT_WEAVE_PROFILE_BLEND",

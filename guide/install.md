@@ -27,6 +27,8 @@ Each mode is laid out the same way:
 - **Middle**: the preview. **2D plan** looks at the bed from above; **3D toolpath** shows every move at its real height. Drag to orbit, scroll to zoom.
 - **Right**: **Before you print**, the inspection panel. It fills in after you slice: how long the print takes, how much clay it uses, how many separate strokes and travels there are, and anything worth a look before printing.
 
+A 3Dconnexion 3D mouse moves the 3D view if 3Dconnexion's driver is installed: slide the cap to pan, push or pull to zoom, tilt or twist to turn. It never moves the piece itself.
+
 The **Slice** button at the bottom of the workflow builds the toolpath. Nothing prints from there. It only prepares the file.
 
 ## Try an example first

@@ -268,3 +268,174 @@ def test_a_restored_print_file_hands_back_its_start_charge() -> None:
     assert settings_for(start_charge=12.5)["start_charge_e"] == 12.5
     # Left blank, the file follows the printer's own charge, and comes back blank.
     assert settings_for()["start_charge_e"] is None
+
+
+def _clayline_weave_print_file() -> str:
+    """A small print file Clayline's Weave wrote, header and all."""
+
+    import clayline as cl
+
+    cylinder = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "mesh" / "cylinder.obj"
+    return (
+        cl.load_mesh(cylinder, up="z", scale=1.0)
+        .slice(layer_height=5.0)
+        .modulate(
+            "flat",
+            reproducible=True,
+            prime_mm=0.0,
+            end_early_mm=0.0,
+            job_id="open-recent",
+        )
+        .emission.gcode
+    )
+
+
+# File > Open Recent, Finder and the Dock hand the page a print file as bytes
+# (window.claylineDesktop.importPrintFile, then claylineWeaveMode). The page
+# runs whole under node against the studio app (tests/weave_page_rig.py).
+_HANDOFF = r"""
+  const sent = (path) => requests.filter((request) => request.url.split("?")[0] === path).length;
+  const before = requests.length;
+  out.refused = [
+    weaveMode.importPrintFile({ name: "form.stl", base64: FILE }),
+    weaveMode.importPrintFile({ name: "bowl.gcode", base64: "not base64!" }),
+    weaveMode.importPrintFile(null),
+  ];
+  await settle(500);
+  out.quiet = requests.length === before;
+  weaveMode.activateTiles();
+  out.accepted = weaveMode.importPrintFile({ name: NAME, base64: FILE });
+  await settle(3000);
+  out.mode = document.body.dataset.claylineMode;
+  out.restores = sent("/api/weave/restore");
+  out.forms = sent("/api/weave/restore/form");
+  out.uploads = sent("/api/weave/mesh");
+  out.status = $("#weaveRestoreStatus").textContent;
+  out.facts = $("#weaveModelFacts").textContent;
+  out.mesh = Boolean(page.S.mesh);
+  out.model = page.S.file?.name || null;
+  out.line = $("#weaveFromPrintText").textContent;
+"""
+
+
+def _hand_over(name: str, gcode: str) -> dict:
+    import base64
+    import json
+
+    from weave_page_rig import run_page
+
+    encoded = base64.b64encode(gcode.encode("utf-8")).decode("ascii")
+    return run_page(
+        f"const NAME = {json.dumps(name)};\nconst FILE = {json.dumps(encoded)};\n" + _HANDOFF
+    )
+
+
+def test_a_clayline_print_file_from_open_recent_brings_its_whole_job_back() -> None:
+    out = _hand_over("lantern-job.gcode", _clayline_weave_print_file())
+
+    # Anything that is not one print file is turned down before a request goes.
+    assert out["refused"] == [False, False, False]
+    assert out["quiet"] is True
+    assert out["accepted"] is True
+    assert out["mode"] == "weave"
+    # Exactly the Model box's way with a Clayline file: every setting comes
+    # back, and with no model loaded the form is made from the print file
+    # itself (docs/plan-form-from-print-file.md, Round 1) and loaded as the
+    # model. The line under Restore pattern keeps its own words.
+    assert out["restores"] == 1
+    assert out["forms"] == 1
+    assert out["uploads"] == 1
+    assert out["status"].startswith("A print file Clayline saved gives up its pattern here.")
+    assert out["mesh"] is True
+    assert out["model"] == "lantern-job-as-printed.obj"
+    assert out["line"] == "Form is lantern-job.gcode's printed surface, pattern and all."
+
+
+def test_another_slicers_print_file_from_open_recent_is_rebuilt_into_a_form() -> None:
+    out = _hand_over("other.gcode", _cura_like())
+
+    assert out["refused"] == [False, False, False]
+    assert out["quiet"] is True
+    assert out["accepted"] is True
+    assert out["mode"] == "weave"
+    assert out["restores"] == 0
+    assert out["forms"] == 0
+    assert out["uploads"] >= 1
+    assert out["facts"].startswith("rebuilt from other.gcode")
+    assert out["mesh"] is True
+
+
+# Pete, 2026-10-20: "it says you can drop gcode but nothing happens when I do".
+# The drop did work: every setting came back and the model was asked for by
+# name, but only in the small line under the Form box, while the big empty
+# preview still read "Load a base mesh". With no model loaded the form is now
+# made from the print file itself; while it is being made, the empty preview
+# says so and still offers the model the file names. Choosing it then wins,
+# and the form that comes back after is dropped without a word.
+_WAITING = r"""
+  const realFetch = window.fetch;
+  let releaseForm = null;
+  window.fetch = (url, init) => (String(url).startsWith("/api/weave/restore/form")
+    ? new Promise((resolve) => { releaseForm = () => resolve(realFetch(url, init)); })
+    : realFetch(url, init));
+  out.accepted = weaveMode.importPrintFile({ name: NAME, base64: FILE });
+  await settle(3000);
+  out.emptyShown = !$("#weaveEmptyState").hidden;
+  out.title = $("#weaveEmptyTitle").textContent;
+  out.text = $("#weaveEmptyText").textContent;
+  out.chooseShown = !$("#weaveEmptyChooseModelButton").hidden;
+  out.openShown = !$("#weaveEmptyOpenProjectButton").hidden;
+  out.status = $("#weaveProjectStatus").textContent;
+  let picked = 0;
+  $("#weaveFileInput").click = () => { picked += 1; };
+  click("#weaveEmptyChooseModelButton");
+  out.picked = picked;
+  out.accepted_mesh = weaveMode.importMesh({ name: "cylinder.obj", base64: MESH });
+  await settle(4000);
+  out.held = Boolean(releaseForm);
+  window.fetch = realFetch;
+  releaseForm?.();
+  await settle(4000);
+  out.titleAfter = $("#weaveEmptyTitle").textContent;
+  out.chooseAfter = !$("#weaveEmptyChooseModelButton").hidden;
+  out.model = page.S.file?.name || null;
+  out.uploads = requests.filter((request) => request.url.startsWith("/api/weave/mesh")).length;
+  out.lineShown = !$("#weaveFromPrint").hidden;
+"""
+
+
+def test_a_print_file_without_its_model_says_so_in_the_middle_of_the_window() -> None:
+    import base64
+    import json
+
+    from weave_page_rig import run_page
+
+    gcode = _clayline_weave_print_file()
+    cylinder = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "mesh" / "cylinder.obj"
+    script = (
+        f"const NAME = {json.dumps('lantern-job.gcode')};\n"
+        f"const FILE = {json.dumps(base64.b64encode(gcode.encode()).decode('ascii'))};\n"
+        f"const MESH = {json.dumps(base64.b64encode(cylinder.read_bytes()).decode('ascii'))};\n"
+        + _WAITING
+    )
+    out = run_page(script)
+
+    assert out["accepted"] is True
+    assert out["emptyShown"] is True
+    assert out["title"] == "Making the form from lantern-job.gcode…"
+    assert out["text"] == "Every setting is back. If you have cylinder.obj, choose it instead."
+    assert out["chooseShown"] is True
+    assert out["openShown"] is True
+    # The empty preview says it; the line under the Form box adds nothing.
+    assert out["status"] == ""
+    # The button opens the Form box's own picker.
+    assert out["picked"] == 1
+    # The model chosen while the form was being made wins: the form that comes
+    # back after is dropped quietly, and the empty preview has its own words.
+    assert out["accepted_mesh"] is True
+    assert out["held"] is True
+    assert out["model"] == "cylinder.obj"
+    assert out["uploads"] == 1
+    assert out["lineShown"] is False
+    assert out["titleAfter"] == "Load a base mesh"
+    assert out["chooseAfter"] is False

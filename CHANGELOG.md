@@ -2,6 +2,73 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.9.0 — 2026-10-21
+
+### New
+- **Up to three weaves on one wall.** Shape Weave 1 as before, then click
+  **Add weave** at the top of the Pattern section to lay another wave over it,
+  and a third if you like. Each weave has its own shape, amplitude,
+  wavelength, twist, extrusion track, wave depth, Clay along the wall and skip
+  layers, so one long, slow wave can carry a fine one. Click a weave's name to
+  work on it: presets and Noise change only that weave, and so does a texture
+  on Weave 2 or 3. On Weave 1 a texture sets the whole wall as it always has,
+  vase mode and Weave 1's Clay along the wall included. **Use this weave**
+  leaves a weave out of the print but keeps its settings, so you can compare,
+  and **Remove** takes Weave 2 or 3 off; Undo brings it back. The Pattern preview shows the weaves together,
+  vase mode climbs with all of them in its one coil, and **Save pattern**,
+  **Load pattern** and **Restore pattern from G-code…** carry every weave.
+- **Every weave is checked.** Each weave says when its wave is too fine, and
+  with more than one weave the line under Wavelength names the layers where
+  each weave's wave count steps on a taper. A line says how far all the
+  weaves swing together, and the largest pinch-free swing turns every weave
+  down by the same share. Where the weaves' extrusion tracks and Clay along
+  the wall together would push too little or too much clay, Clayline keeps it
+  between a quarter and three times a plain coil, and a warning names the
+  weave and the layers.
+- **Keep the same number of waves.** Each weave has this switch right under
+  its Wavelength, off until you switch it on. It fits the weave's waves where
+  each part of the form is widest and keeps that number all the way up, so
+  the ridges stack up a taper instead of stepping; the waves sit closer where
+  the form narrows, and a note names any layers where they crowd closer than
+  your coil.
+- **File → Open Recent.** The last ten projects you opened or saved, and
+  models, drawings and print files you opened, newest first, as in other Mac
+  apps; choose one to open it again.
+- **A print file brings back its form.** Drop a print file Clayline saved on
+  the Form box with no model loaded, and every setting comes back with a form
+  made from the print file's printed surface, pattern and all, at the size and
+  angle it printed. Every weave is switched off so the pattern isn't laid on
+  twice. A button under the form's name swaps in the original model when you
+  have it, placed as it printed, and switches the weaves back on. A print made
+  with Stack pieces, one whose form splits or joins up the way, and often one
+  woven in vase mode give no form; for those, the middle of the window names
+  the model the print file was sliced from, with a button to choose it.
+
+### Changed
+- **A file with more than one weave, with Weave 1 switched off, or with Keep
+  the same number of waves on, needs Clayline 0.9.0 or later.** An earlier
+  Clayline can't open a pattern or project that carries Weave 2 or 3, has
+  Weave 1 switched off, or keeps the same number of waves on any weave, and
+  can't bring the settings back from such a print file. A job with only Weave 1,
+  switched on and with Keep the same number of waves off, prints exactly as
+  it did in 0.8.3, and its pattern and project still open there.
+- **The guide** now says that Clay along the wall pauses on its weave's plain
+  layers when that weave skips layers. On Weave 1 it always has.
+
+### Fixed
+- **Load pattern lets you choose a saved pattern again in the Mac app.** Its
+  window offered only models, projects and print files, so a pattern file was
+  greyed out. It now opens a window of saved patterns.
+
+## 0.8.3 — 2026-10-07
+
+### New
+- **A 3Dconnexion 3D mouse moves the 3D view.** Slide the cap to pan, push
+  or pull to zoom, and tilt or twist it to turn the view, the same way it
+  works in Refab. It only moves your view of the piece, never the piece on the
+  bed, and it doesn't add undo steps. It needs 3Dconnexion's own driver
+  installed.
+
 ## 0.8.2 — 2026-10-07
 
 ### Fixed

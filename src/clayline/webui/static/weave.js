@@ -19,6 +19,7 @@
     finalize: "/api/weave/finalize",
     pattern: "/api/weave/pattern",
     restore: "/api/weave/restore",
+    restoreForm: "/api/weave/restore/form",
     gcode: (resultId) => `/api/weave/result/${encodeURIComponent(resultId)}/gcode`,
     obj: (resultId) => `/api/weave/result/${encodeURIComponent(resultId)}/obj`,
   });
@@ -48,6 +49,10 @@
     twist: "Amplitude, Wavelength, Twist and Wave depth have no visible effect while the wave is flat.",
     followForm: "Form following has no visible effect while the wave is flat.",
     extrusionPhase: "Extrusion phase has no effect while the extrusion track is flat.",
+    // A shaped extrusion track still swells the clay at the weave's own count
+    // with a flat wave, so only both flat leave the switch nothing to do.
+    holdWaveCount:
+      "Keep the same number of waves has no visible effect while the wave and its extrusion track are flat.",
     // Overlap sets the spacing of DENSE fill only: the bottom, a solid
     // interior, and an infill's base and cap skins. A sparse infill rib is
     // spaced by infill_spacing_beads and never touches overlap_fraction —
@@ -149,6 +154,22 @@
     texturePreset: null,
     texturePattern: null,
     exactPattern: null,
+    // Weaves 2 and 3, one record each (multi-weave plan §9): the weave's
+    // exact values as its pattern file entry, which wave and clay-track preset
+    // and which texture chip it shows, and whether a control was touched on
+    // its tab (then the controls hold its truth until the tab is left). Never
+    // inside exactPattern or texturePattern, which stay Weave 1's.
+    extraWeaves: [],
+    // Which weave the Pattern controls show, counted from 0 (Weave 1). Never
+    // saved and never an Undo step.
+    selectedWeave: 0,
+    // Weave 1's own controls, exactly as they were left, while another weave
+    // is on screen.
+    weaveOneParked: null,
+    // The weave an Undo or Redo is landing on.
+    landingWeave: null,
+    // The last "Weaves 2 and 3 came off" sentence, which a landing takes down.
+    weavesTakenOffSaid: "",
     mesh: null,
     slice: null,
     result: null,
@@ -228,6 +249,23 @@
     // not the one it names: the next model loaded is that job's own, so it
     // keeps the file's print-range choice and top rule.
     restoreAwaitingMesh: false,
+    // The model a print file Clayline saved still needs, when no model was
+    // loaded: { model, file } names for the empty preview, else null, with
+    // the one sentence that says why when no form could be made from it.
+    restoreAwaitingModel: null,
+    // The print file a form is being made from, while the empty preview
+    // waits for it: { file, model, swap } names, else null.
+    restoreRebuilding: null,
+    // Moves on with every change of the model or the job (a model chosen, a
+    // project opened, another print file, Reset, Undo and Redo), so a form
+    // that comes back after one of them is dropped without a word.
+    formGeneration: 0,
+    // Forms made from a print file, by the model token they were loaded
+    // under: the file's own placement, range, top rule, island stop and
+    // weave switches, so choosing the model it names puts the job back as it
+    // printed. A model chosen that way keeps a record too, for its line. Held
+    // for the session, like the undo shelf; never saved.
+    fromPrint: new Map(),
     // The engine's own answer to "is every printed layer a dense skin?": the
     // last settled result carried its infill_no_ribs warning. Only a settled
     // answer says so; the studio never works it out by counting layers.
@@ -270,6 +308,9 @@
   let weaveMeshShelf = null;
   const weaveSlicedKeys = new Set();
   let expiredRecoveries = 0;
+  // What the line under Restore pattern from G-code… says until a print file
+  // has something to say there, read from the page once.
+  let restoreStatusDefault = "";
 
   function clonePoints(points) {
     return points.map(([u, value], index) => ({ id: `${index}-${u}`, u, value }));
@@ -418,6 +459,11 @@
   function applyWeaveDefaults(root) {
     if (!root || typeof root !== "object") return;
     S.defaults = root;
+    // The studio's own starting pattern has one weave, on, each ring rounding
+    // its own count.
+    dropExtraWeaves();
+    $("#weaveUseWeave").checked = true;
+    $("#weaveHoldWaveCount").checked = false;
     setControlValue("#weaveProfile", root.profile);
     setControlValue("#weaveUpAxis", root.up_axis ?? root.up);
     setControlValue("#weaveScale", root.scale === null ? 1 : root.scale);
@@ -642,12 +688,16 @@
       applyLayerRhythmSettings(pattern.settings);
       applyInteriorSettings(pattern.settings);
       applyStackSettings(pattern.settings);
-      return pattern;
+      applyWeaveOneSwitch(pattern.settings);
+      return withExtraWeaves(pattern);
     }
-    const followLobes = 1 + numberValue("#weaveFollowLobes", 0);
-    const followCoves = 1 + numberValue("#weaveFollowCoves", 0);
-    const flowLobes = 1 + numberValue("#weaveFlowLobes", 0);
-    const flowCoves = 1 + numberValue("#weaveFlowCoves", 0);
+    // Weave 1's own controls are read where they are: on screen, or as they
+    // were left while another weave is chosen. The rest is the whole wall's.
+    const one = weaveOneSurface();
+    const followLobes = 1 + weaveOneNumber("#weaveFollowLobes", 0);
+    const followCoves = 1 + weaveOneNumber("#weaveFollowCoves", 0);
+    const flowLobes = 1 + weaveOneNumber("#weaveFlowLobes", 0);
+    const flowCoves = 1 + weaveOneNumber("#weaveFlowCoves", 0);
     const topFollowSlope = numberValue("#weaveTopFollowSlope", 1);
     const version = (
       S.patternVersion === 3 || flowLobes !== 1 || flowCoves !== 1
@@ -657,10 +707,10 @@
           : 1
     );
     const settings = {
-      amplitude: numberValue("#weaveAmplitude", 0),
-      wavelength: numberValue("#weaveWavelength", 18),
-      twist: numberValue("#weaveTwist", 0),
-      extrusion_phase_offset: numberValue("#weaveExtrusionPhase", 0),
+      amplitude: weaveOneNumber("#weaveAmplitude", 0),
+      wavelength: weaveOneNumber("#weaveWavelength", 18),
+      twist: weaveOneNumber("#weaveTwist", 0),
+      extrusion_phase_offset: weaveOneNumber("#weaveExtrusionPhase", 0),
       z_blend: $("#weaveZBlend").checked,
       follow_top_edge: $("#weaveFollowTop").checked,
       level_rim: $("#weaveLevelRim").checked,
@@ -687,16 +737,17 @@
       settings.flow_lobes = flowLobes;
       settings.flow_coves = flowCoves;
     }
-    return {
+    applyWeaveOneSwitch(settings);
+    return withExtraWeaves({
       schema: "clayline.weave-pattern",
       version,
-      name: S.wavePreset === "custom" ? "custom" : S.wavePreset,
-      seed: S.patternSeed,
+      name: one.wavePreset === "custom" ? "custom" : one.wavePreset,
+      seed: one.patternSeed,
       interpolation: "monotone_cubic_periodic",
-      wave: sortedPoints(S.wave).map((point) => ({ u: point.u, value: point.value })),
-      extrusion: sortedPoints(S.extrusion).map((point) => ({ u: point.u, value: point.value })),
+      wave: sortedPoints(one.wave).map((point) => ({ u: point.u, value: point.value })),
+      extrusion: sortedPoints(one.extrusion).map((point) => ({ u: point.u, value: point.value })),
       settings,
-    };
+    });
   }
 
   function modulationPayload(quality) {
@@ -725,18 +776,21 @@
     return request;
   }
 
-  function layerRhythmValues() {
+  // The weave on screen's rhythm, or, given Weave 1's readers, Weave 1's
+  // wherever its controls are.
+  function layerRhythmValues(read = numberValue, enabled = $("#weaveLayerSkipEnabled").checked) {
     return {
-      enabled: $("#weaveLayerSkipEnabled").checked,
-      start: Math.max(0, Math.trunc(numberValue("#weaveLayerSkipStart", 0))),
-      on: Math.max(1, Math.trunc(numberValue("#weaveLayerSkipOn", 2))),
-      off: Math.max(1, Math.trunc(numberValue("#weaveLayerSkipOff", 2))),
-      end: Math.max(0, Math.trunc(numberValue("#weaveLayerSkipEnd", 0))),
+      enabled,
+      start: Math.max(0, Math.trunc(read("#weaveLayerSkipStart", 0))),
+      on: Math.max(1, Math.trunc(read("#weaveLayerSkipOn", 2))),
+      off: Math.max(1, Math.trunc(read("#weaveLayerSkipOff", 2))),
+      end: Math.max(0, Math.trunc(read("#weaveLayerSkipEnd", 0))),
     };
   }
 
-  function applyLayerRhythmSettings(settings) {
-    const rhythm = layerRhythmValues();
+  // Weave 1's rhythm, wherever its controls are: patternObject's two branches
+  // are its only callers.
+  function applyLayerRhythmSettings(settings, rhythm = weaveOneRhythm()) {
     [
       "layer_skip_enabled",
       "layer_skip_start",
@@ -926,9 +980,33 @@
   }
 
   const WEAVE_SETTINGS_SCHEMA = "clayline.weave-settings.v1";
+  // A job with extra weaves, with Weave 1 switched off, or with a weave that
+  // keeps the same number of waves, is saved as the second version, which
+  // Clayline from before them refuses as newer; one weave printing keeps the
+  // first, byte for byte (multi-weave plan §4, steady wave count plan §3).
+  // This studio opens both.
+  const WEAVE_SETTINGS_SCHEMA_V2 = "clayline.weave-settings.v2";
+  const WEAVE_SETTINGS_SCHEMAS = Object.freeze([WEAVE_SETTINGS_SCHEMA, WEAVE_SETTINGS_SCHEMA_V2]);
+
+  // v2 exactly when the pattern carries something Clayline 0.8.3 cannot read:
+  // extra weaves, Weave 1's own switch turned off, or any weave keeping the
+  // same number of waves (with extra weaves it is v2 already, so Weave 1's
+  // own switch is the one left to ask).
+  function weaveSettingsSchemaFor(patternJson) {
+    try {
+      const pattern = JSON.parse(patternJson);
+      const weaves = pattern?.extra_weaves;
+      return (Array.isArray(weaves) && weaves.length) || pattern?.settings?.wave_on === false
+        || pattern?.settings?.hold_wave_count === true
+        ? WEAVE_SETTINGS_SCHEMA_V2
+        : WEAVE_SETTINGS_SCHEMA;
+    } catch (_error) {
+      return WEAVE_SETTINGS_SCHEMA;
+    }
+  }
 
   function weaveSettingsSnapshot() {
-    return {
+    const snapshot = {
       schema: WEAVE_SETTINGS_SCHEMA,
       // The complete canonical pattern model is settings truth; preset and
       // texture labels are presentation and can be reconstructed from it.
@@ -990,12 +1068,15 @@
         filename: "",
       },
     };
+    // The version follows the very pattern it carries, read in one place.
+    snapshot.schema = weaveSettingsSchemaFor(snapshot.pattern_json);
+    return snapshot;
   }
 
   function validWeaveSettings(snapshot) {
     if (
       !snapshot
-      || snapshot.schema !== WEAVE_SETTINGS_SCHEMA
+      || !WEAVE_SETTINGS_SCHEMAS.includes(snapshot.schema)
       || typeof snapshot.pattern_json !== "string"
       || !snapshot.placement
       || !snapshot.slice
@@ -1018,6 +1099,10 @@
       slice: withParkedRange(snapshot.slice),
       model: S.modelToken || null,
       texture: S.texturePreset || null,
+      // The texture chip each extra weave has lit, there only when one has.
+      ...(S.extraWeaves.some((record) => record.texture)
+        ? { weave_textures: S.extraWeaves.map((record) => record.texture || null) }
+        : {}),
     };
   }
 
@@ -1046,7 +1131,7 @@
   }
 
   function settingsOfEntry(entry) {
-    const { model: _model, texture: _texture, ...settings } = entry;
+    const { model: _model, texture: _texture, weave_textures: _weaveTextures, ...settings } = entry;
     return settings;
   }
 
@@ -1087,18 +1172,26 @@
 
   function amendRebuiltSettings() {
     if (!weaveHistory || S.holdBookkeeping) return;
-    const live = weaveSettingsSnapshot();
-    weaveHistory.amend((entry) => ({
-      ...entry,
-      pattern_json: live.pattern_json,
-      slice: {
-        ...entry.slice,
-        layer_height: live.slice.layer_height,
-        first_layer_height: live.slice.first_layer_height,
-        layer_height_follows_nozzle: live.slice.layer_height_follows_nozzle,
-        first_layer_follows: live.slice.first_layer_follows,
-      },
-    }));
+    const live = weaveHistoryEntry();
+    weaveHistory.amend((entry) => {
+      const amended = {
+        ...entry,
+        // The pattern went plain and Weaves 2 and 3 went with it, so the
+        // step's version and the chips its other weaves had lit go too.
+        schema: live.schema,
+        pattern_json: live.pattern_json,
+        slice: {
+          ...entry.slice,
+          layer_height: live.slice.layer_height,
+          first_layer_height: live.slice.first_layer_height,
+          layer_height_follows_nozzle: live.slice.layer_height_follows_nozzle,
+          first_layer_follows: live.slice.first_layer_follows,
+        },
+      };
+      if ("weave_textures" in live) amended.weave_textures = live.weave_textures;
+      else delete amended.weave_textures;
+      return amended;
+    });
   }
 
   function amendSliceBookkeeping() {
@@ -1272,6 +1365,7 @@
     S.inchesBannerEvaluated = true;
     $("#weaveInchesBanner").hidden = true;
     syncWeaveProjectControls();
+    syncFormFromPrint();
     if (file) return;
     S.lastTrace = null;
     S.lastMeshPreview = null;
@@ -1339,7 +1433,14 @@
 
   function applyWeaveHistorySnapshot(entry) {
     if (!entry) return false;
+    // A form still being made from a print file belongs to the step being left.
+    bumpFormGeneration();
     const snapshot = settingsOfEntry(entry);
+    // Undo and Redo land on the weave they changed, except under a slider
+    // still held: the rest of that drag belongs to the weave it grabbed.
+    S.landingWeave = weaveHistoryGestureActive
+      ? S.selectedWeave
+      : landingWeaveFor(weaveSettingsSnapshot().pattern_json, snapshot.pattern_json);
     // Nothing still on its way for the step being left may land on this one.
     abortStage("modulate");
     window.clearTimeout(S.timers.modulate);
@@ -1356,8 +1457,10 @@
       weaveStateWriter?.suspend(() => applyWeaveSettings(snapshot, { settle: true, modelChanged, land }));
     } finally {
       S.landingFromHistory = false;
+      S.landingWeave = null;
     }
     restoreTextureChip(entry.texture, snapshot.pattern_json);
+    restoreWeaveTextureChips(entry.weave_textures);
     // A step recorded before its slice could say vase mode is on for a form
     // the slice then found cannot take it. Landing it with that same slice
     // takes vase mode off, as the slice did, instead of asking for a final
@@ -1367,6 +1470,7 @@
     // puts a different one there, so the sentence about the project goes with
     // it rather than outliving the work it named.
     setWeaveProjectStatus("");
+    forgetWeavesTakenOff();
     window.ClaylineStudioState?.saveMode(
       window.ClaylineStudioState.settingsStorage(window),
       "weave",
@@ -1447,6 +1551,37 @@
     if (!visible) setRoughPreviewWorking(false);
   }
 
+  // After a print file Clayline saved brings its settings back with no model
+  // loaded, the empty preview names the model it still needs and offers the
+  // picker: the line under the Form box alone was easy to miss (Pete,
+  // 2026-10-20: "it says you can drop gcode but nothing happens when I do").
+  function syncWeaveEmptyState() {
+    // While a form is made from the print file, the model it names can still
+    // be chosen instead; one it names that was itself made from a print was
+    // never on disk, so it is not asked for.
+    const making = S.restoreRebuilding;
+    if (making) {
+      $("#weaveEmptyTitle").textContent = `Making the form from ${making.file}…`;
+      $("#weaveEmptyText").textContent = making.model
+        ? `Every setting is back. If you have ${making.model}, choose it instead.`
+        : "Every setting is back.";
+      $("#weaveEmptyChooseModelButton").hidden = !making.swap;
+      return;
+    }
+    const waiting = S.restoreAwaitingModel;
+    // A file whose model was never on disk asks for no model by name; the
+    // button still opens one written beside the print.
+    let title = "Load a base mesh";
+    if (waiting) title = waiting.model ? `Load ${waiting.model}` : "Load a model";
+    $("#weaveEmptyTitle").textContent = title;
+    $("#weaveEmptyText").textContent = waiting
+      ? (waiting.sentence || (waiting.model
+        ? `Every setting came back from ${waiting.file}. Load the model it was sliced from to go on with the job.`
+        : `Every setting came back from ${waiting.file}. Open the project it was made in, or load a model, to go on with the job.`))
+      : "Clayline slices it into real rings before any pattern is applied.";
+    $("#weaveEmptyChooseModelButton").hidden = !waiting;
+  }
+
   function showWeaveState(
     kind,
     message = "",
@@ -1455,6 +1590,7 @@
     technicalLine = null,
   ) {
     $("#weaveEmptyState").hidden = kind !== "empty";
+    if (kind === "empty") syncWeaveEmptyState();
     $("#weaveLoadingState").hidden = kind !== "loading";
     $("#weaveErrorState").hidden = kind !== "error";
     $("#weaveActiveState").hidden = kind !== "active";
@@ -1583,6 +1719,7 @@
       markJsonReceived();
       S.mesh = payload;
       renderMeshFacts(payload, { adopt: !fromHistory });
+      noteChosenModel(payload);
       // Another slicer's print file rebuilt into a form brings its own layer
       // height and a plain pattern: part of loading it, not a step of its own.
       if (!fromHistory && payload.rebuilt_from_print_file) amendRebuiltSettings();
@@ -2068,6 +2205,10 @@
   // file's texture is already in the surface, and every guess is said.
   function applyRebuiltPrintFile(rebuilt) {
     if (!rebuilt) return null;
+    // The file's texture is already in the surface: Weave 1 is chosen and
+    // Weaves 2 and 3 go before the pattern is set plain.
+    dropExtraWeaves();
+    syncWeaveStrip();
     const layer = Number(rebuilt.layer_height_mm);
     if (Number.isFinite(layer) && layer > 0) {
       setControlValue("#weaveLayerHeight", layer);
@@ -2866,34 +3007,34 @@
       drawAllEditors();
       return;
     }
-    const scope = pattern.scope || {};
+    // The curves and readouts follow the weave on screen; the pattern preview
+    // and the inspector's wave count stay the whole wall's and Weave 1's.
+    const view = chosenWeaveView(pattern) || {};
+    const scope = view.scope || {};
     drawAllEditors(scope);
-    const readout = pattern.readout;
+    const readout = view.readout;
     $("#weavePhysicalReadout").textContent = readout?.label
-      || "Slice the form to calculate whole waves from real ring circumferences.";
-    $("#weaveAmplitudeReadout").textContent = pattern.amplitude_readout?.label
-      || "Local in/out swing is uniform until form following changes.";
-    $("#weaveStatWaves").textContent = readout?.widest?.waves ?? "—";
-    $("#weaveTwistOutput").textContent = `${Number(pattern.settings?.twist_cycles_per_layer ?? numberValue("#weaveTwist", 0)).toFixed(2)} cycles · ${Number(pattern.settings?.twist_degrees_per_layer ?? numberValue("#weaveTwist", 0) * 360).toFixed(0)}°`;
+      || "Slice the form to see how many waves fit each ring.";
+    $("#weaveAmplitudeReadout").textContent = swingReadoutText(view.amplitude_readout);
+    $("#weaveStatWaves").textContent = pattern.readout?.widest?.waves ?? "—";
+    $("#weaveTwistOutput").textContent = `${Number(view.settings?.twist_cycles_per_layer ?? numberValue("#weaveTwist", 0)).toFixed(2)} cycles · ${Number(view.settings?.twist_degrees_per_layer ?? numberValue("#weaveTwist", 0) * 360).toFixed(0)}°`;
+    renderCombinedSwing(pattern);
     S.unrolled = pattern.unrolled || null;
     drawUnrolled(S.unrolled);
-    renderCombCaption();
   }
 
-  // Physical scale, right next to the pattern-preview comb: the live
-  // amplitude/wavelength values plus the backend's already-computed
-  // waves-at-the-widest-ring count (see wavelength_readout in
-  // weave_payload.py — reused here, never recomputed client-side).
-  function renderCombCaption() {
-    const caption = $("#weaveCombCaption");
-    if (!caption) return;
-    const units = window.claylineUnits;
-    const amplitude = numberValue("#weaveAmplitude", 0);
-    const wavelength = numberValue("#weaveWavelength", 18);
-    const waves = S.scope?.readout?.widest?.waves;
-    const wavesText = Number.isFinite(Number(waves)) ? String(waves) : "—";
-    caption.textContent =
-      `${units.fmt(amplitude, 1)} swing · one cycle ≈ ${units.fmt(wavelength, 1)} → ${wavesText} waves at the widest ring.`;
+  // The studio's swing line keeps the words 0.8.3 sent, numbers and all, so
+  // one weave's answer stays byte for byte what it was; the page says the
+  // same numbers the potter's way.
+  function swingReadoutText(readout) {
+    const label = readout?.label;
+    if (!label) return "The wave swings the same depth everywhere until these change.";
+    const match = /^Local in\/out swing (-?\d+(?:\.\d+)?)\u2013(-?\d+(?:\.\d+)?) mm$/.exec(label);
+    if (!match) return label;
+    const [, low, high] = match;
+    return low === high
+      ? `The wave swings ${low} mm everywhere`
+      : `The wave swings ${low} to ${high} mm across the form`;
   }
 
   function formatDuration(seconds) {
@@ -3005,6 +3146,14 @@
         actionButton.className = "secondary-button compact-button warning-action";
         actionButton.textContent = action.label;
         actionButton.addEventListener("click", () => {
+          if (Array.isArray(action.amplitudes_mm)) {
+            applySafeSwing(action);
+            beginMetric();
+            syncControls();
+            invalidateExact("Safe swing applied — rebuilding the final path.");
+            scheduleModulation("settle");
+            return;
+          }
           setActiveTexture(null);
           setControlValue("#weaveAmplitude", Number(action.amplitude_mm).toFixed(1));
           beginMetric();
@@ -3042,11 +3191,881 @@
     return [...points].sort((a, b) => a.u - b.u);
   }
 
+  /* ---------- weaves 1, 2 and 3 --------------------------------------------
+   *
+   * One set of Pattern controls shows whichever weave is chosen (multi-weave
+   * plan §3). Weave 1 is the pattern the studio always had: on screen its
+   * controls are its truth exactly as before, and while another weave is
+   * chosen they wait in S.weaveOneParked just as they were left. Weaves 2 and
+   * 3 are records holding their exact values, shown in the controls only while
+   * chosen. Four rules keep one weave's numbers out of another's (§7, risk 1):
+   *   1. a write to a weave's control lands in that weave's record, and shows
+   *      only when that weave is on screen;
+   *   2. a touch on a weave's own control marks only that weave touched;
+   *   3. a touch on a whole-wall control clears only Weave 1's exact values;
+   *   4. choosing a tab writes its record into the controls and marks nothing.
+   */
+
+  // The controls each weave has its own of. Everything else in the section
+  // covers the whole wall. Clay along the wall (Flow on lobes, Flow in coves)
+  // is each weave's own since 2026-10-18, after Pete's question quoted in
+  // docs/plan-multi-weave.md.
+  const WEAVE_OWN_CONTROLS = Object.freeze([
+    "#weaveAmplitude", "#weaveWavelength", "#weaveTwist", "#weaveExtrusionPhase",
+    "#weaveFollowLobes", "#weaveFollowCoves", "#weaveFlowLobes", "#weaveFlowCoves",
+    "#weaveLayerSkipStart", "#weaveLayerSkipOn", "#weaveLayerSkipOff", "#weaveLayerSkipEnd",
+  ]);
+  const WEAVE_OWN_SWITCHES = Object.freeze([
+    "#weaveLayerSkipEnabled", "#weaveUseWeave", "#weaveHoldWaveCount",
+  ]);
+  const WEAVE_RHYTHM_KEYS = Object.freeze([
+    "layer_skip_enabled", "layer_skip_start", "layer_skip_on", "layer_skip_off", "layer_skip_end",
+  ]);
+  const MAX_WEAVES_FALLBACK = 3;
+  const TEXTURE_HINT_ONE_WEAVE = "A texture replaces the whole pattern with a wave traced from a real print — shapes the basic presets can't draw. Your flow, speed, and nozzle stay yours.";
+  const TEXTURE_HINT_WEAVE_ONE = "On Weave 1 a texture sets the whole wall, vase mode and Weave 1's Clay along the wall included; the other weaves stay. Your flow, speed, and nozzle stay yours.";
+  const TEXTURE_HINT_OTHER_WEAVE = "A texture gives this weave its wave; the wall and the other weaves stay. Your flow, speed, and nozzle stay yours.";
+  const ADD_WEAVE_TIP = "Add another weave on the same wall, at a clearly different size.";
+  const ADD_WEAVE_FULL_TIP = "Three weaves is the most";
+
+  function cloneJson(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function maxWeaves() {
+    const value = Number(S.defaults?.max_weaves);
+    return Number.isInteger(value) && value >= 1 ? value : MAX_WEAVES_FALLBACK;
+  }
+
+  function chosenExtraWeave() {
+    return S.selectedWeave > 0 ? (S.extraWeaves[S.selectedWeave - 1] || null) : null;
+  }
+
+  function pointValues(points) {
+    return (points || []).map((point) => Number(point.value));
+  }
+
+  function curveIsFlat(points, about = null) {
+    const values = pointValues(points);
+    if (!values.length) return false;
+    const level = about === null ? values[0] : about;
+    return values.every((value) => Math.abs(value - level) < 1e-9);
+  }
+
+  // --- Weave 1, wherever its controls are
+
+  function weaveOneSurface() {
+    return S.weaveOneParked || S;
+  }
+
+  // numberValue() for one of Weave 1's own controls, read as it was left when
+  // another weave is on screen.
+  function weaveOneNumber(id, fallback = null) {
+    const parked = S.weaveOneParked;
+    if (!parked || !(id in parked.raw)) return numberValue(id, fallback);
+    const value = Number(parked.raw[id]);
+    if (!Number.isFinite(value)) return fallback;
+    return $(id)?.dataset.unit === "mm" && parked.units[id] === "in" ? value * 25.4 : value;
+  }
+
+  function weaveOneChecked(id, fallback) {
+    const parked = S.weaveOneParked;
+    if (parked && id in parked.checked) return parked.checked[id];
+    const control = $(id);
+    return control ? control.checked : fallback;
+  }
+
+  function weaveOneRhythm() {
+    return layerRhythmValues(weaveOneNumber, weaveOneChecked("#weaveLayerSkipEnabled", false));
+  }
+
+  // Use this weave for Weave 1 is written only when it is off, so every
+  // pattern with Weave 1 printing keeps the bytes it always had; Keep the
+  // same number of waves only when it is on, so every pattern whose rings
+  // round their own counts keeps them too.
+  function applyWeaveOneSwitch(settings) {
+    delete settings.wave_on;
+    if (!weaveOneChecked("#weaveUseWeave", true)) settings.wave_on = false;
+    delete settings.hold_wave_count;
+    if (weaveOneChecked("#weaveHoldWaveCount", false)) settings.hold_wave_count = true;
+  }
+
+  function parkWeaveOne() {
+    const unit = window.claylineUnits.current;
+    S.weaveOneParked = {
+      raw: Object.fromEntries(WEAVE_OWN_CONTROLS.map((id) => [id, $(id).value])),
+      units: Object.fromEntries(WEAVE_OWN_CONTROLS.map((id) => [id, unit])),
+      checked: Object.fromEntries(WEAVE_OWN_SWITCHES.map((id) => [id, $(id).checked])),
+      wave: S.wave,
+      extrusion: S.extrusion,
+      wavePreset: S.wavePreset,
+      extrusionPreset: S.extrusionPreset,
+      patternSeed: S.patternSeed,
+    };
+  }
+
+  // Puts Weave 1's controls back exactly as they were left. A length kept in
+  // the other unit is shown the way the unit switch would have shown it.
+  function unparkWeaveOne() {
+    const parked = S.weaveOneParked;
+    if (!parked) return;
+    S.weaveOneParked = null;
+    WEAVE_OWN_CONTROLS.forEach((id) => {
+      const control = $(id);
+      const raw = parked.raw[id];
+      const value = Number(raw);
+      if (
+        control.dataset.unit === "mm"
+        && parked.units[id] !== window.claylineUnits.current
+        && raw !== ""
+        && Number.isFinite(value)
+      ) {
+        setControlValue(id, parked.units[id] === "in" ? value * 25.4 : value);
+      } else {
+        control.value = raw;
+      }
+    });
+    WEAVE_OWN_SWITCHES.forEach((id) => { $(id).checked = parked.checked[id]; });
+    S.wave = parked.wave;
+    S.extrusion = parked.extrusion;
+    S.wavePreset = parked.wavePreset;
+    S.extrusionPreset = parked.extrusionPreset;
+    S.patternSeed = parked.patternSeed;
+    S.selectedWavePoint = null;
+    S.selectedExtrusionPoint = null;
+  }
+
+  // Rule 1 for Weave 1: a write to one of its own controls lands where its
+  // controls are. While it waits off screen, the number is written through a
+  // detached copy of the control, so it is exactly what the control would
+  // have held.
+  function setWeaveOneControl(id, value) {
+    const parked = S.weaveOneParked;
+    if (!parked) {
+      setControlValue(id, value);
+      return;
+    }
+    const control = $(id);
+    const probe = control.cloneNode(false);
+    const units = window.claylineUnits;
+    probe.value = control.dataset.unit === "mm" && Number.isFinite(Number(value))
+      ? String(units.roundDisplay(units.fromMm(Number(value))))
+      : String(value);
+    parked.raw[id] = probe.value;
+    parked.units[id] = units.current;
+  }
+
+  // --- Weaves 2 and 3
+
+  // The order a weave's keys are written in when it is read from the
+  // controls. A weave that came back from a file, a texture or an Undo is
+  // kept in the same order, so a touch that changes nothing writes the same
+  // text and records no step.
+  const WEAVE_ENTRY_ORDER = Object.freeze(["name", "seed", "wave", "extrusion", "settings"]);
+  const WEAVE_ENTRY_SETTINGS_ORDER = Object.freeze([
+    "amplitude", "wavelength", "twist", "extrusion_phase_offset", "follow_lobes", "follow_coves",
+    "flow_lobes", "flow_coves",
+    ...WEAVE_RHYTHM_KEYS, "wavelength_follows_nozzle", "wave_on", "hold_wave_count",
+  ]);
+
+  function inKeyOrder(value, order) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const ordered = {};
+    order.forEach((key) => { if (key in value) ordered[key] = value[key]; });
+    Object.keys(value).forEach((key) => { if (!(key in ordered)) ordered[key] = value[key]; });
+    return ordered;
+  }
+
+  function weaveEntryInPageOrder(entry) {
+    const ordered = inKeyOrder(entry, WEAVE_ENTRY_ORDER);
+    if (ordered && typeof ordered === "object" && "settings" in ordered) {
+      ordered.settings = inKeyOrder(ordered.settings, WEAVE_ENTRY_SETTINGS_ORDER);
+    }
+    return ordered;
+  }
+
+  function extraWeaveRecord(entry, texture = null) {
+    const record = { entry: weaveEntryInPageOrder(cloneJson(entry)), texture, live: false };
+    record.wavePreset = entry.name === "noise" || WAVE_PRESETS[entry.name] ? entry.name : "custom";
+    record.extrusionPreset = entry.name === "ridge-boost" || entry.name === "trough-boost"
+      ? entry.name
+      : (curveIsFlat(entry.extrusion) ? "flat" : "custom");
+    return record;
+  }
+
+  // A chosen weave read back from the controls, after one was touched on its
+  // tab. Its Auto switch is kept in its record, since no control holds it.
+  function weaveEntryFromControls(record) {
+    const rhythm = layerRhythmValues();
+    const settings = {
+      amplitude: numberValue("#weaveAmplitude", 0),
+      wavelength: numberValue("#weaveWavelength", 18),
+      twist: numberValue("#weaveTwist", 0),
+      extrusion_phase_offset: numberValue("#weaveExtrusionPhase", 0),
+      follow_lobes: 1 + numberValue("#weaveFollowLobes", 0),
+      follow_coves: 1 + numberValue("#weaveFollowCoves", 0),
+    };
+    applyWeaveClaySettings(
+      settings,
+      1 + numberValue("#weaveFlowLobes", 0),
+      1 + numberValue("#weaveFlowCoves", 0),
+    );
+    if (rhythm.enabled) {
+      settings.layer_skip_enabled = true;
+      settings.layer_skip_start = rhythm.start;
+      settings.layer_skip_on = rhythm.on;
+      settings.layer_skip_off = rhythm.off;
+      settings.layer_skip_end = rhythm.end;
+    }
+    if (record.entry.settings.wavelength_follows_nozzle === true) {
+      settings.wavelength_follows_nozzle = true;
+    }
+    if (!$("#weaveUseWeave").checked) settings.wave_on = false;
+    if ($("#weaveHoldWaveCount").checked) settings.hold_wave_count = true;
+    return {
+      name: S.wavePreset === "custom" ? "custom" : S.wavePreset,
+      seed: S.patternSeed,
+      wave: sortedPoints(S.wave).map((point) => ({ u: point.u, value: point.value })),
+      extrusion: sortedPoints(S.extrusion).map((point) => ({ u: point.u, value: point.value })),
+      settings,
+    };
+  }
+
+  // Weave 2's or 3's Clay along the wall, written only when it moves the clay,
+  // as the engine writes it, so a weave saved before it was its own keeps its
+  // text.
+  function applyWeaveClaySettings(settings, flowLobes, flowCoves) {
+    delete settings.flow_lobes;
+    delete settings.flow_coves;
+    if (flowLobes !== 1) settings.flow_lobes = flowLobes;
+    if (flowCoves !== 1) settings.flow_coves = flowCoves;
+  }
+
+  function extraWeaveEntries() {
+    return S.extraWeaves.map((record, index) => (
+      record.live && S.selectedWeave === index + 1
+        ? weaveEntryFromControls(record)
+        : cloneJson(record.entry)
+    ));
+  }
+
+  // Both patternObject branches end here: the extra weaves ride in their own
+  // key, written only when there is one, so one weave sends what it always did.
+  function withExtraWeaves(pattern) {
+    delete pattern.extra_weaves;
+    if (S.extraWeaves.length) pattern.extra_weaves = extraWeaveEntries();
+    return pattern;
+  }
+
+  function loadWeaveToControls(record) {
+    const { entry } = record;
+    const settings = entry.settings;
+    S.wave = clonePoints(entry.wave.map((point) => [Number(point.u), Number(point.value)]));
+    S.extrusion = clonePoints(entry.extrusion.map((point) => [Number(point.u), Number(point.value)]));
+    S.wavePreset = record.wavePreset;
+    S.extrusionPreset = record.extrusionPreset;
+    S.patternSeed = Number.isInteger(entry.seed) ? entry.seed : null;
+    S.selectedWavePoint = null;
+    S.selectedExtrusionPoint = null;
+    setControlValue("#weaveAmplitude", settings.amplitude);
+    setControlValue("#weaveWavelength", settings.wavelength);
+    setControlValue("#weaveTwist", settings.twist);
+    setControlValue("#weaveExtrusionPhase", settings.extrusion_phase_offset);
+    setControlValue("#weaveFollowLobes", (settings.follow_lobes ?? 1) - 1);
+    setControlValue("#weaveFollowCoves", (settings.follow_coves ?? 1) - 1);
+    setControlValue("#weaveFlowLobes", (settings.flow_lobes ?? 1) - 1);
+    setControlValue("#weaveFlowCoves", (settings.flow_coves ?? 1) - 1);
+    $("#weaveLayerSkipEnabled").checked = Boolean(settings.layer_skip_enabled);
+    setControlValue("#weaveLayerSkipStart", settings.layer_skip_start ?? 0);
+    setControlValue("#weaveLayerSkipOn", settings.layer_skip_on ?? 2);
+    setControlValue("#weaveLayerSkipOff", settings.layer_skip_off ?? 2);
+    setControlValue("#weaveLayerSkipEnd", settings.layer_skip_end ?? 0);
+    $("#weaveUseWeave").checked = settings.wave_on !== false;
+    $("#weaveHoldWaveCount").checked = settings.hold_wave_count === true;
+  }
+
+  // The chosen weave's controls, once touched, become its record again.
+  function commitLiveWeave() {
+    const record = chosenExtraWeave();
+    if (!record?.live) return;
+    record.entry = weaveEntryFromControls(record);
+    // The chips it was left with are its own too, so they light again on return.
+    record.wavePreset = S.wavePreset;
+    record.extrusionPreset = S.extrusionPreset;
+    record.live = false;
+  }
+
+  // Puts weave `index` on screen. Nothing is read back or marked (rule 4).
+  function showWeave(index) {
+    if (S.selectedWeave === 0 && index !== 0) parkWeaveOne();
+    S.selectedWeave = index;
+    if (index === 0) unparkWeaveOne();
+    else loadWeaveToControls(S.extraWeaves[index - 1]);
+  }
+
+  function clampedWeave(index) {
+    return Math.max(0, Math.min(S.extraWeaves.length, Math.trunc(Number(index)) || 0));
+  }
+
+  function selectWeave(index) {
+    const target = clampedWeave(index);
+    // Weave 1's lone tab is the page as it always was: a click on it changes
+    // nothing, the texture hint included.
+    if (!S.extraWeaves.length && target === S.selectedWeave) return;
+    if (target !== S.selectedWeave) {
+      commitLiveWeave();
+      showWeave(target);
+    }
+    refreshChosenWeave();
+  }
+
+  // Everything that follows the chosen weave: the strip, the chips, the
+  // texture hint, the curves and the readouts.
+  function refreshChosenWeave() {
+    syncControls();
+    syncTextureChips();
+    syncTextureHint();
+    if (S.scope) renderPatternVisuals(S.scope);
+    else drawAllEditors();
+  }
+
+  // Whether each weave prints, Weave 1 first.
+  function weaveSwitches() {
+    return [
+      weaveOneChecked("#weaveUseWeave", true),
+      // A weave touched on its tab is read from the controls, its switch too.
+      ...S.extraWeaves.map((record, index) => (
+        record.live && S.selectedWeave === index + 1
+          ? $("#weaveUseWeave").checked
+          : record.entry.settings.wave_on !== false
+      )),
+    ];
+  }
+
+  function syncWeaveStrip() {
+    const strip = $("#weaveStrip");
+    const add = $("#weaveAddWeave");
+    if (!strip || !add) return;
+    const count = 1 + S.extraWeaves.length;
+    let tabs = [...strip.querySelectorAll("[data-weave-tab]")];
+    if (tabs.length !== count) {
+      tabs.slice(1).forEach((tab) => tab.remove());
+      for (let index = 1; index < count; index += 1) {
+        const tab = document.createElement("button");
+        tab.type = "button";
+        tab.dataset.weaveTab = String(index);
+        tab.textContent = `Weave ${index + 1}`;
+        strip.insertBefore(tab, add);
+      }
+      tabs = [...strip.querySelectorAll("[data-weave-tab]")];
+    }
+    const switches = weaveSwitches();
+    tabs.forEach((tab) => {
+      const index = Number(tab.dataset.weaveTab);
+      const chosen = index === S.selectedWeave;
+      tab.classList.toggle("is-active", chosen);
+      tab.setAttribute("aria-pressed", String(chosen));
+      tab.classList.toggle("is-off", switches[index] === false);
+    });
+    const full = count >= maxWeaves();
+    add.setAttribute("aria-disabled", String(full));
+    add.title = full ? ADD_WEAVE_FULL_TIP : ADD_WEAVE_TIP;
+    $("#weaveRemoveWeave").hidden = S.selectedWeave === 0;
+    syncFormFromPrintHint(switches);
+  }
+
+  // The texture chip lights on the weave that holds the texture.
+  function syncTextureChips() {
+    const lit = S.selectedWeave === 0 ? S.texturePreset : (chosenExtraWeave()?.texture || null);
+    $$('[data-texture-preset]').forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.texturePreset === lit);
+    });
+  }
+
+  function syncTextureHint() {
+    const hint = $("#weaveTextureHint");
+    if (!hint) return;
+    hint.textContent = !S.extraWeaves.length
+      ? TEXTURE_HINT_ONE_WEAVE
+      : (S.selectedWeave === 0 ? TEXTURE_HINT_WEAVE_ONE : TEXTURE_HINT_OTHER_WEAVE);
+  }
+
+  // Rule 2: a touch on the chosen weave's own control. For Weave 1 that is
+  // what it always was; Weave 2 or 3 is read from the controls from now on,
+  // and no longer holds a texture.
+  function touchWeave() {
+    forgetWeaveView(S.selectedWeave);
+    const record = chosenExtraWeave();
+    if (!record) {
+      setActiveTexture(null);
+      return;
+    }
+    record.live = true;
+    record.texture = null;
+    syncTextureChips();
+  }
+
+  // Rules 2 and 3 for a control in the Pattern section: a weave's own control,
+  // Clay along the wall among them, touches the chosen weave; the vase rim's
+  // reach and the floor and seam controls cover the whole wall, so they clear
+  // Weave 1's exact values whichever tab is chosen.
+  function touchPatternControl(selector) {
+    if (WEAVE_OWN_CONTROLS.includes(selector)) touchWeave();
+    else setActiveTexture(null);
+  }
+
+  // Skip layers, Use this weave and Keep the same number of waves ride on top
+  // of a weave's exact values, as Weave 1's always have, so they write into
+  // the chosen weave's record.
+  function writeChosenWeaveSwitches() {
+    const record = chosenExtraWeave();
+    if (!record || record.live) return;
+    const settings = record.entry.settings;
+    const rhythm = layerRhythmValues();
+    WEAVE_RHYTHM_KEYS.forEach((key) => delete settings[key]);
+    if (rhythm.enabled) {
+      settings.layer_skip_enabled = true;
+      settings.layer_skip_start = rhythm.start;
+      settings.layer_skip_on = rhythm.on;
+      settings.layer_skip_off = rhythm.off;
+      settings.layer_skip_end = rhythm.end;
+    }
+    delete settings.wave_on;
+    if (!$("#weaveUseWeave").checked) settings.wave_on = false;
+    delete settings.hold_wave_count;
+    if ($("#weaveHoldWaveCount").checked) settings.hold_wave_count = true;
+  }
+
+  // --- Auto spacing, weave by weave (§1): each weave keeps its own switch.
+
+  function selectedWavelengthFollows() {
+    const record = chosenExtraWeave();
+    return record ? record.entry.settings.wavelength_follows_nozzle === true : S.wavelengthFollows;
+  }
+
+  function setSelectedWavelengthFollows(follows) {
+    const record = chosenExtraWeave();
+    if (!record) {
+      S.wavelengthFollows = follows;
+      return;
+    }
+    if (follows) record.entry.settings.wavelength_follows_nozzle = true;
+    else delete record.entry.settings.wavelength_follows_nozzle;
+  }
+
+  // A new coil width rewrites only the weaves that follow it, through their
+  // records, and shows the number only for the weave on screen. `onlyWeave`,
+  // counted the way S.selectedWeave counts (Weave 2 is 1), limits it to that
+  // one weave.
+  function followExtraWavelengths(wavelength, onlyWeave = null) {
+    let changed = false;
+    S.extraWeaves.forEach((record, index) => {
+      const settings = record.entry.settings;
+      if (onlyWeave !== null && onlyWeave !== index + 1) return;
+      if (settings.wavelength_follows_nozzle !== true) return;
+      const chosen = S.selectedWeave === index + 1;
+      const current = chosen && record.live ? numberValue("#weaveWavelength") : settings.wavelength;
+      if (current === wavelength) return;
+      settings.wavelength = wavelength;
+      record.texture = null;
+      if (chosen) setControlValue("#weaveWavelength", wavelength);
+      changed = true;
+    });
+    // A weave that no longer holds its texture no longer lights its chip.
+    if (changed) syncTextureChips();
+    return changed;
+  }
+
+  // --- Add, Remove, and what a new weave starts as
+
+  // A sine 1 mm deep, untwisted, with a flat clay track (served by the
+  // studio's defaults), at a clearly different size from Weave 1: at the
+  // Auto spacing with Auto on when Weave 1 is long or still flat, otherwise
+  // several times longer than Weave 1, typed.
+  function newWeaveEntry() {
+    const plan = S.defaults?.new_weave || {};
+    const one = patternObject();
+    const auto = derivedWavelength(numberValue("#weaveBeadWidth", selectedNozzle()));
+    const multiple = Number(plan.long_multiple) > 0 ? Number(plan.long_multiple) : 4;
+    const oneWavelength = Number(one.settings.wavelength);
+    const oneFlat = !(Number(one.settings.amplitude) > 0) || curveIsFlat(one.wave, 0);
+    const follows = oneFlat || !(oneWavelength <= multiple * auto);
+    const waveName = WAVE_PRESETS[plan.wave] ? plan.wave : "sine";
+    const trackName = EXTRUSION_PRESETS[plan.extrusion] ? plan.extrusion : "flat";
+    const number = (value, fallback) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
+    const settings = {
+      amplitude: number(plan.amplitude, 1),
+      wavelength: follows ? auto : multiple * oneWavelength,
+      twist: number(plan.twist, 0),
+      extrusion_phase_offset: number(plan.extrusion_phase, 0),
+      follow_lobes: number(plan.follow_lobes, 1),
+      follow_coves: number(plan.follow_coves, 1),
+    };
+    if (follows) settings.wavelength_follows_nozzle = true;
+    return {
+      name: waveName,
+      seed: null,
+      wave: WAVE_PRESETS[waveName].map(([u, value]) => ({ u, value })),
+      extrusion: EXTRUSION_PRESETS[trackName].map(([u, value]) => ({ u, value })),
+      settings,
+    };
+  }
+
+  function addWeave() {
+    if (1 + S.extraWeaves.length >= maxWeaves()) return;
+    commitLiveWeave();
+    S.extraWeaves.push(extraWeaveRecord(newWeaveEntry()));
+    forgetWeaveView(S.extraWeaves.length);
+    // Selected straight away, so the new weave is the one being shaped.
+    selectWeave(S.extraWeaves.length);
+    beginMetric();
+    invalidateExact("Weave added — rebuilding the final path.");
+    scheduleModulation("settle");
+  }
+
+  // Removing Weave 2 makes Weave 3 the new Weave 2. Weave 1 has no Remove.
+  function removeWeave() {
+    const index = S.selectedWeave;
+    if (index < 1 || index > S.extraWeaves.length) return;
+    S.extraWeaves.splice(index - 1, 1);
+    // The last answer's views shift with the weaves, so Weave 3's stays Weave 3's.
+    if (Array.isArray(S.scope?.weaves)) S.scope.weaves.splice(index, 1);
+    const target = Math.min(index, S.extraWeaves.length);
+    if (target === 0) {
+      S.selectedWeave = 0;
+      unparkWeaveOne();
+    } else {
+      S.selectedWeave = target;
+      loadWeaveToControls(S.extraWeaves[target - 1]);
+    }
+    refreshChosenWeave();
+    armFlowColorForCurrentPattern();
+    beginMetric();
+    invalidateExact("Weave removed — rebuilding the final path.");
+    scheduleModulation("settle");
+  }
+
+  // A whole new pattern with no extra weaves of its own, from another
+  // slicer's print file or Reset: Weave 1 on screen, Weaves 2 and 3 gone.
+  function dropExtraWeaves() {
+    const had = S.extraWeaves.length;
+    if (S.selectedWeave !== 0) showWeave(0);
+    S.weaveOneParked = null;
+    S.extraWeaves = [];
+    S.landingWeave = null;
+    if (had) syncTextureHint();
+  }
+
+  // --- A whole pattern landing (applyCanonicalPattern's two edges)
+
+  // Before: Weave 1's controls back on screen, so the pattern's own values
+  // land in Weave 1's controls and nowhere else. Returns the weave to show
+  // again after.
+  function beginWholePattern() {
+    const previous = S.selectedWeave;
+    commitLiveWeave();
+    if (previous !== 0) showWeave(0);
+    return previous;
+  }
+
+  // After: Weaves 2 and 3 are the pattern's own (absent means none), Weave 1's
+  // exact copy keeps nothing of them, and the weave an Undo or Redo changed,
+  // or else the one that was chosen, is put back on screen.
+  function finishWholePattern(pattern, previous) {
+    const entries = Array.isArray(pattern.extra_weaves) ? pattern.extra_weaves : [];
+    const before = S.extraWeaves;
+    // A weave that comes back unchanged keeps its lit texture chip.
+    S.extraWeaves = entries.map((entry, index) => extraWeaveRecord(
+      entry,
+      before[index]?.texture && sameWeaveEntry(before[index].entry, entry) ? before[index].texture : null,
+    ));
+    if (S.exactPattern) delete S.exactPattern.extra_weaves;
+    const target = clampedWeave(S.landingWeave ?? previous);
+    S.landingWeave = null;
+    if (target !== 0) showWeave(target);
+    // One weave before and after keeps the hint it had, as it always did: a
+    // texture's own description stays through Undo, Load and Restore.
+    if (before.length || S.extraWeaves.length) syncTextureHint();
+  }
+
+  // The chips an Undo or Redo step had lit on Weaves 2 and 3.
+  function restoreWeaveTextureChips(slugs) {
+    if (!Array.isArray(slugs)) return;
+    S.extraWeaves.forEach((record, index) => {
+      const slug = slugs[index];
+      if (slug && S.textures.has(slug)) record.texture = slug;
+    });
+    syncTextureChips();
+  }
+
+  function sortedJson(value) {
+    if (Array.isArray(value)) return `[${value.map(sortedJson).join(",")}]`;
+    if (value && typeof value === "object") {
+      return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${sortedJson(value[key])}`).join(",")}}`;
+    }
+    return JSON.stringify(value);
+  }
+
+  function sameWeaveEntry(left, right) {
+    return sortedJson(left) === sortedJson(right);
+  }
+
+  // The one sentence a pattern with only its own weave says when it takes the
+  // other weaves off. Undo brings them back.
+  function weavesTakenOffSentence(name, before) {
+    if (!before || S.extraWeaves.length) return "";
+    S.weavesTakenOffSaid = before === 1
+      ? `${name} has one weave, so Weave 2 came off. Undo brings it back.`
+      : `${name} has one weave, so Weaves 2 and 3 came off. Undo brings them back.`;
+    return S.weavesTakenOffSaid;
+  }
+
+  // An Undo or Redo puts other weaves on the wall than the ones that
+  // sentence was about, so it goes with the step it was said on.
+  function forgetWeavesTakenOff() {
+    const status = $("#weaveRestoreStatus");
+    if (S.weavesTakenOffSaid && status && status.textContent === S.weavesTakenOffSaid) {
+      status.textContent = "";
+    }
+    S.weavesTakenOffSaid = "";
+  }
+
+  // Which weave an Undo or Redo changed: the first whose own values differ
+  // between the step being left and the step landed on, or the weave that
+  // was chosen when only the whole wall changed.
+  function landingWeaveFor(fromJson, toJson) {
+    let from = null;
+    let to = null;
+    try {
+      from = JSON.parse(fromJson);
+      to = JSON.parse(toJson);
+    } catch (_error) {
+      return null;
+    }
+    const own = (pattern) => {
+      const settings = pattern?.settings || {};
+      const kept = {};
+      [
+        "amplitude", "wavelength", "twist", "extrusion_phase_offset", "follow_lobes",
+        "follow_coves", "flow_lobes", "flow_coves", "wavelength_follows_nozzle", "wave_on",
+        "hold_wave_count", ...WEAVE_RHYTHM_KEYS,
+      ].forEach((key) => { if (key in settings) kept[key] = settings[key]; });
+      return JSON.stringify([pattern?.name, pattern?.seed, pattern?.wave, pattern?.extrusion, kept]);
+    };
+    const weaves = (pattern) => [
+      own(pattern),
+      // Read whatever order the keys came in: only the values decide.
+      ...(Array.isArray(pattern?.extra_weaves) ? pattern.extra_weaves : []).map(sortedJson),
+    ];
+    const before = weaves(from);
+    const after = weaves(to);
+    const count = Math.max(before.length, after.length);
+    for (let index = 0; index < count; index += 1) {
+      if (before[index] !== after[index]) return Math.min(index, after.length - 1);
+    }
+    return null;
+  }
+
+  // --- What the readouts show for the chosen weave
+
+  // With extra weaves the server describes each weave in pattern.weaves; with
+  // one weave the top-level keys are Weave 1's, as they always were.
+  function chosenWeaveView(pattern) {
+    if (!pattern || typeof pattern !== "object") return null;
+    if (!Array.isArray(pattern.weaves)) return S.selectedWeave === 0 ? pattern : null;
+    return pattern.weaves[S.selectedWeave] || null;
+  }
+
+  // The last answer's curves and twist for one weave, let go once that weave
+  // changes, so they read from its own values until the next answer describes
+  // it. Its readout lines stay until then, as Weave 1's always have. Only a
+  // wall with extra weaves has views to let go.
+  function forgetWeaveView(index) {
+    const views = S.scope?.weaves;
+    if (!Array.isArray(views) || !views[index] || typeof views[index] !== "object") return;
+    const { scope: _scope, settings: _settings, ...kept } = views[index];
+    views[index] = kept;
+  }
+
+  function renderCombinedSwing(pattern) {
+    const line = $("#weaveCombinedSwing");
+    if (!line) return;
+    const label = pattern?.combined_amplitude_readout?.label || "";
+    line.textContent = label;
+    line.hidden = !label;
+  }
+
+  function unrolledStripLabel(rows) {
+    const switches = weaveSwitches();
+    if (!S.extraWeaves.length && switches[0]) return `${rows} rows from the sliced form`;
+    const off = switches
+      .map((on, index) => (on ? null : `Weave ${index + 1} off`))
+      .filter(Boolean);
+    const base = S.extraWeaves.length
+      ? [`${rows} rows`, "all weaves together"]
+      : [`${rows} rows from the sliced form`];
+    return [...base, ...off].join(" · ");
+  }
+
+  // Flow colour arms when any weave shapes the clay, not only the one shown:
+  // by its clay track or its own Clay along the wall, while it prints.  A
+  // weave switched off, Weave 1 included, prints none of its clay.
+  function otherWeavesShapeClay() {
+    const switches = weaveSwitches();
+    const one = S.weaveOneParked;
+    if (one && switches[0]) {
+      if (!curveIsFlat(one.extrusion)) return true;
+      if (
+        Math.abs(weaveOneNumber("#weaveFlowLobes", 0)) > 1e-9
+        || Math.abs(weaveOneNumber("#weaveFlowCoves", 0)) > 1e-9
+      ) return true;
+    }
+    return S.extraWeaves.some((record, index) => (
+      S.selectedWeave !== index + 1
+      && switches[index + 1]
+      && (
+        !curveIsFlat(record.entry.extrusion)
+        || (record.entry.settings.flow_lobes ?? 1) !== 1
+        || (record.entry.settings.flow_coves ?? 1) !== 1
+      )
+    ));
+  }
+
+  // --- The safe offer with extra weaves: every weave at the same share,
+  // each number exactly as it was checked, never through the rounding box.
+  function applySafeSwing(action) {
+    const amplitudes = action.amplitudes_mm.map(Number);
+    commitLiveWeave();
+    const one = amplitudes[0];
+    if (Number.isFinite(one)) {
+      if (S.exactPattern) {
+        const exact = cloneJson(S.exactPattern);
+        exact.settings.amplitude = one;
+        // No longer the texture it came from, and still exact.
+        S.texturePreset = null;
+        S.texturePattern = null;
+        S.exactPattern = exact;
+      }
+      setWeaveOneControl("#weaveAmplitude", one);
+    }
+    S.extraWeaves.forEach((record, index) => {
+      const value = amplitudes[index + 1];
+      if (!Number.isFinite(value)) return;
+      record.entry.settings.amplitude = value;
+      record.texture = null;
+      if (S.selectedWeave === index + 1) setControlValue("#weaveAmplitude", value);
+    });
+    syncTextureChips();
+  }
+
+  // --- Textures and Noise on Weave 2 or 3: the wave part only (§3).
+
+  function applyTextureToChosenWeave(row) {
+    const record = chosenExtraWeave();
+    if (!record) return;
+    const source = JSON.parse(row.pattern.canonical_json);
+    const given = source.settings || {};
+    commitLiveWeave();
+    const kept = record.entry.settings;
+    const settings = {
+      amplitude: given.amplitude,
+      wavelength: given.wavelength,
+      twist: given.twist,
+      extrusion_phase_offset: given.extrusion_phase_offset,
+      follow_lobes: given.follow_lobes ?? 1,
+      follow_coves: given.follow_coves ?? 1,
+    };
+    // Clay along the wall is this weave's own: a texture that carries flow
+    // values brings them, and any other leaves the weave's as it was.
+    const textureClay = "flow_lobes" in given || "flow_coves" in given;
+    applyWeaveClaySettings(
+      settings,
+      textureClay ? (given.flow_lobes ?? 1) : (kept.flow_lobes ?? 1),
+      textureClay ? (given.flow_coves ?? 1) : (kept.flow_coves ?? 1),
+    );
+    WEAVE_RHYTHM_KEYS.forEach((key) => { if (key in kept) settings[key] = kept[key]; });
+    if (given.wavelength_follows_nozzle === true) settings.wavelength_follows_nozzle = true;
+    if (kept.wave_on === false) settings.wave_on = false;
+    // Keep the same number of waves describes the pot's taper, not the wave,
+    // so the texture leaves it as the potter set it.
+    if (kept.hold_wave_count === true) settings.hold_wave_count = true;
+    const next = extraWeaveRecord({
+      name: source.name,
+      seed: Number.isInteger(source.seed) ? source.seed : null,
+      wave: source.wave,
+      extrusion: source.extrusion,
+      settings,
+    }, row.slug);
+    Object.assign(record, next);
+    forgetWeaveView(S.selectedWeave);
+    loadWeaveToControls(record);
+    syncControls();
+    syncTextureChips();
+    drawAllEditors();
+    weaveStateWriter?.schedule();
+    armFlowColorForCurrentPattern();
+    invalidateExact(`${row.label} pattern loaded — rebuilding the final path.`);
+    if (S.slice) scheduleModulation("settle");
+    setStatus(`${row.label} · Weave ${S.selectedWeave + 1} pattern loaded`);
+    $("#weaveTextureHint").textContent = `${row.description} ${row.provenance} It gave Weave ${S.selectedWeave + 1} its wave; the wall and the other weaves stay. Your flow, speed, and nozzle stay yours.`;
+  }
+
+  function applyNoiseToChosenWeave(noise, seed) {
+    const record = chosenExtraWeave();
+    if (!record) return;
+    commitPendingWeaveEdit();
+    commitLiveWeave();
+    record.entry.name = "noise";
+    record.entry.seed = seed;
+    record.entry.wave = noise.wave;
+    record.wavePreset = "noise";
+    record.texture = null;
+    forgetWeaveView(S.selectedWeave);
+    loadWeaveToControls(record);
+    syncControls();
+    syncTextureChips();
+    drawAllEditors();
+    beginMetric();
+    invalidateExact(`New noise for Weave ${S.selectedWeave + 1} — rebuilding the final path.`);
+    scheduleModulation("settle");
+    commitPendingWeaveEdit();
+    setStatus(`Noise seed ${seed} · Weave ${S.selectedWeave + 1}`);
+  }
+
+  function bindWeaveStrip() {
+    $("#weaveStrip").addEventListener("click", (event) => {
+      const tab = event.target instanceof Element ? event.target.closest("[data-weave-tab]") : null;
+      if (tab) selectWeave(Number(tab.dataset.weaveTab));
+    });
+    $("#weaveAddWeave").addEventListener("click", () => {
+      if ($("#weaveAddWeave").getAttribute("aria-disabled") === "true") return;
+      addWeave();
+    });
+    $("#weaveRemoveWeave").addEventListener("click", removeWeave);
+    $("#weaveUseWeave").addEventListener("change", () => {
+      writeChosenWeaveSwitches();
+      armFlowColorForCurrentPattern();
+      beginMetric();
+      syncControls();
+      if (S.unrolled) drawUnrolled(S.unrolled);
+      scheduleModulation("settle");
+    });
+    // Like Use this weave it rides on top of the weave's own values, so a
+    // texture the weave holds stays lit; the slice already knows each part's
+    // widest ring, so only the path is rebuilt.
+    $("#weaveHoldWaveCount").addEventListener("change", () => {
+      writeChosenWeaveSwitches();
+      beginMetric();
+      syncControls();
+      scheduleModulation("settle");
+    });
+  }
+
   function setWavePreset(name, { quiet = false } = {}) {
     const points = WAVE_PRESETS[name];
     if (!points) return;
     S.wavePreset = name;
-    setActiveTexture(null);
+    touchWeave();
     S.patternSeed = null;
     S.wave = clonePoints(points);
     S.selectedWavePoint = null;
@@ -3066,7 +4085,7 @@
     const points = EXTRUSION_PRESETS[name];
     if (!points) return;
     S.extrusionPreset = name;
-    setActiveTexture(null);
+    touchWeave();
     S.extrusion = clonePoints(points);
     S.selectedExtrusionPoint = null;
     $$('[data-extrusion-preset]').forEach((button) => {
@@ -3087,20 +4106,26 @@
     // stale pre-2026-07-19 curve shipped from here until Pete caught the
     // boost missing his ridges (2026-07-20).
     const label = name === "trough-boost" ? "Trough boost" : "Ridge boost";
+    // The boost finds the crests of the weave on screen (Weave 1 is 0).
+    const weave = S.selectedWeave;
     try {
       const payload = await canonicalPatternRequest(
         patternObject(),
-        { extrusion_preset: name },
+        weave === 0 ? { extrusion_preset: name } : { extrusion_preset: name, extrusion_preset_weave: weave },
       );
       const canonical = payload.pattern?.canonical_json;
       if (typeof canonical !== "string") {
         throw new Error("The backend did not return the preset pattern.");
       }
       const pattern = JSON.parse(canonical);
+      // Another weave chosen while the engine answered: this answer was not for it.
+      if (S.selectedWeave !== weave) return;
+      const boosted = weave === 0 ? pattern : pattern.extra_weaves?.[weave - 1];
+      if (!boosted) throw new Error(`The boost did not come back for Weave ${weave + 1}.`);
       S.extrusionPreset = name;
-      setActiveTexture(null);
+      touchWeave();
       S.extrusion = clonePoints(
-        pattern.extrusion.map((point) => [Number(point.u), Number(point.value)]),
+        boosted.extrusion.map((point) => [Number(point.u), Number(point.value)]),
       );
       S.selectedExtrusionPoint = null;
       $$('[data-extrusion-preset]').forEach((button) => {
@@ -3135,16 +4160,24 @@
     S.texturePattern = S.texturePreset && canonicalPattern
       ? JSON.parse(JSON.stringify(canonicalPattern))
       : null;
+    // Weave 1's copies never hold the other weaves; they have their records.
+    if (S.texturePattern) delete S.texturePattern.extra_weaves;
     if (S.texturePattern) S.exactPattern = JSON.parse(JSON.stringify(S.texturePattern));
     else if (!S.texturePreset) S.exactPattern = null;
-    $$('[data-texture-preset]').forEach((button) => {
-      button.classList.toggle("is-active", button.dataset.texturePreset === S.texturePreset);
-    });
+    syncTextureChips();
   }
 
   async function applyTexturePreset(row) {
     try {
       beginMetric();
+      // On Weave 2 or 3 a texture gives that weave its wave and nothing else.
+      if (S.selectedWeave > 0) {
+        applyTextureToChosenWeave(row);
+        return;
+      }
+      // On Weave 1 it is the whole texture, as it always was, and Weaves 2
+      // and 3 are carried across it the way the interior is.
+      const keptWeaves = S.extraWeaves;
       // A fitted texture is a WAVE, not an interior. Its canonical pattern
       // carries no interior key at all — hollow serializes as absence — so
       // hydrating it straight through setInteriorControls checked Hollow
@@ -3156,8 +4189,16 @@
       // typed rib spacing, angle, base, cap and ramp to the engine defaults —
       // under the same hint promising nothing of theirs had moved.
       const keptInterior = interiorControlSettings();
+      // Use this weave is the potter's own switch, never the texture's.
+      const keptUse = $("#weaveUseWeave").checked;
+      // So is Keep the same number of waves: it describes the pot's taper.
+      const keptHold = $("#weaveHoldWaveCount").checked;
       applyCanonicalPattern(row.pattern.canonical_json, row.pattern);
       setInteriorControls(keptInterior);
+      $("#weaveUseWeave").checked = keptUse;
+      $("#weaveHoldWaveCount").checked = keptHold;
+      S.extraWeaves = keptWeaves;
+      if (keptWeaves.length) drawUnrolled(S.unrolled);
       setActiveTexture(row.slug, JSON.parse(row.pattern.canonical_json));
       // Some textures are fitted WITH vase mode, which a filled interior cannot
       // climb. The wave still loads, but the print is no longer the fitted
@@ -3196,7 +4237,7 @@
         button.type = "button";
         button.dataset.texturePreset = row.slug;
         button.textContent = row.label;
-        button.title = `${row.description} ${row.provenance} Sets the pattern only — flow, speed, and nozzle stay yours.`;
+        button.title = `${row.description} ${row.provenance} Sets the pattern of the weave you are on — flow, speed, and nozzle stay yours.`;
         button.addEventListener("click", () => applyTexturePreset(row));
         container.append(button);
       });
@@ -3221,11 +4262,17 @@
   }
 
   function currentPatternShapesFlow() {
+    // The Clay along the wall on screen prints only while its weave is
+    // switched on, Weave 1's as much as Weave 2's or 3's.
+    const shownClayPrints = $("#weaveUseWeave").checked;
     return (
       !extrusionIsFlat()
-      || Math.abs(numberValue("#weaveFlowLobes", 0)) > 1e-9
-      || Math.abs(numberValue("#weaveFlowCoves", 0)) > 1e-9
+      || (shownClayPrints && (
+        Math.abs(numberValue("#weaveFlowLobes", 0)) > 1e-9
+        || Math.abs(numberValue("#weaveFlowCoves", 0)) > 1e-9
+      ))
       || topFollowShapesFlow()
+      || otherWeavesShapeClay()
     );
   }
 
@@ -3458,7 +4505,6 @@
     $("#weaveFlowOutput").textContent = `${flow.toFixed(2)}×`;
     $("#weaveTwistOutput").textContent = `${twist.toFixed(2)} cycles · ${(twist * 360).toFixed(0)}°`;
     syncTopFollowSlopeControl();
-    renderCombCaption();
     const rhythm = layerRhythmValues();
     $("#weaveLayerRhythmBlock").classList.toggle("is-enabled", rhythm.enabled);
     $("#weaveLayerSkipEnabled").setAttribute("aria-expanded", String(rhythm.enabled));
@@ -3475,7 +4521,7 @@
     ].filter(Boolean);
     $("#weaveLayerRhythmSummary").textContent = rhythm.enabled
       ? edgeText.join(" · ")
-      : "Every wall layer carries the pattern.";
+      : "Every wall layer carries this weave.";
 
     const flat = waveIsFlat();
     setDependencyDisabled("#weaveAmplitude", flat, DISABLED_REASONS.amplitude, "#weaveAmplitudeHint");
@@ -3496,13 +4542,13 @@
     $("#weaveTwistHint").hidden = false;
     $("#weaveTwistHint").textContent = flat
       ? DISABLED_REASONS.twist
-      : "Twist shifts the waveform continuously from layer to layer.";
+      : "Turns the wave a little further round the wall on each layer.";
     $$('[data-twist-preset]').forEach((button) => {
       if (button.dataset.enabledTitle === undefined) button.dataset.enabledTitle = button.title;
       button.disabled = flat;
       button.title = flat ? DISABLED_REASONS.twist : button.dataset.enabledTitle;
     });
-    $("#weaveWaveState").textContent = flat ? "flat · no wobble" : `${S.wavePreset} · wrapped cycle`;
+    $("#weaveWaveState").textContent = flat ? "flat · no wave" : `${S.wavePreset} · one wave`;
 
     const extrusionFlat = extrusionIsFlat();
     setDependencyDisabled(
@@ -3510,6 +4556,13 @@
       extrusionFlat,
       DISABLED_REASONS.extrusionPhase,
       "#weaveExtrusionPhaseHint",
+    );
+    // Greyed, it keeps its setting, as a greyed Wavelength keeps its number;
+    // the reason is its tooltip only.
+    setDependencyDisabled(
+      "#weaveHoldWaveCount",
+      flat && extrusionFlat,
+      DISABLED_REASONS.holdWaveCount,
     );
     const interior = interiorValues();
     const interiorFills = interior.interior !== "hollow";
@@ -3596,6 +4649,7 @@
     // switch that the hollow-case rules above have already answered.
     syncInteriorControls();
     syncPresetChips();
+    syncWeaveStrip();
     syncFollowChips();
     syncSettleButton();
     syncWeaveProjectControls();
@@ -3645,7 +4699,8 @@
       ["#weaveBeadWidthFollow", S.beadWidthFollows,
         "Following the nozzle diameter. Type a value to take over; click to follow again.",
         "Custom value. Click to follow the nozzle diameter again."],
-      ["#weaveWavelengthFollow", S.wavelengthFollows,
+      // The chip shows the Auto switch of the weave on screen.
+      ["#weaveWavelengthFollow", selectedWavelengthFollows(),
         "Following the coil thickness at 3.5× — one crest every 3.5 coils. Type a value to take over; click to follow again.",
         "Custom value. Click to follow the coil thickness at 3.5× again."],
     ].forEach(([selector, follows, autoTitle, manualTitle]) => {
@@ -3663,7 +4718,10 @@
     }
   }
 
-  function applyNozzleFollows() {
+  // `onlyWeave` is set by a weave's own Auto chip (Weave 1 is 0): its click
+  // re-derives that weave alone. A nozzle, coil-width or profile change leaves
+  // it out and rewrites every weave that follows.
+  function applyNozzleFollows(onlyWeave = null) {
     const nozzle = selectedNozzle();
     let sliceChanged = false;
     if (S.beadWidthFollows && numberValue("#weaveBeadWidth") !== nozzle) {
@@ -3682,12 +4740,20 @@
       }
     }
     let patternChanged = false;
-    if (S.wavelengthFollows) {
+    // Each weave that follows gets the new spacing in its own record; only
+    // the weave on screen shows it.
+    if (S.wavelengthFollows && (onlyWeave === null || onlyWeave === 0)) {
       const wavelength = derivedWavelength(numberValue("#weaveBeadWidth", nozzle));
-      if (numberValue("#weaveWavelength") !== wavelength) {
-        setControlValue("#weaveWavelength", wavelength);
+      if (weaveOneNumber("#weaveWavelength") !== wavelength) {
+        setWeaveOneControl("#weaveWavelength", wavelength);
         patternChanged = true;
       }
+    }
+    if (
+      onlyWeave !== 0
+      && followExtraWavelengths(derivedWavelength(numberValue("#weaveBeadWidth", nozzle)), onlyWeave)
+    ) {
+      patternChanged = true;
     }
     // syncControls() calls syncFollowChips() itself; it also refreshes the
     // amplitude/wavelength output labels and the comb caption so a
@@ -3842,7 +4908,7 @@
     return [...rows, [1, rows[0][1]]];
   }
 
-  function drawWaveEditor(scope = S.scope?.scope) {
+  function drawWaveEditor(scope = chosenWeaveView(S.scope)?.scope) {
     const canvas = $("#weaveWaveCanvas");
     const context = canvas.getContext("2d");
     const { width, height } = canvasMetrics(canvas);
@@ -3884,7 +4950,7 @@
     context.restore();
   }
 
-  function drawExtrusionEditor(scope = S.scope?.scope) {
+  function drawExtrusionEditor(scope = chosenWeaveView(S.scope)?.scope) {
     const canvas = $("#weaveExtrusionCanvas");
     const context = canvas.getContext("2d");
     const { width, height } = canvasMetrics(canvas);
@@ -3909,7 +4975,7 @@
     });
   }
 
-  function drawAllEditors(scope = S.scope?.scope) {
+  function drawAllEditors(scope = chosenWeaveView(S.scope)?.scope) {
     drawWaveEditor(scope);
     drawExtrusionEditor(scope);
   }
@@ -3988,7 +5054,8 @@
         : layer.kind === "crown"
           ? layer.label
           : `L${layer.layer}`;
-      context.fillText(`${layerLabel} · ${layer.waves} waves`, padX, baseline - rowHeight * 0.34);
+      // With extra weaves the server labels each row with every weave's count.
+      context.fillText(`${layerLabel} · ${layer.waves_label ?? layer.waves} waves`, padX, baseline - rowHeight * 0.34);
     });
   }
 
@@ -4000,7 +5067,7 @@
       ? "Expand the same unrolled pattern at full detail"
       : "Slice a form before expanding its pattern preview.";
     drawUnrolledInto($("#weaveUnrolledCanvas"), unrolled);
-    $("#weaveStripLabel").textContent = `${layers.length} rows from the sliced form`;
+    $("#weaveStripLabel").textContent = unrolledStripLabel(layers.length);
     if (!$("#weavePatternOverlay").hidden) drawExpandedPattern();
   }
 
@@ -4079,7 +5146,7 @@
           S.extrusionPreset = "custom";
           armAutomaticFlowColor();
         }
-        setActiveTexture(null);
+        touchWeave();
         S.scope = null;
         beginMetric();
         invalidateExact("Curve point added — rebuilding the final path.");
@@ -4106,7 +5173,7 @@
         S.extrusionPreset = "custom";
         armAutomaticFlowColor();
       }
-      setActiveTexture(null);
+      touchWeave();
       S.scope = null;
       beginMetric();
       invalidateExact("Curve changed — rough preview until you release.");
@@ -4142,7 +5209,7 @@
         S.extrusionPreset = "custom";
         armAutomaticFlowColor();
       }
-      setActiveTexture(null);
+      touchWeave();
       S.scope = null;
       beginMetric();
       syncControls();
@@ -4172,7 +5239,7 @@
         S.extrusionPreset = "custom";
         armAutomaticFlowColor();
       }
-      setActiveTexture(null);
+      touchWeave();
       S.scope = null;
       beginMetric();
       invalidateExact("Curve point deleted — rebuilding the final path.");
@@ -4188,6 +5255,9 @@
     if (!pattern || pattern.schema !== "clayline.weave-pattern" || ![1, 2, 3, 4].includes(pattern.version)) {
       throw new Error("The backend did not return a supported Clayline Weave pattern.");
     }
+    // The pattern's own values are Weave 1's, so they land in Weave 1's
+    // controls whichever weave was on screen.
+    const shownWeave = beginWholePattern();
     setActiveTexture(null);
     S.wave = clonePoints(pattern.wave.map((point) => [Number(point.u), Number(point.value)]));
     S.extrusion = clonePoints(pattern.extrusion.map((point) => [Number(point.u), Number(point.value)]));
@@ -4218,6 +5288,8 @@
     setControlValue("#weaveLayerSkipOn", settings.layer_skip_on ?? 2);
     setControlValue("#weaveLayerSkipOff", settings.layer_skip_off ?? 2);
     setControlValue("#weaveLayerSkipEnd", settings.layer_skip_end ?? 0);
+    $("#weaveUseWeave").checked = settings.wave_on !== false;
+    $("#weaveHoldWaveCount").checked = settings.hold_wave_count === true;
     setControlValue(
       "#weaveTopFollowSlope",
       settings.top_follow_slope_multiplier ?? 1,
@@ -4235,7 +5307,9 @@
     $$('[data-wave-preset]').forEach((button) => button.classList.toggle("is-active", button.dataset.wavePreset === S.wavePreset));
     $$('[data-extrusion-preset]').forEach((button) => button.classList.toggle("is-active", button.dataset.extrusionPreset === S.extrusionPreset));
     S.exactPattern = JSON.parse(JSON.stringify(pattern));
+    finishWholePattern(pattern, shownWeave);
     syncControls();
+    syncTextureChips();
     renderPatternVisuals(payload);
     weaveStateWriter?.schedule();
   }
@@ -4271,6 +5345,8 @@
 
   async function requestNoisePreset() {
     const seed = nextNoiseSeed();
+    // The noise is for the weave on screen when it was asked for (Weave 1 is 0).
+    const weave = S.selectedWeave;
     setStatus("Building seeded noise · backend");
     try {
       const seeded = await jsonResponse(await fetch(API.pattern, {
@@ -4278,12 +5354,20 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ wave: "noise", seed }),
       }));
+      // Another weave chosen while the noise was dealt: it was not for that one.
+      if (S.selectedWeave !== weave) return;
       const backendNoise = JSON.parse(seeded.pattern.canonical_json);
+      // On Weave 2 or 3 the noise is that weave's wave and nothing else's.
+      if (weave > 0) {
+        applyNoiseToChosenWeave(backendNoise, seed);
+        return;
+      }
       const candidate = patternObject();
       candidate.name = "noise";
       candidate.seed = seed;
       candidate.wave = backendNoise.wave;
       const payload = await canonicalPatternRequest(JSON.stringify(candidate));
+      if (S.selectedWeave !== weave) return;
       commitPendingWeaveEdit();
       applyCanonicalPattern(payload.pattern.canonical_json, payload.pattern);
       beginMetric();
@@ -4320,6 +5404,8 @@
       const text = await file.text();
       const payload = await canonicalPatternRequest(text);
       commitPendingWeaveEdit();
+      // The file replaces every weave; one with a single weave says so.
+      const weavesBefore = S.extraWeaves.length;
       applyCanonicalPattern(payload.pattern.canonical_json, payload.pattern);
       armFlowColorForCurrentPattern();
       beginMetric();
@@ -4327,6 +5413,8 @@
       scheduleModulation("settle");
       commitPendingWeaveEdit();
       setStatus(payload.sliceCleared ? "Slice required" : "Pattern loaded · backend validated");
+      const takenOff = weavesTakenOffSentence(file.name, weavesBefore);
+      if (takenOff) $("#weaveRestoreStatus").textContent = takenOff;
     } catch (error) {
       showWeaveState("error", `Pattern load failed. ${error.message}`, error.status);
     } finally {
@@ -4354,9 +5442,10 @@
     const from = Number.isInteger(range.from) ? range.from : 1;
     const to = Number.isInteger(range.to) ? range.to : (total ?? 1);
     const number = (value, fallback) => (Number.isFinite(value) ? value : fallback);
+    const patternJson = payload.pattern?.canonical_json ?? current.pattern_json;
     return {
-      schema: WEAVE_SETTINGS_SCHEMA,
-      pattern_json: payload.pattern?.canonical_json ?? current.pattern_json,
+      schema: weaveSettingsSchemaFor(patternJson),
+      pattern_json: patternJson,
       placement: {
         up_axis: saved.up ?? current.placement.up_axis,
         scale: number(saved.scale, 1),
@@ -4419,6 +5508,12 @@
   // it says.
   async function restoreFromGcode(file, { everything = false } = {}) {
     if (!file) return;
+    // A whole job coming back drops a form still being made for the last one;
+    // the pattern alone leaves that form to land.
+    if (everything) bumpFormGeneration();
+    // This file's form is made only if nothing has moved on by the time its
+    // settings are back: a second print file dropped meanwhile is the job.
+    const generation = S.formGeneration;
     $("#weaveRestoreStatus").textContent = `Reading ${file.name}…`;
     try {
       const meshId = S.mesh?.mesh_id || S.mesh?.id;
@@ -4434,6 +5529,15 @@
         // An edit made while the file was being read is its own step; the
         // restore is the next one.
         commitPendingWeaveEdit();
+        // A form made from an earlier print file, this session or reopened
+        // from a project, counts as no model unless it is the very model this
+        // file was sliced from: the new print file's form takes its place.
+        // It leaves the table now, so the restore's step is made on no model
+        // and Undo brings that form back.
+        const overForm = Boolean(meshId) && formFromPrintOnTable()
+          && payload.source_mesh?.match === false;
+        const needsMesh = Boolean(payload.needs_mesh) || overForm;
+        if (overForm) switchWeaveModel(null);
         weaveStateWriter?.suspend(() => applyWeaveSettings(snapshot, { settle: true }));
         commitPendingWeaveEdit();
         const source = payload.source_mesh || {};
@@ -4441,26 +5545,41 @@
         let sentence;
         // The model to come is the file's own whether none is loaded or the one
         // loaded is not it, so loading it keeps the file's top rule and stop.
-        S.restoreAwaitingMesh = Boolean(payload.needs_mesh) || source.match === false;
-        if (payload.needs_mesh) {
-          sentence = `Every setting came back from ${file.name}. Load ${modelName}, the model it was sliced from, to rebuild the job.`;
+        S.restoreAwaitingMesh = needsMesh || source.match === false;
+        S.restoreAwaitingModel = needsMesh ? { model: modelName, file: file.name } : null;
+        // With no model on the table the form comes from the printed wall
+        // itself, while the model the file names can still be chosen instead.
+        const making = needsMesh && !S.file && generation === S.formGeneration
+          ? formFromPrintWaiting(file, payload, snapshot)
+          : null;
+        // With no model, the empty preview takes over from any error panel an
+        // earlier file left up.
+        if (S.file) syncWeaveEmptyState();
+        else showWeaveState("empty");
+        if (making) {
+          sentence = "";
+        } else if (needsMesh) {
+          sentence = `Every setting came back from ${file.name}. Load ${modelName}, the model it was sliced from, to go on with the job.`;
         } else if (source.match === false) {
           sentence = `Every setting came back from ${file.name}, but the loaded model is not ${modelName}, the one it was sliced from.`;
         } else {
           sentence = `Every setting came back from ${file.name}, and the loaded model is the one it was sliced from.`;
         }
-        $("#weaveRestoreStatus").textContent = sentence;
+        $("#weaveRestoreStatus").textContent = sentence || restoreStatusDefault;
         setWeaveProjectStatus(sentence);
+        if (making) requestFormFromPrint(file, making, generation);
         return;
       }
       commitPendingWeaveEdit();
+      const weavesBefore = S.extraWeaves.length;
       applyCanonicalPattern(payload.pattern?.canonical_json, payload.pattern);
       armFlowColorForCurrentPattern();
       beginMetric();
       invalidateExact("Pattern restored — rebuilding the final path.");
       scheduleModulation("settle");
       commitPendingWeaveEdit();
-      $("#weaveRestoreStatus").textContent = `Pattern restored from ${file.name}`;
+      $("#weaveRestoreStatus").textContent = weavesTakenOffSentence(file.name, weavesBefore)
+        || `Pattern restored from ${file.name}`;
     } catch (error) {
       $("#weaveRestoreStatus").textContent = `Restore stopped: ${error.message}`;
       showWeaveState("error", `Restoring the pattern failed. ${error.message}`, error.status);
@@ -4482,6 +5601,354 @@
       select.append(option);
     }
     select.value = profileName;
+  }
+
+  // --- A form made from a print file ---------------------------------------
+  //
+  // A print file Clayline saved, dropped with no model on the table, brings
+  // every setting back at once and then its form: the printed wall itself,
+  // pattern and all, placed where it printed, with every weave off so the
+  // pattern is not laid on twice (docs/plan-form-from-print-file.md, Round 1).
+  // The model the file names can still be chosen in its place; it goes where
+  // the file printed it, and its weaves come back on.
+
+  // A model named like this was made from a print file and was never a file
+  // on disk, so it is never asked for.
+  const FORM_FROM_PRINT_NAME = /-(as-printed|rebuilt)\.obj$/i;
+  const AS_PRINTED_NAME = /-as-printed\.obj$/i;
+  // Why no form came, as the potter reads it. A printer gone or changed is
+  // said without "yet": no round is planned for it.
+  const FORM_REFUSALS = new Map([
+    ["stack_pieces", "Clayline can't yet make a form from a print made with Stack pieces."],
+    ["splits_or_joins", "Clayline can't yet make a form from a print whose form splits or joins up the way."],
+    ["profile_missing", "Clayline can't make a form from a print made with a printer that is no longer in the list."],
+    ["profile_changed", "Clayline can't make a form from a print whose printer's bed has changed since it printed."],
+  ]);
+
+  function bumpFormGeneration() {
+    S.formGeneration += 1;
+    if (!S.restoreRebuilding) return;
+    S.restoreRebuilding = null;
+    syncWeaveEmptyState();
+  }
+
+  function formFromPrintRecord(kind = "form") {
+    const record = S.modelToken ? S.fromPrint.get(S.modelToken) : null;
+    return record?.kind === kind ? record : null;
+  }
+
+  // The print file the form on the table was made from: its record in this
+  // session, or its name once a project has brought it back.
+  function printedSurfaceOf() {
+    const record = formFromPrintRecord();
+    if (record) return record.printFile;
+    const name = S.file?.name || "";
+    return AS_PRINTED_NAME.test(name) ? `${name.replace(AS_PRINTED_NAME, "")}.gcode` : null;
+  }
+
+  // Round 1 makes only forms as printed, so a model of the potter's own that
+  // happens to end in -rebuilt is never taken for one.
+  function formFromPrintOnTable() {
+    return Boolean(printedSurfaceOf());
+  }
+
+  // The line under the form's name, its button and the name's tooltip all
+  // follow the model on the table, so they survive a save and come back with
+  // the form on Undo and Redo. Each says only what stays true after Reset or
+  // a placement edit; the tooltip adds detail, never the line again.
+  function syncFormFromPrint() {
+    const record = formFromPrintRecord();
+    const chosen = formFromPrintRecord("chosen");
+    const printFile = printedSurfaceOf();
+    const summary = $("#weaveFileSummary");
+    if (summary) {
+      summary.title = printFile
+        ? "Made at the size and angle it printed; it holds only the layers that printed."
+        : "";
+    }
+    let sentence = "";
+    if (printFile) {
+      sentence = `Form is ${printFile}'s printed surface, pattern and all.`;
+    } else if (chosen) {
+      sentence = chosenModelSentence(chosen);
+    }
+    const line = $("#weaveFromPrint");
+    const choose = $("#weaveFromPrintChoose");
+    if (line && choose) {
+      $("#weaveFromPrintText").textContent = sentence;
+      line.hidden = !sentence;
+      choose.hidden = !record?.swap;
+      choose.textContent = record?.modelName ? `Choose ${record.modelName}…` : "Choose the model…";
+    }
+    syncFormFromPrintHint();
+  }
+
+  function chosenModelSentence(chosen) {
+    if (chosen.changed && chosen.name === chosen.modelName) {
+      return `${chosen.name} has changed since ${chosen.printFile} was sliced from it, so the result may not match the print file.`;
+    }
+    if (chosen.changed && chosen.modelName) {
+      return `${chosen.name} is loaded, placed as ${chosen.printFile} printed it, but it is not ${chosen.modelName}, the one it was sliced from.`;
+    }
+    return `${chosen.name} came in where ${chosen.printFile} printed it.`;
+  }
+
+  // Right under the weave switches, while every one of them is off over a
+  // form that already carries the pattern. A print with every weave off
+  // printed plain, so its form carries none and there is nothing to say.
+  function syncFormFromPrintHint(switches = weaveSwitches()) {
+    const hint = $("#weaveFromPrintHint");
+    if (!hint) return;
+    const record = formFromPrintRecord();
+    hint.hidden = !(
+      printedSurfaceOf()
+      && switches.every((on) => !on)
+      && (!record || record.weavesOn.some(Boolean))
+    );
+    hint.textContent = record?.swap
+      ? `Weaves are off: this form already carries the pattern. Choose ${record.modelName || "the model"} under 01 Form and they come back on.`
+      : "Weaves are off: this form already carries the pattern.";
+  }
+
+  // A model chosen in place of a form from a print file is held against the
+  // fingerprint the file recorded, once its own mesh answer is in.
+  function noteChosenModel(payload) {
+    const chosen = formFromPrintRecord("chosen");
+    if (!chosen || chosen.changed !== null || !chosen.modelSha256 || !payload?.source_sha256) return;
+    chosen.changed = payload.source_sha256 !== chosen.modelSha256;
+    syncFormFromPrint();
+  }
+
+  // Whether each weave prints in a pattern, Weave 1 first.
+  function weaveSwitchesOf(patternJson) {
+    try {
+      const pattern = typeof patternJson === "string" ? JSON.parse(patternJson) : patternJson;
+      const extra = Array.isArray(pattern?.extra_weaves) ? pattern.extra_weaves : [];
+      return [
+        pattern?.settings?.wave_on !== false,
+        ...extra.map((entry) => entry?.settings?.wave_on !== false),
+      ];
+    } catch (_error) {
+      return [true];
+    }
+  }
+
+  // Use this weave, set for every weave where its switch is: Weave 1's on
+  // screen or as it was left, Weaves 2 and 3 in their records, and the one on
+  // screen in the control too.
+  function writeWeaveSwitches(on) {
+    if (S.weaveOneParked) S.weaveOneParked.checked["#weaveUseWeave"] = on(0);
+    else $("#weaveUseWeave").checked = on(0);
+    S.extraWeaves.forEach((record, index) => {
+      const value = on(index + 1);
+      const shown = S.selectedWeave === index + 1;
+      if (shown) $("#weaveUseWeave").checked = value;
+      if (record.live && shown) return;
+      delete record.entry.settings.wave_on;
+      if (!value) record.entry.settings.wave_on = false;
+      record.entry = weaveEntryInPageOrder(record.entry);
+    });
+  }
+
+  // Where the form goes, the layers it prints and whether each weave prints,
+  // written the way a project lands: there is no slice yet, so the range is
+  // parked for the slice that knows the layer count. Run under the settled
+  // writer's suspend, so none of it is a step of its own.
+  function writeFormSettings({ placement, range, topLayer, islandStopDeclined, weaveOn }) {
+    setControlValue("#weaveUpAxis", placement.up_axis);
+    setControlValue("#weaveScale", placement.scale);
+    setControlValue("#weaveFitHeight", placement.fit_height ?? null);
+    setControlValue("#weaveScaleX", placement.scale_x ?? 1);
+    setControlValue("#weaveScaleY", placement.scale_y ?? 1);
+    setControlValue("#weaveScaleZ", placement.scale_z ?? 1);
+    setControlValue("#weaveOffsetX", placement.offset_x);
+    setControlValue("#weaveOffsetY", placement.offset_y);
+    setControlValue("#weaveRotate", placement.rotation_deg);
+    setControlValue("#weaveRotateX", placement.rotation_x_deg);
+    setControlValue("#weaveRotateY", placement.rotation_y_deg);
+    S.slice = null;
+    S.rangeTotal = null;
+    S.rangeAutoIslandStop = false;
+    S.islandStopDeclined = islandStopDeclined === true;
+    S.topLayer = topLayer === "below" ? "below" : "nearest";
+    setControlValue("#weaveRangeFrom", range.from);
+    setControlValue("#weaveRangeTo", range.to);
+    S.pendingRange = {
+      from: range.from,
+      to: range.to,
+      total: Number.isInteger(range.total) ? range.total : null,
+      enabled: range.enabled === true,
+      autoIslandStop: false,
+    };
+    $("#weaveRangeEnabled").checked = false;
+    $("#weaveRangeEnabled").disabled = true;
+    writeWeaveSwitches(weaveOn);
+    syncControls();
+  }
+
+  // Any model loaded over a form made from a print file is the model the file
+  // was sliced from: it takes the file's placement, range, top rule and island
+  // stop, and the weaves come back on as the file had them. A change made to
+  // the form gives way to the file's own values. Over a form whose file names
+  // no model on disk, the model stays where it is put, but the weaves still
+  // come back on as the file had them: it is never left plain without a word.
+  function swapFormFromPrint(file) {
+    const record = formFromPrintRecord();
+    if (!record) return null;
+    if (!record.swap) {
+      weaveStateWriter?.suspend(() => {
+        writeWeaveSwitches((index) => record.weavesOn[index] !== false);
+        syncControls();
+      });
+      return null;
+    }
+    weaveStateWriter?.suspend(() => writeFormSettings({
+      placement: record.placement,
+      range: record.range,
+      topLayer: record.topLayer,
+      islandStopDeclined: record.islandStopDeclined,
+      weaveOn: (index) => record.weavesOn[index] !== false,
+    }));
+    // Loaded like the model a print file's settings wait for: it keeps the
+    // file's top rule and island stop.
+    S.restoreAwaitingMesh = true;
+    return {
+      kind: "chosen",
+      printFile: record.printFile,
+      modelName: record.modelName,
+      modelSha256: record.modelSha256,
+      name: file.name,
+      changed: null,
+    };
+  }
+
+  // What a form made from this print file will need, read as the restore
+  // lands: the file's own job for the swap, and the step the restore was
+  // recorded as, which the form joins if nothing has moved since.
+  function formFromPrintWaiting(file, payload, snapshot) {
+    const source = payload.source_mesh || {};
+    const named = typeof source.filename === "string" && source.filename ? source.filename : null;
+    const swap = !FORM_FROM_PRINT_NAME.test(named || "");
+    const model = swap ? named : null;
+    const slice = snapshot.slice;
+    S.restoreRebuilding = { file: file.name, model, swap };
+    // Should no form come, a model that was never on disk is not asked for.
+    if (!swap && S.restoreAwaitingModel) {
+      S.restoreAwaitingModel = { ...S.restoreAwaitingModel, model: null };
+    }
+    return {
+      file: file.name,
+      model,
+      record: {
+        kind: "form",
+        printFile: file.name,
+        modelName: model,
+        modelSha256: typeof source.sha256 === "string" ? source.sha256 : null,
+        swap,
+        placement: { ...snapshot.placement },
+        range: {
+          from: slice.range_from,
+          to: slice.range_to,
+          total: slice.range_total,
+          enabled: slice.range_enabled,
+        },
+        topLayer: slice.top_layer === "below" ? "below" : "nearest",
+        islandStopDeclined: slice.island_stop_declined === true,
+        weavesOn: weaveSwitchesOf(snapshot.pattern_json),
+      },
+      restored: weaveHistory
+        ? { state: weaveHistory.state(), entry: JSON.stringify(weaveHistory.current()) }
+        : null,
+    };
+  }
+
+  // The print file is sent again, so nothing waits on the engine between the
+  // two. Whatever goes wrong here, the settings are already back: the empty
+  // preview asks for the model with one sentence, never the error panel.
+  async function requestFormFromPrint(file, waiting, generation) {
+    let answer = null;
+    try {
+      const response = await fetch(`${API.restoreForm}?filename=${encodeURIComponent(file.name)}`, {
+        method: "POST",
+        headers: { "Content-Type": "text/x-gcode" },
+        body: file,
+      });
+      answer = response.ok ? await response.json() : null;
+    } catch (_error) {
+      answer = null;
+    }
+    // A model chosen, a project opened, another print file, Reset, Undo or
+    // Redo meanwhile: the job has moved on, and the form is dropped quietly.
+    if (generation !== S.formGeneration || S.file) return;
+    const made = answer?.kind === "as_printed"
+      && typeof answer.obj === "string"
+      && answer.obj.length > 0
+      && answer.placement
+      && typeof answer.placement === "object"
+      && Number.isInteger(answer.layer_range?.total);
+    if (made) {
+      try {
+        landFormFromPrint(answer, waiting);
+        return;
+      } catch (_error) {
+        // A form the page could not take is no form: the model is asked for.
+        if (S.file) return;
+      }
+    }
+    formFromPrintRefused(waiting, made ? null : answer?.reason);
+  }
+
+  function landFormFromPrint(answer, waiting) {
+    const name = typeof answer.name === "string" && /\.obj$/i.test(answer.name)
+      ? answer.name
+      : "form-as-printed.obj";
+    const file = new File([answer.obj], name, { type: "application/octet-stream" });
+    // An edit made while the form was being made is its own step first.
+    window.claylineHistoryControls?.commitField?.();
+    commitPendingWeaveEdit();
+    // The form joins the restore's step only while that is still the step the
+    // potter is on, as it was recorded; otherwise it is the next step.
+    const restored = waiting.restored;
+    const now = weaveHistory?.state();
+    const fold = Boolean(restored && now)
+      && now.index === restored.state.index
+      && now.length === restored.state.length
+      && JSON.stringify(weaveHistory.current()) === restored.entry;
+    const range = answer.layer_range;
+    weaveStateWriter?.suspend(() => writeFormSettings({
+      placement: answer.placement,
+      range: { from: 1, to: range.total, total: range.total, enabled: false },
+      topLayer: S.topLayer,
+      // The form holds the printed layers only, so no stop is proposed on it.
+      islandStopDeclined: true,
+      weaveOn: () => false,
+    }));
+    const record = {
+      ...waiting.record,
+      modelSha256: typeof answer.model_sha256 === "string" ? answer.model_sha256 : waiting.record.modelSha256,
+    };
+    setMeshFile(file, { fromPrint: { record, fold } });
+  }
+
+  function formFromPrintRefused(waiting, reason) {
+    S.restoreRebuilding = null;
+    let sentence;
+    if (reason === "changed_file") {
+      sentence = `${waiting.file} has been changed since Clayline wrote it, so only its settings came back.`;
+    } else if (FORM_REFUSALS.has(reason)) {
+      sentence = FORM_REFUSALS.get(reason);
+    } else if (waiting.model) {
+      sentence = `Every setting came back from ${waiting.file}, but Clayline couldn't make a form from it. Load ${waiting.model} to go on with the job.`;
+    } else {
+      sentence = `Every setting came back from ${waiting.file}, but Clayline couldn't make a form from it. Open the project it was made in, or load a model, to go on with the job.`;
+    }
+    S.restoreAwaitingModel = { model: waiting.model, file: waiting.file, sentence };
+    // Said once, in the middle of the window: the lines under the Form box and
+    // Restore pattern keep their own words.
+    $("#weaveRestoreStatus").textContent = restoreStatusDefault;
+    setWeaveProjectStatus("");
+    if (S.file) syncWeaveEmptyState();
+    else showWeaveState("empty");
   }
 
   // --- W17: G-code review panel -------------------------------------------
@@ -4745,19 +6212,71 @@
     }
   }
 
-  function setMeshFile(file) {
+  const DESKTOP_MAX_PRINT_FILE_BYTES = 128 * 1024 * 1024;
+
+  function desktopPrintFileName(value) {
+    if (typeof value !== "string") return null;
+    const leaf = value.split(/[\\/]/).pop().replace(/[\u0000-\u001f\u007f]/g, "").trim();
+    if (!/\.gcode$/i.test(leaf)) return null;
+    const stem = leaf.slice(0, -".gcode".length).trim().slice(0, 240 - ".gcode".length);
+    return `${stem || "print"}.gcode`;
+  }
+
+  // File > Open Recent, Finder and the Dock hand a print file over as bytes.
+  // It goes exactly where a print file chosen in the Model box goes: one
+  // Clayline wrote brings back every setting of its job, and another slicer's
+  // is rebuilt into a form.
+  function desktopImportPrintFile(payload) {
+    const name = desktopPrintFileName(payload?.name);
+    const byteCount = decodedBase64Size(payload?.base64);
+    if (!name || byteCount === null || byteCount > DESKTOP_MAX_PRINT_FILE_BYTES) {
+      showWeaveState("error", "That print file could not be opened. Choose one G-code file no larger than 128 MiB.", 400);
+      return false;
+    }
+    try {
+      const binary = window.atob(payload.base64);
+      if (binary.length !== byteCount) throw new Error("decoded size mismatch");
+      const bytes = new Uint8Array(byteCount);
+      for (let index = 0; index < byteCount; index += 1) bytes[index] = binary.charCodeAt(index);
+      activateMode("weave");
+      setDroppedFile(new File([bytes], name, { type: "application/octet-stream" }));
+      return true;
+    } catch (_error) {
+      showWeaveState("error", "That print file could not be read.", 400);
+      return false;
+    }
+  }
+
+  // `fromPrint` is a form made from a print file landing: its placement,
+  // range and switched-off weaves are already written, and it is either
+  // folded into the restore's own step or recorded as the next one.
+  function setMeshFile(file, { fromPrint = null } = {}) {
     if (!file) return;
     if (!/\.(stl|obj|ply|3mf|gcode)$/i.test(file.name)) {
       showWeaveState("error", "Choose one STL, OBJ, PLY, or 3MF mesh, or a print file.", 400);
       return;
     }
-    // Whatever was waiting to be recorded is its own step, and the new model
-    // is the next one: Undo brings the earlier model back, placed as it was.
-    window.claylineHistoryControls?.commitField?.();
-    commitPendingWeaveEdit();
+    bumpFormGeneration();
+    if (!fromPrint) {
+      // Whatever was waiting to be recorded is its own step, and the new model
+      // is the next one: Undo brings the earlier model back, placed as it was.
+      window.claylineHistoryControls?.commitField?.();
+      commitPendingWeaveEdit();
+    }
+    // Any model loaded over a form made from a print file is the model the
+    // file was sliced from: it goes where the file printed it. Another
+    // slicer's print file is a form of its own, already at the size it
+    // printed, never that model.
+    const swapped = fromPrint || /\.gcode$/i.test(file.name) ? null : swapFormFromPrint(file);
     S.file = file;
     adoptWeaveModel(file);
-    S.inchesBannerEvaluated = false;
+    if (fromPrint) S.fromPrint.set(S.modelToken, fromPrint.record);
+    if (swapped) S.fromPrint.set(S.modelToken, swapped);
+    // A form made from a print is at the size it printed, which no inch can
+    // explain.
+    S.inchesBannerEvaluated = Boolean(fromPrint);
+    S.restoreAwaitingModel = null;
+    syncWeaveEmptyState();
     if (S.restoreAwaitingMesh) {
       S.restoreAwaitingMesh = false;
     } else {
@@ -4766,7 +6285,16 @@
     }
     $("#weaveInchesBanner").hidden = true;
     syncWeaveProjectControls();
-    commitWeaveStep();
+    syncFormFromPrint();
+    if (fromPrint?.fold) {
+      // The form, its placement and its range join the restore's own step, so
+      // one Undo takes the whole print file back.
+      weaveHistoryGestureActive = false;
+      weaveStateWriter?.cancel();
+      weaveHistory?.amend(() => weaveHistoryEntry());
+    } else {
+      commitWeaveStep();
+    }
     keepRecentWeaveModels();
     beginMetric();
     uploadMesh();
@@ -4841,6 +6369,8 @@
     $("#weaveFileInput").addEventListener("change", (event) => setDroppedFile(event.target.files?.[0]));
     $("#weaveOpenProjectButton").addEventListener("click", () => window.claylineProjectFiles?.chooser());
     $("#weaveEmptyOpenProjectButton").addEventListener("click", () => window.claylineProjectFiles?.chooser());
+    $("#weaveEmptyChooseModelButton").addEventListener("click", () => $("#weaveFileInput").click());
+    $("#weaveFromPrintChoose")?.addEventListener("click", () => $("#weaveFileInput").click());
     $("#weaveSaveProjectButton").addEventListener("click", () => saveWeaveProject());
     const drop = $("#weaveDropZone");
     ["dragenter", "dragover"].forEach((name) => drop.addEventListener(name, (event) => {
@@ -4942,11 +6472,12 @@
       releaseOldTopRule();
       S.beadWidthFollows = false;
       if (S.wavelengthFollows) {
-        setControlValue(
+        setWeaveOneControl(
           "#weaveWavelength",
           derivedWavelength(numberValue("#weaveBeadWidth", selectedNozzle())),
         );
       }
+      followExtraWavelengths(derivedWavelength(numberValue("#weaveBeadWidth", selectedNozzle())));
       syncFollowChips();
       invalidateSlice();
     });
@@ -4959,9 +6490,10 @@
     });
     $("#weaveWavelengthFollow").addEventListener("click", (event) => {
       event.preventDefault();
-      S.wavelengthFollows = true;
+      setSelectedWavelengthFollows(true);
       beginMetric();
-      applyNozzleFollows();
+      // Auto on one weave re-derives that weave only (multi-weave plan §1).
+      applyNozzleFollows(S.selectedWeave);
       weaveStateWriter?.schedule();
     });
     $("#weaveRangeEnabled").addEventListener("change", () => {
@@ -5002,7 +6534,7 @@
       beginMetric(); setExtrusionPreset(button.dataset.extrusionPreset);
     }));
     $$('[data-twist-preset]').forEach((button) => button.addEventListener("click", () => {
-      setActiveTexture(null);
+      touchWeave();
       setControlValue("#weaveTwist", button.dataset.twistPreset);
       beginMetric();
       syncControls();
@@ -5029,7 +6561,9 @@
         } else if (selector === "#weaveTopFollowSlope" && topFollowShapesFlow()) {
           armAutomaticFlowColor();
         }
-        setActiveTexture(null); beginMetric(); syncControls(); scheduleModulation("drag");
+        // The rim's reach covers the whole wall; the rest, Clay along the
+        // wall included, belong to the weave on screen.
+        touchPatternControl(selector); beginMetric(); syncControls(); scheduleModulation("drag");
       });
       $(selector).addEventListener("change", () => {
         weaveHistoryGestureActive = false;
@@ -5061,11 +6595,11 @@
       "#weaveWavelength", "#weaveExtrusionPhase", "#weaveBottomLayers",
       "#weaveBottomOverlap", "#weavePinnedAngle",
     ].forEach((selector) => $(selector).addEventListener("input", () => {
-      if (selector === "#weaveWavelength") S.wavelengthFollows = false;
+      if (selector === "#weaveWavelength") setSelectedWavelengthFollows(false);
       if (selector === "#weaveExtrusionPhase" && !extrusionIsFlat()) {
         armAutomaticFlowColor();
       }
-      setActiveTexture(null); beginMetric(); syncControls(); scheduleModulation("settle");
+      touchPatternControl(selector); beginMetric(); syncControls(); scheduleModulation("settle");
     }));
     $("#weaveFollowTop").addEventListener("change", () => {
       // Z-blend (ride the wavy top) and a flat level rim are opposite top
@@ -5091,6 +6625,7 @@
       beginMetric(); syncControls(); scheduleModulation("settle");
     });
     $("#weaveLayerSkipEnabled").addEventListener("change", () => {
+      writeChosenWeaveSwitches();
       beginMetric(); syncControls(); scheduleModulation("settle");
     });
     // Stack pieces changes only the order the rings print in, so the slice
@@ -5121,6 +6656,7 @@
       "#weaveInfillRampLayers",
     ].forEach((selector) => {
       $(selector).addEventListener("input", () => {
+        if (WEAVE_OWN_CONTROLS.includes(selector)) writeChosenWeaveSwitches();
         beginMetric(); syncControls(); scheduleModulation("settle");
       });
     });
@@ -5160,6 +6696,7 @@
     }));
     bindCurveEditor("#weaveWaveCanvas", "wave");
     bindCurveEditor("#weaveExtrusionCanvas", "extrusion");
+    bindWeaveStrip();
   }
 
   function bindActions() {
@@ -5209,12 +6746,17 @@
       if (move !== null) window.claylineScrubber?.locate?.(move);
     });
     $("#weavePatternSave").addEventListener("click", savePattern);
-    $("#weavePatternLoad").addEventListener("click", () => $("#weavePatternFile").click());
-    $("#weavePatternFile").addEventListener("change", (event) => loadPatternFile(event.target.files?.[0]));
     // The packaged app's native picker filters by this one-shot marker — the
-    // Swift delegate reads and clears it before presenting the panel, so print
-    // files are selectable there; the input's accept list does the same job in
-    // an ordinary browser.
+    // Swift delegate reads and clears it before presenting the panel, so
+    // pattern files and print files are selectable there; the input's accept
+    // list does the same job in an ordinary browser. Without it Load pattern
+    // opened the Model box's panel, where a saved pattern was greyed out
+    // (Pete, 2026-10-19: "yeah fix it").
+    $("#weavePatternLoad").addEventListener("click", () => {
+      document.body.dataset.claylineFileRequest = "pattern";
+      $("#weavePatternFile").click();
+    });
+    $("#weavePatternFile").addEventListener("change", (event) => loadPatternFile(event.target.files?.[0]));
     $("#weaveRestoreButton").addEventListener("click", () => {
       document.body.dataset.claylineFileRequest = "gcode";
       $("#weaveRestoreFile").click();
@@ -5234,6 +6776,7 @@
     $("#weaveResetButton").addEventListener("click", () => {
       // Reset is one step like any other: Undo brings every setting back. An
       // edit still waiting to be recorded is its own step first.
+      bumpFormGeneration();
       commitPendingWeaveEdit();
       weaveStateWriter?.suspend(() => {
         S.pendingRange = null;
@@ -5244,6 +6787,7 @@
         S.topLayer = "nearest";
         setHollows("keep");
         S.restoreAwaitingMesh = false;
+        S.restoreAwaitingModel = null;
         S.settledNoRibs = false;
         S.crownFinish = null;
         S.flowColorAutoArmed = false;
@@ -5254,6 +6798,7 @@
       });
       weaveStateWriter?.clear();
       commitWeaveStep();
+      syncWeaveEmptyState();
       window.claylineHistoryControls?.sync();
       if (S.file) { beginMetric(); uploadMesh(); }
       else { invalidateExact("Weave settings reset."); drawAllEditors(); }
@@ -5397,6 +6942,10 @@
 
     activateMode("weave");
     setWeaveProjectStatus("");
+    // A form still being made from a print file gives way to the project, and
+    // a form made from one no longer offers its model: the project is the job.
+    bumpFormGeneration();
+    S.fromPrint.clear();
     // An edit still waiting to be recorded is its own step before the open.
     commitPendingWeaveEdit();
     S.file = new File([source.bytes], source.name, { type: "application/octet-stream" });
@@ -5404,8 +6953,13 @@
     // The project brings its own model and its own job, so a print file still
     // waiting for its model is not waiting any more.
     S.restoreAwaitingMesh = false;
-    S.inchesBannerEvaluated = false;
+    S.restoreAwaitingModel = null;
+    // A form made from a print is at the size it printed, which no inch can
+    // explain; it is known again by its name.
+    S.inchesBannerEvaluated = formFromPrintOnTable();
     $("#weaveInchesBanner").hidden = true;
+    syncWeaveEmptyState();
+    syncFormFromPrint();
     // One undo step: the writer is held while the whole project lands, and
     // flushed once at the very end (below), after the re-slice has put the
     // print range back — so the single history entry is the whole open. Until
@@ -5506,6 +7060,7 @@
       if (S.lastTrace) renderTrace(S.lastTrace);
       else if (S.lastMeshPreview) renderMeshPreview(S.lastMeshPreview);
     });
+    restoreStatusDefault = $("#weaveRestoreStatus")?.textContent || "";
     setWavePreset("flat", { quiet: true });
     setExtrusionPreset("flat", { quiet: true });
     weaveHistory = window.ClaylineStudioState?.createHistory({
@@ -5556,6 +7111,7 @@
     exportGcode: downloadGcode,
     exportMesh: downloadMesh,
     importMesh: desktopImportMesh,
+    importPrintFile: desktopImportPrintFile,
     saveProject: saveWeaveProject,
     openProject: openWeaveProject,
     projectSaveResult: weaveProjectSaveResult,

@@ -6,10 +6,12 @@ import hashlib
 import itertools
 import json
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
 import shapely
+from shapely.errors import GEOSException
 from shapely.geometry import LineString, Polygon
 from shapely.geometry import Point as ShapelyPoint
 from shapely.geometry.base import BaseGeometry
@@ -63,6 +65,13 @@ class _BandRange:
 # the bead-width-relative closed-ring floor below, which is a print-quality
 # judgement (can a loop this small even hold shape), not a numerical one.
 _DEGENERATE_OPEN_RING_LENGTH_MM = 1e-3
+
+# Across a band break, one piece carries a part on through a split or a merge
+# only when it encloses at least this many times the area of the next largest
+# piece there (docs/plan-steady-wave-count.md §2).  Twice: a handle root or a
+# lug beside a wall is far past it, twin prongs and the legs of a torus are
+# nowhere near, so no near-tie is ever settled by rounding.
+_CARRY_ON_AREA_RATIO = 2.0
 
 
 def slice_mesh_form(
@@ -875,14 +884,230 @@ def _matched_order(previous: list[_RawRing], current: list[_RawRing]) -> list[_R
     return [current[assignment[index]] for index in range(len(previous))]
 
 
+def _part_hold_circumferences(
+    raw_layers: list[_RawLayer], ranges: list[_BandRange]
+) -> tuple[list[list[float | None]], list[dict[int, int]]]:
+    """The widest closed ring of each track's part of the form, band by band.
+
+    A part follows one piece of wall all the way up, across every band break:
+    the floor of a hollow, an ear appearing beside the wall, a split into
+    prongs.  Inside a band each track is already one run of rings; across a
+    break each track that starts the new band carries on the part of the ring
+    it pairs with on the layer below (:func:`_cross_band_pairs`), and a track
+    that pairs with nothing starts a part of its own.  Every closed ring of a
+    part records the length of the part's widest ring, so Keep the same number
+    of waves fits its count there and holds it up the whole part.  An open
+    ring has no whole count to hold and records None.
+
+    Also returns each band's pairs, ``{track: track on the layer below}``
+    (none for the first band), so the seams can be carried across too.
+    """
+
+    widest: list[float] = []
+    parts_by_band: list[list[int]] = []
+    pairs_by_band: list[dict[int, int]] = []
+    for band_index, band_range in enumerate(ranges):
+        first_rings = raw_layers[band_range.start].rings
+        carried_on = (
+            {}
+            if band_index == 0
+            else _cross_band_pairs(raw_layers[ranges[band_index - 1].end].rings, first_rings)
+        )
+        pairs_by_band.append(carried_on)
+        parts: list[int] = []
+        for track_index in range(len(first_rings)):
+            if track_index in carried_on:
+                part = parts_by_band[band_index - 1][carried_on[track_index]]
+            else:
+                part = len(widest)
+                widest.append(0.0)
+            longest = max(
+                raw_layers[layer_index].rings[track_index].length
+                for layer_index in range(band_range.start, band_range.end + 1)
+            )
+            widest[part] = max(widest[part], longest)
+            parts.append(part)
+        parts_by_band.append(parts)
+    holds = [
+        [
+            widest[part] if raw_layers[band_range.start].rings[track_index].closed else None
+            for track_index, part in enumerate(parts)
+        ]
+        for band_range, parts in zip(ranges, parts_by_band, strict=True)
+    ]
+    return holds, pairs_by_band
+
+
+def _cross_band_pairs(previous: list[_RawRing], current: list[_RawRing]) -> dict[int, int]:
+    """Pair the rings that start a band with the rings of the layer below it.
+
+    Returns ``{current index: previous index}``.  Two rings touch across the
+    break only when they are the same kind (closed or open, wall or hollow)
+    and overlap in plan view.  Then (R4, docs/plan-steady-wave-count.md §2),
+    one piece "dominates" others when it encloses at least twice the plan area
+    of the next largest of them:
+
+    - A ring below that touches one ring above hands its part on to it.
+    - A ring below that touches two or more rings above has split.  When the
+      largest of them dominates (a wall with a handle root, a lug or a spout
+      growing out of it), that one is handed the part and the others start
+      parts of their own.  Otherwise (twin prongs, the legs of a torus) none
+      is: every piece starts a part of its own and fits its own count, so
+      twins hold the same count whatever order they come in.
+    - A ring above handed one part carries it on.
+    - A ring above handed parts by two or more rings below is a merge.  When
+      the largest of those dominates (a big body taking in a small lug), it
+      carries that one's part on; otherwise it starts a part of its own.
+      Rings below that split without handing it their part do not count here.
+
+    A ring that is handed nothing starts a part of its own.  Each ring below
+    hands its part to at most one ring above, so it is carried on at most
+    once.  A dominant piece is strictly the largest, so nothing is decided by
+    the order the rings come in, nor by a hair's breadth of area.  Unlike the
+    band matcher this never raises.
+    """
+
+    if not previous or not current:
+        return {}
+    previous_boxes = [_plan_box(ring) for ring in previous]
+    current_boxes = [_plan_box(ring) for ring in current]
+    areas: dict[tuple[bool, int], BaseGeometry | None] = {}
+
+    def enclosed(below: bool, index: int, ring: _RawRing) -> BaseGeometry | None:
+        key = (below, index)
+        if key not in areas:
+            areas[key] = _enclosed_area(ring.points)
+        return areas[key]
+
+    children: list[list[int]] = [[] for _ in previous]
+    for previous_index, first in enumerate(previous):
+        for current_index, second in enumerate(current):
+            if first.closed != second.closed or first.is_hole != second.is_hole:
+                continue
+            # Open rings overlap when their bounding boxes do; closed rings
+            # only when the areas they enclose share some area.
+            if not _boxes_overlap(previous_boxes[previous_index], current_boxes[current_index]):
+                continue
+            if first.closed and not _areas_overlap(
+                enclosed(True, previous_index, first), enclosed(False, current_index, second)
+            ):
+                continue
+            children[previous_index].append(current_index)
+
+    def plan_area(below: bool, index: int) -> float:
+        # A closed ring that touches another already has the area it encloses
+        # worked out (a self-crossing outline's repaired one); an open ring is
+        # measured as if closed straight across its ends.
+        ring = previous[index] if below else current[index]
+        geometry = areas.get((below, index)) if ring.closed else None
+        return float(geometry.area) if geometry is not None else abs(ring.area)
+
+    # Each ring below hands its part to at most one ring above.
+    handed: list[list[int]] = [[] for _ in current]
+    for previous_index, above in enumerate(children):
+        heir = _dominant_piece(above, lambda index: plan_area(False, index))
+        if heir is not None:
+            handed[heir].append(previous_index)
+
+    pairs: dict[int, int] = {}
+    for current_index, givers in enumerate(handed):
+        carried = _dominant_piece(givers, lambda index: plan_area(True, index))
+        if carried is not None:
+            pairs[current_index] = carried
+    return pairs
+
+
+def _dominant_piece(indices: list[int], area: Callable[[int], float]) -> int | None:
+    """The one piece that carries a part on among ``indices``, or None.
+
+    A lone piece always does.  Among several, the largest does when it
+    encloses at least :data:`_CARRY_ON_AREA_RATIO` times the area of the next
+    largest; otherwise none does.  Only areas decide, never the order given.
+    """
+
+    if len(indices) == 1:
+        return indices[0]
+    if not indices:
+        return None
+    ranked = sorted((area(index), index) for index in indices)
+    (largest, index), (next_largest, _other) = ranked[-1], ranked[-2]
+    if largest > 0.0 and largest >= _CARRY_ON_AREA_RATIO * next_largest:
+        return index
+    return None
+
+
+def _seam_u_on(points: np.ndarray, u: np.ndarray, seam: np.ndarray) -> float:
+    """Where on a closed resampled ring, as arc ``u`` in [0, 1), ``seam`` lies nearest."""
+
+    starts = points[:-1]
+    vectors = points[1:] - starts
+    lengths_squared = np.einsum("ij,ij->i", vectors, vectors)
+    offsets = seam - starts
+    fractions = np.divide(
+        np.einsum("ij,ij->i", offsets, vectors),
+        lengths_squared,
+        out=np.zeros_like(lengths_squared),
+        where=lengths_squared > 1e-18,
+    )
+    fractions = np.clip(fractions, 0.0, 1.0)
+    projections = starts + fractions[:, None] * vectors
+    gaps = seam - projections
+    segment = int(np.argmin(np.einsum("ij,ij->i", gaps, gaps)))
+    return _wrapped_u(float(u[segment] + fractions[segment] * (u[segment + 1] - u[segment])))
+
+
+def _wrapped_u(value: float) -> float:
+    """``value`` (never negative) taken round a closed ring into [0, 1)."""
+
+    wrapped = value % 1.0
+    return 0.0 if wrapped >= 1.0 else wrapped
+
+
+def _plan_box(ring: _RawRing) -> tuple[float, float, float, float]:
+    """A ring's bounding box in plan view: ``(min x, min y, max x, max y)``."""
+
+    low = ring.points.min(axis=0)
+    high = ring.points.max(axis=0)
+    return (float(low[0]), float(low[1]), float(high[0]), float(high[1]))
+
+
+def _boxes_overlap(
+    first: tuple[float, float, float, float], second: tuple[float, float, float, float]
+) -> bool:
+    return (
+        first[0] <= second[2]
+        and second[0] <= first[2]
+        and first[1] <= second[3]
+        and second[1] <= first[3]
+    )
+
+
+def _areas_overlap(first: BaseGeometry | None, second: BaseGeometry | None) -> bool:
+    if first is None or second is None:
+        return False
+    try:
+        # Two enclosed areas share some area exactly when their insides meet,
+        # which the geometry library answers without building the shared shape:
+        # this runs on every slice, switch on or off.
+        return bool(first.relate_pattern(second, "T********"))
+    except GEOSException:
+        # Slicing never fails over this: two outlines the geometry library
+        # cannot intersect are judged by their bounding boxes alone.
+        return True
+
+
 def _resample_bands(
     raw_layers: list[_RawLayer], ranges: list[_BandRange], spacing: float
 ) -> tuple[tuple[SliceLayer, ...], tuple[WallBand, ...]]:
     sampled_by_layer: list[list[Ring | None]] = [[None] * len(layer.rings) for layer in raw_layers]
     wall_bands: list[WallBand] = []
+    hold_circumferences, carried_on = _part_hold_circumferences(raw_layers, ranges)
+    # Each band's tracks' seam offsets (Ring.hold_u_offset), for the band above.
+    u_offsets: list[list[float]] = []
     for band_index, band_range in enumerate(ranges):
         ring_count = len(raw_layers[band_range.start].rings)
         wall_tracks: list[WallTrack] = []
+        band_offsets = [0.0] * ring_count
         for track_index in range(ring_count):
             track_raw = [
                 raw_layers[layer_index].rings[track_index]
@@ -896,12 +1121,28 @@ def _resample_bands(
                 )
             previous_seam: np.ndarray | None = None
             addresses: list[RingProvenance] = []
+            below = carried_on[band_index].get(track_index)
             for layer_index, raw in zip(
                 range(band_range.start, band_range.end + 1), track_raw, strict=True
             ):
                 points, u = _resample_ring(raw, shared_count)
                 if raw.closed:
                     points = _align_closed_seam(points, previous_seam)
+                    if previous_seam is None and below is not None:
+                        # Every band starts its seam afresh, and no seam
+                        # moves.  A ring carrying a part on across the
+                        # break records instead where on it the ring below
+                        # had its seam, added to that ring's own offset, so
+                        # a held weave's crests carry straight on
+                        # (R1, docs/plan-steady-wave-count.md §2).  Nothing
+                        # unheld reads it.
+                        last_below = sampled_by_layer[ranges[band_index - 1].end][below]
+                        if last_below is None:
+                            raise AssertionError("the band below must be resampled first")
+                        band_offsets[track_index] = _wrapped_u(
+                            _seam_u_on(points, u, last_below.points[0])
+                            + u_offsets[band_index - 1][below]
+                        )
                     previous_seam = points[0].copy()
                 normals = _outward_normals(points, closed=raw.closed)
                 provenance = RingProvenance(layer_index, track_index)
@@ -917,6 +1158,8 @@ def _resample_bands(
                     circumference=raw.length,
                     signed_area=raw.area if raw.closed else 0.0,
                     centroid=Point(float(raw.centroid[0]), float(raw.centroid[1])),
+                    hold_circumference=hold_circumferences[band_index][track_index],
+                    hold_u_offset=band_offsets[track_index],
                 )
             wall_tracks.append(
                 WallTrack(
@@ -933,6 +1176,7 @@ def _resample_bands(
                 tracks=tuple(wall_tracks),
             )
         )
+        u_offsets.append(band_offsets)
 
     layers: list[SliceLayer] = []
     for raw, sampled in zip(raw_layers, sampled_by_layer, strict=True):

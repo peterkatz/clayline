@@ -577,6 +577,34 @@ def create_app(
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    @app.post("/api/weave/restore/form", include_in_schema=False)
+    async def weave_restore_form(request: Request) -> Any:
+        """Make a form from a Clayline print file's printed wall.
+
+        docs/plan-form-from-print-file.md, Round 1.  The page sends the print
+        file again, through the same bounded reader as the restore, so nothing
+        is cached between the two.  A file the restore refuses is refused
+        here the same way; any other file answers 200 with ``kind`` either
+        ``as_printed`` (the form, where to put it and its layers) or ``none``
+        with a reason code the page turns into its own sentence.
+        """
+
+        try:
+            print_file = _print_file_name(request.query_params.get("filename"))
+            body = await _read_gcode_request(request, required_origin=desktop_origin)
+            from clayline.form_from_print import form_from_print, form_from_print_payload
+            from clayline.weave_restore import parse_weave_gcode
+
+            recipe = await asyncio.to_thread(parse_weave_gcode, body)
+            result = await asyncio.to_thread(
+                form_from_print, body, print_file=print_file, recipe=recipe
+            )
+            return _json_response(Response, form_from_print_payload(result))
+        except UiRequestError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @app.get("/api/weave/result/{result_id}/gcode", include_in_schema=False)
     async def weave_gcode(result_id: str, request: Request) -> Any:
         from clayline.webui.weave_session import WeaveSessionError
@@ -1224,8 +1252,9 @@ def _load_weave_mesh_payload(
             text = body.decode("utf-8", errors="replace")
             if is_clayline_gcode(text):
                 raise UiRequestError(
-                    "This print file was written by Clayline. Drop it on the Model box to "
-                    "bring its settings back, then load the model it names."
+                    "This print file was written by Clayline. Drop it on the box under "
+                    "01 Form instead: every setting comes back, and the form too when "
+                    "Clayline can make it from the print."
                 )
             try:
                 rebuilt = rebuild_form(text)
@@ -1523,7 +1552,6 @@ def _modulate_weave_payload(
     profile_prime_mm: float | None = None,
     profile_end_early_mm: float | None = None,
 ) -> tuple[Any | None, dict[str, Any]]:
-    from clayline.weave_analysis import largest_pinch_free_amplitude
     from clayline.weave_emergence import find_island_emergence
     from clayline.weave_range import (
         bottom_disabled_hint,
@@ -1727,14 +1755,11 @@ def _modulate_weave_payload(
         layer_range=requested_range,
         keep_clay_flowing=keep_clay_flowing,
     )
-    safe_amplitude = (
-        largest_pinch_free_amplitude(
-            prepared_result.sliced,
-            pattern,
-            zblend_path=prepared_result.zblend_path,
-        )
-        if any(warning.code.value == "pinch" for warning in prepared_result.warnings)
-        else None
+    safe_amplitude, safe_swing = _safe_offer(
+        prepared_result.sliced,
+        pattern,
+        zblend_path=prepared_result.zblend_path,
+        pinched=any(warning.code.value == "pinch" for warning in prepared_result.warnings),
     )
     engine_at = time.perf_counter()
     trace = _weave_trace_payload(prepared_result)
@@ -1754,6 +1779,7 @@ def _modulate_weave_payload(
         "warnings": stream_warning_payload(
             prepared_result.warnings,
             safe_amplitude_mm=safe_amplitude,
+            safe_swing=safe_swing,
         ),
         "warnings_settled": True,
         "lint": "PENDING — exact geometry is visible; export audit is running.",
@@ -1813,6 +1839,49 @@ def _lower_zblend_reach_action(prepared_result: Any) -> dict[str, Any] | None:
     }
 
 
+def _safe_offer(
+    sliced: Any,
+    pattern: Any,
+    *,
+    zblend_path: Any,
+    pinched: bool,
+) -> tuple[float | None, Any | None]:
+    """The pinch warning's one-click offer: Weave 1's amplitude, or every weave's.
+
+    One weave keeps the offer it always had.  With extra weaves every weave
+    is scaled together, and the offer carries each one's checked amplitude.
+    Nothing is worked out unless the wall pinches.
+    """
+
+    from clayline.weave_analysis import largest_pinch_free_amplitude, largest_pinch_free_swing
+
+    if not pinched:
+        return None, None
+    if pattern.extra_weaves:
+        return None, largest_pinch_free_swing(sliced, pattern, zblend_path=zblend_path)
+    return largest_pinch_free_amplitude(sliced, pattern, zblend_path=zblend_path), None
+
+
+# The settings a project file and an error report carry.  One weave printing
+# writes the first version, byte for byte; a pattern with extra weaves, with
+# Weave 1 switched off, or with a weave keeping the same number of waves,
+# writes the second, which Clayline from before them refuses as newer.
+WEAVE_SETTINGS_SCHEMA_V1 = "clayline.weave-settings.v1"
+WEAVE_SETTINGS_SCHEMA_V2 = "clayline.weave-settings.v2"
+
+
+def weave_settings_schema(pattern: Any) -> str:
+    """v2 when the pattern carries extra weaves, Weave 1 is off or any weave holds its count.
+
+    With extra weaves it is v2 already, so Weave 1's own Keep the same number
+    of waves is the one left to ask.
+    """
+
+    if pattern.extra_weaves or not pattern.settings.wave_on or pattern.settings.hold_wave_count:
+        return WEAVE_SETTINGS_SCHEMA_V2
+    return WEAVE_SETTINGS_SCHEMA_V1
+
+
 def _weave_settings_snapshot(prepared_result: Any, payload: dict[str, Any]) -> dict[str, Any]:
     """Serialize exactly what built ``prepared_result``, in the persisted shape.
 
@@ -1829,7 +1898,7 @@ def _weave_settings_snapshot(prepared_result: Any, payload: dict[str, Any]) -> d
     settings = prepared_result.settings
     layer_from, layer_to = sliced.layer_range
     return {
-        "schema": "clayline.weave-settings.v1",
+        "schema": weave_settings_schema(prepared_result.pattern),
         "pattern_json": pattern_to_json(prepared_result.pattern),
         "placement": {
             "up_axis": sliced.up_axis.value,
@@ -1881,7 +1950,6 @@ def _finalize_weave_payload(
 ) -> tuple[Any, dict[str, Any]]:
     """Finish artifacts from one exact prepared object, never rebuilt geometry."""
 
-    from clayline.weave_analysis import largest_pinch_free_amplitude
     from clayline.weave_workflow import (
         TopFollowClimbRefused,
         WeaveWorkflowError,
@@ -1942,14 +2010,11 @@ def _finalize_weave_payload(
     if result.emission.prepared is not exact.prepared:
         raise UiRequestError("finalized Weave result rebuilt the exact prepared trace")
     report = result.job_report.to_dict()
-    safe_amplitude = (
-        largest_pinch_free_amplitude(
-            exact.sliced,
-            exact.pattern,
-            zblend_path=exact.zblend_path,
-        )
-        if any(warning.code.value == "pinch" for warning in exact.warnings)
-        else None
+    safe_amplitude, safe_swing = _safe_offer(
+        exact.sliced,
+        exact.pattern,
+        zblend_path=exact.zblend_path,
+        pinched=any(warning.code.value == "pinch" for warning in exact.warnings),
     )
     gcode_bytes = result.emission.gcode.encode("utf-8")
     artifact_stem = _artifact_stem(
@@ -1983,6 +2048,7 @@ def _finalize_weave_payload(
         "warnings": warning_rows_with_safe_offer(
             report["warnings"],
             safe_amplitude_mm=safe_amplitude,
+            safe_swing=safe_swing,
         ),
         "warnings_settled": True,
         "construction": report["construction"],
@@ -2128,6 +2194,18 @@ def _mesh_basename(value: Any) -> str:
         raise UiRequestError("mesh filename is too long")
     if Path(value).suffix.lower() not in _MESH_SUFFIXES and not value.lower().endswith(".gcode"):
         raise UiRequestError("mesh filename must end in .obj, .stl, .ply, .3mf, or .gcode")
+    return value
+
+
+def _print_file_name(value: Any) -> str:
+    """The print file's own name, as the page has it: one plain file name."""
+
+    if not isinstance(value, str) or not value.strip():
+        raise UiRequestError("filename query parameter is required")
+    if "\x00" in value or "\r" in value or "\n" in value or Path(value).name != value:
+        raise UiRequestError("print file name must be a plain basename")
+    if len(value.encode("utf-8")) > 255:
+        raise UiRequestError("print file name is too long")
     return value
 
 

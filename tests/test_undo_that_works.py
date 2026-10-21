@@ -930,3 +930,131 @@ def test_review_3_a_print_range_waiting_for_its_slice_stays_the_steps_own() -> N
     # Project files and stored settings are written as before.
     snapshot = _weave_function("weaveSettingsSnapshot", "function validWeaveSettings")
     assert "pendingRange" not in snapshot
+
+
+# --- Weaves 2 and 3 (docs/plan-multi-weave.md step 5): Add, Remove, Use and
+# every edit are one step each; the chosen tab is never saved and never a step;
+# Undo and Redo land on the weave they changed.
+
+MULTI_WEAVE_UNDO = r"""
+  const text = () => JSON.stringify(page.patternObject());
+  // The step the potter is on: one more for every change recorded.
+  const steps = () => weaveMode.historyState().index;
+  const chosen = () => page.S.selectedWeave;
+  const undo = async () => { weaveMode.undo(); await settle(1000); };
+  const redo = async () => { weaveMode.redo(); await settle(1000); };
+  const tab = async (index) => { click(`[data-weave-tab="${index - 1}"]`); await settle(1000); };
+  click('[data-wave-preset="sine"]');
+  type("#weaveWavelength", "70");
+  await settle(1000);
+  const plain = text();
+
+  // Add: one step, and Undo takes it off again.
+  let at = steps();
+  click("#weaveAddWeave");
+  await settle(1000);
+  const added = text();
+  out.add = { steps: steps() - at, chosen: chosen() };
+  await undo();
+  out.addUndo = { same: text() === plain, chosen: chosen(), weaves: page.S.extraWeaves.length };
+  await redo();
+  out.addRedo = { same: text() === added, chosen: chosen() };
+
+  // A Weave 2 edit: one step; choosing a tab is none; Undo lands on Weave 2.
+  at = steps();
+  type("#weaveAmplitude", "2.5");
+  await settle(1000);
+  const edited = text();
+  out.edit = { steps: steps() - at };
+  await tab(1);
+  await tab(2);
+  await tab(1);
+  out.tabs = { steps: steps() - at, snapshot: "selectedWeave" in page.weaveSettingsSnapshot() };
+  await undo();
+  out.editUndo = { same: text() === added, chosen: chosen(), box: $("#weaveAmplitude").value };
+  await tab(1);
+  await redo();
+  out.editRedo = { same: text() === edited, chosen: chosen(), box: $("#weaveAmplitude").value };
+
+  // Use this weave: one step; Undo on Weave 1's tab lands back on Weave 2.
+  at = steps();
+  toggle("#weaveUseWeave", false);
+  await settle(1000);
+  const parked = text();
+  out.use = { steps: steps() - at, off: page.patternObject().extra_weaves[0].settings.wave_on };
+  await tab(1);
+  await undo();
+  out.useUndo = { same: text() === edited, chosen: chosen(), use: $("#weaveUseWeave").checked };
+  await redo();
+  out.useRedo = { same: text() === parked, chosen: chosen(), use: $("#weaveUseWeave").checked };
+
+  // Remove: Weave 3 becomes Weave 2, one step; Undo brings Weave 2 back and
+  // lands on it.
+  click("#weaveAddWeave");
+  await settle(1000);
+  const three = text();
+  await tab(2);
+  at = steps();
+  click("#weaveRemoveWeave");
+  await settle(1000);
+  const removed = text();
+  out.remove = {
+    steps: steps() - at,
+    chosen: chosen(),
+    weaves: page.S.extraWeaves.length,
+    third: JSON.stringify(page.patternObject().extra_weaves[0])
+      === JSON.stringify(JSON.parse(three).extra_weaves[1]),
+  };
+  await tab(1);
+  await undo();
+  out.removeUndo = { same: text() === three, chosen: chosen(), weaves: page.S.extraWeaves.length };
+  await redo();
+  out.removeRedo = { same: text() === removed };
+  await undo();
+
+  // A pattern file with one weave takes Weaves 2 and 3 off, says so, and
+  // Undo brings them back.
+  at = steps();
+  const input = $("#weavePatternFile");
+  input.files = [new File([ONE], "plain.clayline-weave.json")];
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  await settle(1000);
+  out.load = {
+    steps: steps() - at,
+    weaves: page.S.extraWeaves.length,
+    said: $("#weaveRestoreStatus").textContent,
+    tabs: $$("[data-weave-tab]").length,
+  };
+  await undo();
+  out.loadUndo = { same: text() === three, chosen: chosen(), weaves: page.S.extraWeaves.length };
+"""
+
+
+def test_multi_weave_add_remove_use_and_edits_are_one_step_each_landing_on_their_weave() -> None:
+    from weave_page_rig import run_page
+
+    from clayline.wave import pattern_to_json, preset_pattern
+
+    one = json.dumps(pattern_to_json(preset_pattern("sawtooth")))
+    out = run_page(f"const ONE = {one};\n" + MULTI_WEAVE_UNDO)
+    assert out["add"] == {"steps": 1, "chosen": 1}
+    assert out["addUndo"] == {"same": True, "chosen": 0, "weaves": 0}
+    assert out["addRedo"] == {"same": True, "chosen": 1}
+    assert out["edit"] == {"steps": 1}
+    assert out["tabs"] == {"steps": 1, "snapshot": False}
+    assert out["editUndo"] == {"same": True, "chosen": 1, "box": "1"}
+    assert out["editRedo"] == {"same": True, "chosen": 1, "box": "2.5"}
+    assert out["use"] == {"steps": 1, "off": False}
+    assert out["useUndo"] == {"same": True, "chosen": 1, "use": True}
+    assert out["useRedo"] == {"same": True, "chosen": 1, "use": False}
+    assert out["remove"] == {"steps": 1, "chosen": 1, "weaves": 1, "third": True}
+    assert out["removeUndo"] == {"same": True, "chosen": 1, "weaves": 2}
+    assert out["removeRedo"] == {"same": True}
+    assert out["load"] == {
+        "steps": 1,
+        "weaves": 0,
+        "said": "plain.clayline-weave.json has one weave, so Weaves 2 and 3 came off. "
+        "Undo brings them back.",
+        "tabs": 1,
+    }
+    assert out["loadUndo"] == {"same": True, "chosen": 0, "weaves": 2}

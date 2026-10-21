@@ -148,12 +148,22 @@ def test_native_project_panels_and_staged_downloads_protect_the_saved_file() -> 
     # project it turned down cannot hand its folder to the next one.
     assert 'projectOpenedHandlerName = "claylineProjectOpened"' in web_view
     assert "private var projectAwaitingThePage: URL?" in web_view
-    assert "self?.projectAwaitingThePage = url" in web_view
     assert "actions.projectWasOpened(at: url)" in web_view
     opened = web_view[web_view.index("private func handleProjectOpened") :][:700]
     assert opened.index("projectAwaitingThePage = nil") < opened.index('payload?["ok"]')
     assert 'guard payload?["ok"] as? Bool ?? true else { return }' in opened
-    assert "self?.rememberProject(url)" not in web_view[web_view.index("let remember:") :][:600]
+    # A project waits for the page whichever panel it was chosen in, the
+    # Open Project panel or Weave's Model box, before anything else is kept.
+    chose = web_view[web_view.index("func rememberPanelChoice(") :]
+    chose = chose[: chose.index("private func rememberProject")]
+    assert "if request.awaitsThePage(url) {" in chose
+    assert chose.index("projectAwaitingThePage = url\n                return") < chose.index(
+        "settingsStore.rememberMeshURL(url)"
+    )
+    assert "rememberProject(url)" not in chose
+    assert "isProject || ClaylineFileTypes.kind(for: url) == .project" in _source(
+        "ClaylineFileTypes.swift"
+    )
 
 
 def test_native_open_and_finder_routes_are_mode_aware() -> None:
@@ -250,6 +260,14 @@ def test_browser_bridge_routes_open_export_and_finder_import_by_active_mode() ->
     assert "meshTypes + projectTypes + printFileTypes" in file_types
     web_view = _source("ClaylineWebView.swift")
     assert "request.isPrintFile" in web_view
+    # Load pattern opens a panel of saved patterns: without its own marker it
+    # opened the Model box's panel, where a pattern file was greyed out.
+    assert 'document.body.dataset.claylineFileRequest = "pattern"' in weave
+    assert weave.index('claylineFileRequest = "pattern"') < weave.index('$("#weavePatternFile").click()')
+    assert 'isPattern = requestToken == "pattern"' in file_types
+    assert "static let patternTypes: [UTType] = [.json]" in file_types
+    assert "request.isPattern" in web_view
+    assert "ClaylineFileTypes.patternTypes" in web_view
     assert 'panel.title = "Open a Clayline Print File"' in web_view
     assert "ClaylineFileTypes.printFileTypes" in web_view
 
@@ -259,3 +277,196 @@ def test_browser_bridge_routes_open_export_and_finder_import_by_active_mode() ->
     assert 'open: () => $("#weaveFileInput").click()' in weave
     assert "exportGcode: downloadGcode" in weave
     assert "importMesh: desktopImportMesh" in weave
+
+
+def test_file_menu_carries_open_recent_right_under_open() -> None:
+    commands = _source("ClaylineCommands.swift")
+    app = _source("ClaylineApp.swift")
+
+    open_at = commands.index('Button("Open…")')
+    recent_at = commands.index('Menu("Open Recent")')
+    assert open_at < recent_at < commands.index('Button("Open Project…")')
+    assert recent_at < commands.index('Button("Open from Gallery…")')
+    # Nothing but Open…'s own shortcut and greying sits between the two.
+    between = commands[open_at:recent_at]
+    assert between.count("Button(") == 1
+    assert '.keyboardShortcut("o", modifiers: .command)' in between
+
+    menu = commands[recent_at : commands.index("// Only a copy", recent_at)]
+    assert "ForEach(recentFiles.entries)" in menu
+    assert "Button(entry.title)" in menu
+    assert "actions.openRecent(entry.url)" in menu
+    assert "if !recentFiles.urls.isEmpty {\n                    Divider()" in menu
+    assert 'Button("Clear Menu")' in menu
+    assert "recentFiles.clear()" in menu
+    # With nothing on it the submenu shows only a greyed Clear Menu, and the
+    # whole submenu waits for the studio like every other File item.
+    assert (
+        ".disabled(recentFiles.urls.isEmpty)\n"
+        "            }\n"
+        "            .disabled(!actions.isReady)"
+    ) in menu
+    # The menu watches the list itself, so a file opened or saved appears at once.
+    assert "@ObservedObject var recentFiles: RecentFilesStore" in commands
+    assert "recentFiles: appDelegate.coordinator.webActions.recentFiles" in app
+
+
+def test_the_recent_list_is_its_own_ten_paths_mirrored_to_the_dock() -> None:
+    recents = _source("RecentFiles.swift")
+    actions = _source("WebActions.swift")
+
+    assert 'static let defaultsKey = "clayline.recent-files.v1"' in recents
+    assert "static let maximumCount = 10" in recents
+    assert "@Published private(set) var urls: [URL]" in recents
+    assert "ObservableObject" in recents
+    # One entry per standardized path, newest first, ten at most.
+    assert "url.standardizedFileURL" in recents
+    assert "next.insert(file, at: 0)" in recents
+    assert "next.prefix(Self.maximumCount)" in recents
+    # The Dock's list follows, and Clear Menu clears both.
+    assert "NSDocumentController.shared.noteNewRecentDocumentURL($0)" in recents
+    assert "NSDocumentController.shared.clearRecentDocuments(nil)" in recents
+    clear = recents[recents.index("func clear()") :][:120]
+    assert "store([])" in clear and "system.clear()" in clear
+    # Only what Clayline opens as a document, and never a file inside an app.
+    assert "ClaylineFileTypes.kind(for: url) != nil" in recents
+    assert "ClaylineGallery.isInsideAnApp(" in recents
+    # The app is not sandboxed: plain paths, no bookmarks.
+    assert "bookmarkData" not in recents
+
+    assert "let recentFiles: RecentFilesStore" in actions
+    # A file that is gone is said so and leaves the list.
+    missing = 'alert.messageText = "\u201c\\(url.lastPathComponent)\u201d can\u2019t be found."'
+    assert missing in actions
+    assert 'alert.informativeText = "It may have been moved or deleted."' in actions
+    reopen = actions[actions.index("func openRecent(") :][:300]
+    assert "recentFiles.fileToReopen(url)" in reopen
+    assert "presentMissingRecentFile(url)" in reopen
+    assert "importDocuments([file])" in reopen
+
+
+def test_files_go_on_open_recent_where_they_open_and_where_a_project_is_saved() -> None:
+    web_view = _source("ClaylineWebView.swift")
+    actions = _source("WebActions.swift")
+    file_types = _source("ClaylineFileTypes.swift")
+
+    # The open panels: everything but a reference photo and the print file
+    # Restore pattern reads for its pattern; the Open Project panel's file
+    # waits for the page.
+    remember = web_view[web_view.index("let remember:") :]
+    remember = remember[: remember.index("if let window = webView.window")]
+    assert "self?.rememberPanelChoice(urls, for: request)" in remember
+    chose = web_view[web_view.index("func rememberPanelChoice(") :]
+    chose = chose[: chose.index("private func rememberProject")]
+    assert "for chosen in urls where request.notesOnPick(chosen) {" in chose
+    assert "actions.noteRecentFile(chosen)" in chose
+    assert "!isProject && !isReferencePhoto && !isPrintFile" in file_types
+    # Only what the menu could open again: the panels and the menu's route
+    # share one table of bounds.
+    assert (
+        "addsToOpenRecent && !awaitsThePage(url) && WebActions.reopenRouteCanCarry(url)"
+        in file_types
+    )
+    assert "size <= maximumBytes(for: kind)" in actions
+    for kind in ("svg", "mesh", "project", "printFile"):
+        assert f"let maximumBytes = Self.maximumBytes(for: .{kind})" in actions
+    # A project once the page has opened it, from any route.
+    opened = actions[actions.index("func projectWasOpened(at url: URL)") :][:120]
+    assert "recentFiles.note(url)" in opened
+    # Finder, the Dock and Open Recent: once the page has the file.
+    assert "read.forEach { recentFiles.note($0) }" in actions
+    mesh = actions[
+        actions.index("private func importMesh") : actions.index("private func importProject")
+    ]
+    assert "if accepted == true {\n                    self.recentFiles.note(url)" in mesh
+    # A saved project, and nothing else a save panel writes.
+    finished = web_view[web_view.index("func downloadDidFinish") :]
+    finished = finished[: finished.index("func download(_ download: WKDownload, didFailWithError")]
+    assert finished.count("noteRecentFile") == 1
+    assert finished.index("guard staged.isProject else") < finished.index(
+        "actions.noteRecentFile(staged.destination)"
+    )
+    # Nothing on the list is opened at launch.
+    launch = web_view[web_view.index("func webView(_ webView: WKWebView, didFinish navigation") :][
+        :900
+    ]
+    assert "recent" not in launch.lower()
+    assert "openRecent" not in web_view
+
+
+def test_a_print_file_reaches_weave_as_bounded_bytes() -> None:
+    actions = _source("WebActions.swift")
+    file_types = _source("ClaylineFileTypes.swift")
+    delegate = _source("AppDelegate.swift")
+
+    assert "case printFile" in file_types
+    assert 'static let printFileExtension = "gcode"' in file_types
+    assert "if fileExtension == printFileExtension {\n            return .printFile" in file_types
+    assert "case .mesh, .project, .printFile:\n            selected = [first.0]" in file_types
+    assert "case .mesh, .printFile: .weave" in file_types
+    assert "importDocuments(urls)" in delegate
+
+    assert "maximumPrintFileBytes = 128 * 1_024 * 1_024" in actions
+    method = actions[actions.index("private func importPrintFile") :]
+    method = method[: method.index("private func presentIgnoredFilesNotice")]
+    assert "ClaylineFileTypes.kind(for: url) == .printFile" in method
+    assert "readBoundedBinaryFile(url, maximumBytes: maximumBytes)" in method
+    assert "base64EncodedString()" in method
+    assert "callAsyncJavaScript" in method
+    assert "window.claylineDesktop.importPrintFile(payload)" in method
+    assert "String(data:" not in method
+    assert (
+        "case .printFile:\n"
+        "            if let url = selection.urls.first {\n"
+        "                importPrintFile(url)"
+    ) in actions
+    assert 'messageText = "Print file could not be opened"' in actions
+    assert '"Choose one readable G-code file no larger than 128 MiB."' in actions
+
+
+def test_the_page_takes_a_print_file_the_way_the_model_box_does() -> None:
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    weave = (STATIC / "weave.js").read_text(encoding="utf-8")
+
+    start = app.index("window.claylineDesktop = Object.freeze({")
+    desktop = app[start : app.index("\n});", start)]
+    entry = desktop[desktop.index("importPrintFile: (payload) => {") :][:200]
+    assert "window.claylineWeaveMode?.activate();" in entry
+    assert "return window.claylineWeaveMode?.importPrintFile?.(payload) || false;" in entry
+
+    exposed = weave[weave.index("window.claylineWeaveMode = Object.freeze({") :][:900]
+    assert "importPrintFile: desktopImportPrintFile," in exposed
+    assert "importMesh: desktopImportMesh," in exposed
+    method = weave[weave.index("function desktopImportPrintFile(payload)") :]
+    method = method[: method.index("\n  }\n")]
+    assert "DESKTOP_MAX_PRINT_FILE_BYTES" in method
+    assert "decodedBase64Size(payload?.base64)" in method
+    assert "new Uint8Array(byteCount)" in method
+    # The very function the Model box's picker and drop zone call.
+    assert (
+        'setDroppedFile(new File([bytes], name, { type: "application/octet-stream" }));' in method
+    )
+    assert "DESKTOP_MAX_PRINT_FILE_BYTES = 128 * 1024 * 1024" in weave
+    assert "if (!/\\.gcode$/i.test(leaf)) return null;" in weave
+
+
+def test_the_guide_and_changelog_say_only_a_project_goes_on_when_saved() -> None:
+    changelog = " ".join((ROOT / "CHANGELOG.md").read_text(encoding="utf-8").split())
+    assert (
+        "**File → Open Recent.** The last ten projects you opened or saved, and models, "
+        "drawings and print files you opened, newest first"
+    ) in changelog
+    sentence = (
+        "**File → Open Recent** lists the last ten projects you opened or saved, and models, "
+        "drawings and print files you opened, newest first; choose one to open it again."
+    )
+    for page, sliced in (
+        ("tiles.md", "If the job was sliced when you saved it"),
+        ("weave.md", "If the form was sliced when you saved it"),
+    ):
+        text = (ROOT / "guide" / page).read_text(encoding="utf-8")
+        assert "print files you opened or saved" not in text
+        assert text.count(sentence) == 1
+        # The project paragraph stays whole: brought back, then sliced again,
+        # then the menu.
+        assert text.index("brings it all back") < text.index(sliced) < text.index(sentence)

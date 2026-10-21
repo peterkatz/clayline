@@ -29,11 +29,17 @@ from clayline.models import (
 from clayline.wave import (
     ModulatedRing,
     average_curve,
+    average_curve_spans,
+    evaluate_curve,
+    has_wall_clay,
+    held_flow,
     modulate_ring,
-    pattern_layer_is_active,
+    printed_weaves,
     profile_amplitude_scale,
+    shapes_clay,
+    spiral_stand_ins,
 )
-from clayline.weave_analysis import analyze_weave_geometry
+from clayline.weave_analysis import analyze_weave_geometry, weave_rhythm
 from clayline.weave_bottom import BottomStroke, build_bottom_plan
 from clayline.weave_continuity import (
     DirectStepGates,
@@ -76,7 +82,6 @@ from clayline.weave_zblend import (
     ZBlendPoint,
     build_zblend_path,
     profile_silhouette_shapes,
-    zblend_pattern_scales_by_source_layer,
 )
 
 _GOLDEN_ANGLE_FRACTION = (math.sqrt(5.0) - 1.0) / 2.0
@@ -103,6 +108,10 @@ class _PathPoint:
     comment: str = "weave wall"
     metadata: tuple[tuple[str, object], ...] = ()
     pattern_scale: float = 1.0
+    # Each printed extra weave's clay-track phase and Skip-layers scale here,
+    # in ``printed_weaves`` order.  Empty with one weave and on every fill.
+    extra_extrusion_phases: tuple[float, ...] = ()
+    extra_pattern_scales: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,23 +193,17 @@ def build_form_move_stream(
     by_address = {ring.provenance: ring for layer in sliced.layers for ring in layer.rings}
     bottom_z = sliced.layers[0].z
     top_z = sliced.layers[-1].z
-    layer_pattern_scales: dict[int, float] | None = None
-    if pattern.settings.layer_skip_enabled:
-        if zblend_path is not None:
-            layer_pattern_scales = zblend_pattern_scales_by_source_layer(zblend_path)
-        else:
-            layer_pattern_scales = {
-                layer.index: (
-                    1.0
-                    if pattern_layer_is_active(
-                        pattern.settings,
-                        layer.index,
-                        len(sliced.layers),
-                    )
-                    else 0.0
-                )
-                for layer in sliced.layers
-            }
+    # Every weave's Skip layers, read in one place: Weave 1's map is the one it
+    # always had, and each extra weave keeps a rhythm of its own.
+    rhythm = weave_rhythm(sliced, pattern, zblend_path=zblend_path)
+    layer_pattern_scales = rhythm.weave_one
+    weave_one, extras = printed_weaves(pattern)
+    # Only an extra weave that shapes the clay, by its own clay track or its
+    # own Clay along the wall, adds to the flow.
+    extra_tracks = tuple(index for index, extra in enumerate(extras) if shapes_clay(extra))
+    # In vase mode these rings are the stand-ins its checks read; with extra
+    # weaves printing they sit at the spiral's own phase.
+    spiral = spiral_stand_ins(pattern)
     modulated_by_address = {
         address: modulate_ring(
             ring,
@@ -217,9 +220,39 @@ def build_form_move_stream(
                 top_z,
                 pattern.settings,
             ),
+            extra_pattern_scales=rhythm.extra_scales(ring.provenance.layer_index),
+            spiral=spiral,
         )
         for address, ring in by_address.items()
     }
+
+    def wall_path(
+        ring: Ring,
+        modulated: ModulatedRing,
+        seam_index: int,
+        *,
+        scale_layer: int,
+        reverse_open: bool = False,
+        profile_z_offsets: np.ndarray | None = None,
+    ) -> _RingPath:
+        """One wall ring's path at ``scale_layer``'s Skip-layers scale.
+
+        Every route that lays a wall ring comes through here.  The extra
+        weaves' own scales ride on ``modulated``, which was built with them.
+        """
+
+        return _ring_path(
+            ring,
+            modulated,
+            pattern,
+            seam_index,
+            reverse_open=reverse_open,
+            profile_z_offsets=profile_z_offsets,
+            pattern_scale=(
+                1.0 if layer_pattern_scales is None else layer_pattern_scales.get(scale_layer, 0.0)
+            ),
+        )
+
     if pattern.settings.profile_blend:
         profile_shape_by_address, _profile_z_clamped = profile_silhouette_shapes(sliced, pattern)
         profile_z_by_address = {
@@ -249,6 +282,29 @@ def build_form_move_stream(
     # every crossing is exactly what it was.
     stacking = pattern.settings.stack_pieces
     highest_clay: float | None = None
+
+    def extra_join_flow(previous: _PathPoint, point: _PathPoint) -> float:
+        """What the extra weaves' clay tracks add to the bead that joins two paths.
+
+        Each extra's own cfs-free term, averaged across the join like Weave
+        1's: the join leaves out every weave's Clay along the wall, Weave 1's
+        included (multi-weave plan §8), so a weave whose clay is only its
+        Clay along the wall adds nothing here.  A fill, bottom, interior or
+        weld tail carries no extra-weave phases, so there each extra weave
+        takes its own sample at the point.
+        """
+
+        joined = len(previous.extra_extrusion_phases) == len(point.extra_extrusion_phases)
+        total = 0.0
+        for index in extra_tracks:
+            end = point.extra_extrusion_phases[index]
+            sample = (
+                average_curve(extras[index].extrusion, previous.extra_extrusion_phases[index], end)
+                if joined
+                else float(evaluate_curve(extras[index].extrusion, end))
+            )
+            total += point.extra_pattern_scales[index] * (sample - 1.0)
+        return total
 
     def add_run(paths: Iterable[_RingPath], *, label: str, thread_id: str | None = None) -> None:
         nonlocal current, run_number, highest_clay
@@ -285,12 +341,14 @@ def build_form_move_stream(
                 if point_index == 0 and previous_path_end is not None:
                     flow = 1.0 + point.pattern_scale * (
                         average_curve(
-                            pattern.extrusion,
+                            weave_one.extrusion,
                             previous_path_end.extrusion_phase,
                             point.extrusion_phase,
                         )
                         - 1.0
                     )
+                    if extra_tracks and point.extra_extrusion_phases:
+                        flow = held_flow(flow, extra_join_flow(previous_path_end, point))
                 moves.append(
                     Move(
                         MoveKind.PRINT,
@@ -672,6 +730,45 @@ def build_form_move_stream(
                     )
                 groups.append((revolution.source_layer_index, geometry))
             point_groups = tuple(groups)
+        # What the extra weaves' clay adds from each point to the next, summed
+        # in the weaves' order: each one's exact segment average times the
+        # mean of its own Clay along the wall at the two ends, as Weave 1's
+        # is, the whole spiral at a time (multi-weave plan §5), the same
+        # values as one point at a time.  ``spiral_step`` counts the points
+        # already joined.
+        extra_spiral_flows: list[float] = []
+        spiral_step = 0
+        if extra_tracks:
+            sequence = [point for _group_layer, group in point_groups for point in group]
+            spiral_flow = np.zeros(max(0, len(sequence) - 1), dtype=np.float64)
+            for extra_index in extra_tracks:
+                spiral_phases = np.fromiter(
+                    (point.extra_weaves[extra_index].extrusion_phase for point in sequence),
+                    dtype=np.float64,
+                    count=len(sequence),
+                )
+                spiral_scales = np.fromiter(
+                    (point.extra_weaves[extra_index].pattern_scale for point in sequence[1:]),
+                    dtype=np.float64,
+                    count=len(sequence) - 1,
+                )
+                spiral_clay = average_curve_spans(
+                    extras[extra_index].extrusion, spiral_phases[:-1], spiral_phases[1:]
+                )
+                if has_wall_clay(extras[extra_index]):
+                    # Each point's own Clay along the wall, and the one before
+                    # it, as Weave 1's previous_curvature_flow is carried.
+                    spiral_lobes = np.fromiter(
+                        (
+                            point.extra_weaves[extra_index].curvature_flow_scale
+                            for point in sequence
+                        ),
+                        dtype=np.float64,
+                        count=len(sequence),
+                    )
+                    spiral_clay = spiral_clay * 0.5 * (spiral_lobes[:-1] + spiral_lobes[1:])
+                spiral_flow += spiral_scales * (spiral_clay - 1.0)
+            extra_spiral_flows = spiral_flow.tolist()
         for source_layer_index, geometry_points in point_groups:
             path_points: list[_PathPoint] = []
             for point in geometry_points:
@@ -680,7 +777,7 @@ def build_form_move_stream(
                 if previous_phase is not None:
                     pattern_flow = 1.0 + point.pattern_scale * (
                         average_curve(
-                            pattern.extrusion,
+                            weave_one.extrusion,
                             previous_phase,
                             point.extrusion_phase,
                         )
@@ -688,6 +785,11 @@ def build_form_move_stream(
                         * (previous_curvature_flow + point.curvature_flow_scale)
                         - 1.0
                     )
+                    if extra_tracks:
+                        # Each extra weave's exact segment average is added
+                        # after Weave 1's, and only then held.
+                        pattern_flow = held_flow(pattern_flow, extra_spiral_flows[spiral_step])
+                        spiral_step += 1
                     # Layer rhythm neutralizes the decorative pattern only.
                     # Top-follow thickness compensation is structural and must
                     # remain active on a deliberately plain revolution.
@@ -727,6 +829,18 @@ def build_form_move_stream(
                             else ()
                         ),
                         pattern_scale=point.pattern_scale,
+                        # So a later path's join in ``add_run`` adds the
+                        # extra weaves' clay as it does on a layered wall.
+                        extra_extrusion_phases=(
+                            ()
+                            if not point.extra_weaves
+                            else tuple(extra.extrusion_phase for extra in point.extra_weaves)
+                        ),
+                        extra_pattern_scales=(
+                            ()
+                            if not point.extra_weaves
+                            else tuple(extra.pattern_scale for extra in point.extra_weaves)
+                        ),
                     )
                 )
                 previous_phase = point.extrusion_phase
@@ -1151,10 +1265,9 @@ def build_form_move_stream(
                     # Wall only.  The seam chains off the column below, so the
                     # entry is at most one ring sample long and usually nothing at
                     # all, and the climb lands straight onto the wall's own start.
-                    wall = _ring_path(
+                    wall = wall_path(
                         ring,
                         modulated,
-                        pattern,
                         _seam_index(
                             ring,
                             modulated,
@@ -1162,11 +1275,7 @@ def build_form_move_stream(
                             climb_xy if climb_xy is not None else opening_head,
                             source_layer_index=layer_index + sliced.source_layer_start,
                         ),
-                        pattern_scale=(
-                            1.0
-                            if layer_pattern_scales is None
-                            else layer_pattern_scales.get(layer_index, 0.0)
-                        ),
+                        scale_layer=layer_index,
                         profile_z_offsets=profile_z_by_address.get(ring.provenance),
                     )
                     chosen = (
@@ -1493,16 +1602,11 @@ def build_form_move_stream(
                         source_layer_index=layer_index + sliced.source_layer_start,
                     )
                 )
-                wall = _ring_path(
+                wall = wall_path(
                     ring,
                     modulated,
-                    pattern,
                     seam_at,
-                    pattern_scale=(
-                        1.0
-                        if layer_pattern_scales is None
-                        else layer_pattern_scales.get(layer_index, 0.0)
-                    ),
+                    scale_layer=layer_index,
                     profile_z_offsets=profile_z_by_address.get(ring.provenance),
                 )
                 route = weld_of(
@@ -1810,10 +1914,9 @@ def build_form_move_stream(
                 paths: list[_RingPath] = []
                 for ring in rings:
                     modulated = modulated_by_address[ring.provenance]
-                    path = _ring_path(
+                    path = wall_path(
                         ring,
                         modulated,
-                        pattern,
                         _seam_index(
                             ring,
                             modulated,
@@ -1822,11 +1925,7 @@ def build_form_move_stream(
                             source_layer_index=ring.provenance.layer_index
                             + sliced.source_layer_start,
                         ),
-                        pattern_scale=(
-                            1.0
-                            if layer_pattern_scales is None
-                            else layer_pattern_scales.get(ring.provenance.layer_index, 0.0)
-                        ),
+                        scale_layer=ring.provenance.layer_index,
                         profile_z_offsets=profile_z_by_address.get(ring.provenance),
                     )
                     paths.append(path)
@@ -1972,16 +2071,11 @@ def build_form_move_stream(
                         previous_seam if anchor is None else anchor,
                         source_layer_index=ring.provenance.layer_index + sliced.source_layer_start,
                     )
-                    path = _ring_path(
+                    path = wall_path(
                         ring,
                         modulated,
-                        pattern,
                         seam_index,
-                        pattern_scale=(
-                            1.0
-                            if layer_pattern_scales is None
-                            else layer_pattern_scales.get(ring.provenance.layer_index, 0.0)
-                        ),
+                        scale_layer=ring.provenance.layer_index,
                         profile_z_offsets=profile_z_by_address.get(ring.provenance),
                     )
                     ring_paths.append(path)
@@ -2064,16 +2158,11 @@ def build_form_move_stream(
                             and _distance_sq(modulated.points[-1], endpoint)
                             < _distance_sq(modulated.points[0], endpoint)
                         )
-                        path = _ring_path(
+                        path = wall_path(
                             ring,
                             modulated,
-                            pattern,
                             seam_index,
-                            pattern_scale=(
-                                1.0
-                                if layer_pattern_scales is None
-                                else layer_pattern_scales.get(ring.provenance.layer_index, 0.0)
-                            ),
+                            scale_layer=ring.provenance.layer_index,
                             reverse_open=reverse_open,
                             profile_z_offsets=profile_z_by_address.get(ring.provenance),
                         )
@@ -2219,12 +2308,34 @@ def widest_flow(pattern: Pattern, flow_multiplier: float = 1.0) -> float:
     The clay flow, times the extrusion curve's highest point (the curve never
     overshoots its points), times the larger of the lobe and cove flows.  A bead
     laid with more clay at the same layer height is that much wider.  Never
-    below 1: a thinner bead is still planned as a full coil.
+    below 1: a thinner bead is still planned as a full coil.  Each extra
+    weave that shapes the clay adds its own highest swell, its track's highest
+    point times its own larger lobe or cove flow, held as the wall's flow is.
+    Weave 1's track and Clay along the wall are read as it prints, so Weave 1
+    switched off adds none of either.
     """
 
-    curve = max(1.0, *(float(point.value) for point in pattern.extrusion))
-    shape = max(1.0, pattern.settings.flow_lobes, pattern.settings.flow_coves)
-    return max(1.0, flow_multiplier) * curve * shape
+    weave_one, extras = printed_weaves(pattern)
+    curve = max(1.0, *(float(point.value) for point in weave_one.extrusion))
+    shape = max(1.0, weave_one.settings.flow_lobes, weave_one.settings.flow_coves)
+    tracked = tuple(extra for extra in extras if shapes_clay(extra))
+    if not tracked:
+        return max(1.0, flow_multiplier) * curve * shape
+    swell = sum(max(0.0, _highest_clay(extra) - 1.0) for extra in tracked)
+    return max(1.0, flow_multiplier) * float(held_flow(curve * shape, swell))
+
+
+def _highest_clay(extra: Pattern) -> float:
+    """One extra weave's most clay, against a plain coil.
+
+    Its track's highest point, times its own larger lobe or cove flow when
+    its Clay along the wall pushes any.
+    """
+
+    peak = max(float(point.value) for point in extra.extrusion)
+    if not has_wall_clay(extra):
+        return peak
+    return peak * max(1.0, extra.settings.flow_lobes, extra.settings.flow_coves)
 
 
 def _measured_text(value: float | str | bool | None) -> str:
@@ -2491,6 +2602,8 @@ def _link_points(reach: LayerEntry | None, head: _PathPoint) -> tuple[_PathPoint
             extrusion_phase=head.extrusion_phase,
             comment="weave rib link",
             pattern_scale=head.pattern_scale,
+            extra_extrusion_phases=head.extra_extrusion_phases,
+            extra_pattern_scales=head.extra_pattern_scales,
         )
         for point in reach.entry_points[1:-1]
     )
@@ -2536,6 +2649,8 @@ def _entry_points(entry: LayerEntry | None, head: _PathPoint) -> tuple[_PathPoin
         comment="weave layer climb",
         metadata=tuple(facts),
         pattern_scale=head.pattern_scale,
+        extra_extrusion_phases=head.extra_extrusion_phases,
+        extra_pattern_scales=head.extra_pattern_scales,
     )
     if entry.entry_points is None:
         return (climb,)
@@ -2551,6 +2666,8 @@ def _entry_points(entry: LayerEntry | None, head: _PathPoint) -> tuple[_PathPoin
                 extrusion_phase=head.extrusion_phase,
                 comment="weave wall entry",
                 pattern_scale=head.pattern_scale,
+                extra_extrusion_phases=head.extra_extrusion_phases,
+                extra_pattern_scales=head.extra_pattern_scales,
             )
             for point in entry.entry_points[1:-1]
         ),
@@ -2586,6 +2703,8 @@ def _extended_path(path: _RingPath, points: np.ndarray) -> _RingPath:
                     flow=tail.flow,
                     extrusion_phase=tail.extrusion_phase,
                     comment=f"{tail.comment} weld",
+                    extra_extrusion_phases=tail.extra_extrusion_phases,
+                    extra_pattern_scales=tail.extra_pattern_scales,
                 )
                 for point in points
             ),
@@ -2711,6 +2830,9 @@ def _ring_path(
     profile_z_offsets: np.ndarray | None = None,
     pattern_scale: float = 1.0,
 ) -> _RingPath:
+    weave_one, extras = printed_weaves(pattern)
+    if len(modulated.extra_wave_phases) != len(extras):
+        raise FormStackError("a wall ring was modulated without every weave of its pattern")
     if ring.closed:
         unique_count = ring.sample_count
         indices = tuple(range(seam_index, unique_count)) + tuple(range(0, seam_index + 1))
@@ -2729,10 +2851,12 @@ def _ring_path(
         if reverse_open:
             phases = tuple(reversed(phases))
     flows = [float(modulated.extrusion_multiplier[indices[0]])]
-    if pattern.settings.flow_lobes == 1.0 and pattern.settings.flow_coves == 1.0:
+    # Weave 1's Clay along the wall as it prints: silent while it is switched
+    # off (clayline.wave.printed_weaves); on, the pattern's own.
+    if weave_one.settings.flow_lobes == 1.0 and weave_one.settings.flow_coves == 1.0:
         # Preserve the frozen pre-round-4 arithmetic for every neutral job.
         flows.extend(
-            1.0 + pattern_scale * (average_curve(pattern.extrusion, start, end) - 1.0)
+            1.0 + pattern_scale * (average_curve(weave_one.extrusion, start, end) - 1.0)
             for start, end in pairwise(phases)
         )
     else:
@@ -2740,7 +2864,7 @@ def _ring_path(
         flows.extend(
             1.0
             + pattern_scale
-            * (average_curve(pattern.extrusion, start, end) * 0.5 * (left + right) - 1.0)
+            * (average_curve(weave_one.extrusion, start, end) * 0.5 * (left + right) - 1.0)
             for start, end, left, right in zip(
                 phases[:-1],
                 phases[1:],
@@ -2749,6 +2873,42 @@ def _ring_path(
                 strict=True,
             )
         )
+    point_extras: tuple[tuple[float, ...], ...] = ((),) * len(indices)
+    if extras:
+        # Each extra weave's phase unwrapped across the seam with its own whole
+        # count, so its clay track runs on round the seam like Weave 1's.
+        # Whole rings at a time for the extra weaves (multi-weave plan §5),
+        # the same values element by element as one sample at a time.
+        extra_phases: list[np.ndarray] = []
+        for extra_phase, extra_count in zip(
+            modulated.extra_extrusion_phases, modulated.extra_wave_counts, strict=True
+        ):
+            if ring.closed:
+                unwrapped = np.concatenate(
+                    (
+                        extra_phase[seam_index : ring.sample_count],
+                        extra_phase[: seam_index + 1] + float(extra_count),
+                    )
+                )
+            else:
+                unwrapped = extra_phase[list(indices)]
+            extra_phases.append(unwrapped)
+        point_extras = tuple(zip(*(spans.tolist() for spans in extra_phases), strict=True))
+        tracked = tuple(index for index, extra in enumerate(extras) if shapes_clay(extra))
+        if tracked:
+            # Weave 1's flow above stays as it was; each extra weave's own
+            # exact segment average, times the mean of its own Clay along the
+            # wall at the segment's two ends as Weave 1's is, is added after
+            # it, and only then held.
+            extra_flow = np.zeros(len(flows) - 1, dtype=np.float64)
+            for index in tracked:
+                spans = extra_phases[index]
+                clay = average_curve_spans(extras[index].extrusion, spans[:-1], spans[1:])
+                if has_wall_clay(extras[index]):
+                    lobes = modulated.extra_curvature_flow_scales[index][list(indices)]
+                    clay = clay * 0.5 * (lobes[:-1] + lobes[1:])
+                extra_flow += modulated.extra_pattern_scales[index] * (clay - 1.0)
+            flows[1:] = held_flow(np.asarray(flows[1:], dtype=np.float64), extra_flow).tolist()
     points = tuple(
         _PathPoint(
             x=float(modulated.points[index, 0]),
@@ -2763,8 +2923,12 @@ def _ring_path(
             extrusion_phase=float(phase),
             comment=("weave profile wall" if pattern.settings.profile_blend else "weave wall"),
             pattern_scale=pattern_scale,
+            extra_extrusion_phases=extra_phase_here,
+            extra_pattern_scales=modulated.extra_pattern_scales,
         )
-        for index, flow, phase in zip(indices, flows, phases, strict=True)
+        for index, flow, phase, extra_phase_here in zip(
+            indices, flows, phases, point_extras, strict=True
+        )
     )
     if ring.closed and (points[0].x, points[0].y) != (points[-1].x, points[-1].y):
         raise FormStackError("a modulated closed ring lost exact seam closure")

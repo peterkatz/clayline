@@ -87,7 +87,13 @@ final class SaveOverOriginalBridgeTests: XCTestCase {
         let original = directory.appendingPathComponent("rosette-study.svg")
         try Data("<svg>as it was on disk</svg>".utf8).write(to: original)
 
-        let actions = WebActions()
+        // The design goes on File → Open Recent too; that list is kept apart
+        // from this machine's own so the test leaves nothing behind.
+        let suite = "SaveOverOriginalBridgeTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let recents = RecentFilesStore(defaults: defaults, system: .none)
+        let actions = WebActions(recentFiles: recents)
         let coordinator = makeCoordinator(actions)
         let configuration = WKWebViewConfiguration()
         coordinator.installSettingsBridge(in: configuration.userContentController)
@@ -111,6 +117,7 @@ final class SaveOverOriginalBridgeTests: XCTestCase {
             "name,svg",
             "the page is handed a name and the text — it has no path to send back"
         )
+        XCTAssertEqual(recents.urls, [original.standardizedFileURL])
 
         // The artist edits it on the bed and saves.
         _ = try evaluate("window.saveFirst('<svg>edited on the bed</svg>')", in: webView)

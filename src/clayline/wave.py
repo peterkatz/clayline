@@ -11,7 +11,8 @@ import bisect
 import hashlib
 import json
 import math
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,10 @@ from numpy.typing import ArrayLike, NDArray
 
 from clayline.weave_models import (
     DEFAULT_NOZZLE_CLEARANCE_MM,
+    MAX_EXTRA_WEAVES,
+    TOO_MANY_EXTRA_WEAVES,
     CurvePoint,
+    ExtraWeave,
     Pattern,
     Ring,
     SeamPolicy,
@@ -43,6 +47,9 @@ _TOP_LEVEL_KEYS = {
     "extrusion",
     "settings",
 }
+# Weaves 2 and 3 ride in one optional top-level key, so a one-weave pattern
+# is the file 0.8.3 wrote and 0.8.3 refuses a file it cannot print whole.
+_OPTIONAL_TOP_LEVEL_KEYS = {"extra_weaves"}
 _SETTINGS_KEYS_V1 = {
     "amplitude",
     "wavelength",
@@ -85,8 +92,46 @@ _OPTIONAL_SETTINGS_KEYS = {
     "infill_ramp_layers",
     "stack_pieces",
     "nozzle_clearance_mm",
+    "wave_on",
+    "hold_wave_count",
+}
+# One extra weave: only what a weave owns, never a whole-wall key.  Its Skip
+# layers group is all five keys or none.  Its Clay along the wall
+# (flow_lobes, flow_coves) is its own since 2026-10-18 and, like its other
+# optional keys, is written only when set, so an extra weave saved before
+# keeps its bytes.
+_EXTRA_WEAVE_KEYS = {"name", "seed", "wave", "extrusion", "settings"}
+_EXTRA_WEAVE_SETTINGS_KEYS = {
+    "amplitude",
+    "wavelength",
+    "twist",
+    "extrusion_phase_offset",
+    "follow_lobes",
+    "follow_coves",
+}
+_EXTRA_WEAVE_SKIP_KEYS = {
+    "layer_skip_enabled",
+    "layer_skip_start",
+    "layer_skip_on",
+    "layer_skip_off",
+    "layer_skip_end",
+}
+_OPTIONAL_EXTRA_WEAVE_SETTINGS_KEYS = _EXTRA_WEAVE_SKIP_KEYS | {
+    "flow_lobes",
+    "flow_coves",
+    "wavelength_follows_nozzle",
+    "wave_on",
+    "hold_wave_count",
 }
 _CURVE_KEYS = {"u", "value"}
+# Clay held by the extra weaves (2026-10-18, multi-weave plan §2): their swell
+# or thinning adds to Weave 1's flow, and only then is the total held inside a
+# quarter to three times a plain coil.  The hold never pulls Weave 1's own flow
+# back inside those bounds; it widens to take it.
+FLOW_HOLD_LOW = 0.25
+FLOW_HOLD_HIGH = 3.0
+_SILENT_WAVE = (CurvePoint(0.0, 0.0), CurvePoint(0.5, 0.0))
+_PLAIN_TRACK = (CurvePoint(0.0, 1.0), CurvePoint(0.5, 1.0))
 _PRESET_NAMES = (
     "flat",
     "sine",
@@ -100,7 +145,20 @@ _PRESET_NAMES = (
 
 @dataclass(frozen=True, slots=True)
 class ModulatedRing:
-    """One ring after waveform displacement, with reusable phase facts."""
+    """One ring after waveform displacement, with reusable phase facts.
+
+    Every phase, count and scale field is Weave 1's own.  ``points`` is the
+    whole wall, every weave summed, and with extra weaves
+    ``extrusion_multiplier`` is the whole wall's clay at each point, held.
+    The ``extra_*`` tuples carry each printed extra weave's own facts in
+    :func:`printed_weaves` order, and are empty with one weave;
+    ``extra_curvature_flow_scales`` is each one's own Clay along the wall.
+    ``clay_held`` names which way the hold took effect on this ring, if it did,
+    and ``clay_held_by`` names, for each of those ways, the printed extra
+    weaves whose own clay pushed that way where the hold took effect, each as
+    (:func:`printed_weaves` position, its track pushed that way, its own Clay
+    along the wall pushed that way).
+    """
 
     points: FloatArray
     wave_phase: FloatArray
@@ -110,6 +168,14 @@ class ModulatedRing:
     extrusion_multiplier: FloatArray
     amplitude_scale: FloatArray
     curvature_flow_scale: FloatArray
+    extra_wave_phases: tuple[FloatArray, ...] = ()
+    extra_wave_counts: tuple[int | float, ...] = ()
+    extra_extrusion_phases: tuple[FloatArray, ...] = ()
+    extra_amplitude_scales: tuple[FloatArray, ...] = ()
+    extra_pattern_scales: tuple[float, ...] = ()
+    extra_curvature_flow_scales: tuple[FloatArray, ...] = ()
+    clay_held: tuple[str, ...] = ()
+    clay_held_by: tuple[tuple[str, tuple[tuple[int, bool, bool], ...]], ...] = ()
 
     def __post_init__(self) -> None:
         arrays = (
@@ -130,6 +196,33 @@ class ModulatedRing:
         object.__setattr__(self, "extrusion_multiplier", arrays[4])
         object.__setattr__(self, "amplitude_scale", arrays[5])
         object.__setattr__(self, "curvature_flow_scale", arrays[6])
+        if not self.extra_wave_phases and not self.extra_pattern_scales:
+            return
+        extras = len(self.extra_wave_phases)
+        if any(
+            len(values) != extras
+            for values in (
+                self.extra_wave_counts,
+                self.extra_extrusion_phases,
+                self.extra_amplitude_scales,
+                self.extra_pattern_scales,
+                self.extra_curvature_flow_scales,
+            )
+        ):
+            raise ValueError("a modulated ring needs every fact for each extra weave")
+        for name in (
+            "extra_wave_phases",
+            "extra_extrusion_phases",
+            "extra_amplitude_scales",
+            "extra_curvature_flow_scales",
+        ):
+            vectors = tuple(_readonly_vector(vector, label=name) for vector in getattr(self, name))
+            if any(len(vector) != len(arrays[0]) for vector in vectors):
+                raise ValueError("modulated ring arrays must have equal lengths")
+            object.__setattr__(self, name, vectors)
+        object.__setattr__(
+            self, "extra_pattern_scales", tuple(float(scale) for scale in self.extra_pattern_scales)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +246,24 @@ class _Segment:
             + self.b * (t1**2 - t0**2) / 2.0
             + self.c * (t1**3 - t0**3) / 3.0
             + self.d * (t1**4 - t0**4) / 4.0
+        )
+
+    def integrals_between(self, start: float, ends: FloatArray) -> FloatArray:
+        """:meth:`integral_between` from one start to many ends, bit for bit.
+
+        The same operations in the same order, element by element.  Python's
+        ``t**2`` calls the C library's pow, while numpy's ``**`` squares by a
+        multiply, which can differ in the last bit; ``np.float_power`` calls
+        pow for every power, as the scalar does.
+        """
+
+        t0 = (start - self.x0) / self.h
+        t1 = (ends - self.x0) / self.h
+        return self.h * (
+            self.a * (t1 - t0)
+            + self.b * (np.float_power(t1, 2.0) - t0**2) / 2.0
+            + self.c * (np.float_power(t1, 3.0) - t0**3) / 3.0
+            + self.d * (np.float_power(t1, 4.0) - t0**4) / 4.0
         )
 
 
@@ -217,6 +328,28 @@ class _PeriodicCurve:
                 break
         return total
 
+    def primitives(self, phases: FloatArray) -> FloatArray:
+        """:meth:`primitive` at many phases, the same bits at each one.
+
+        The pieces are walked in the same order and each phase adds the same
+        pieces in that order.  The scalar's early ``break`` only skips pieces
+        that start at or after the wrapped phase, which add nothing here.
+        """
+
+        # math.floor never returns -0.0; adding 0.0 clears it from np.floor.
+        cycles = np.floor(phases) + 0.0
+        wrapped = phases - cycles
+        totals = cycles * self.period_integral
+        cursor = 0.0
+        for segment in _segments_over_unit_interval(self):
+            start = max(cursor, segment.x0)
+            ends = np.minimum(wrapped, segment.x0 + segment.h)
+            inside = ends > start
+            if np.any(inside):
+                totals[inside] += segment.integrals_between(start, ends[inside])
+            cursor = max(cursor, segment.x0 + segment.h)
+        return totals
+
 
 def evaluate_curve(points: tuple[CurvePoint, ...], phase: ArrayLike) -> float | FloatArray:
     """Evaluate a periodic shape-preserving C1 cubic at scalar/vector phases."""
@@ -240,6 +373,33 @@ def average_curve(points: tuple[CurvePoint, ...], start_phase: float, end_phase:
     return integral / (end_phase - start_phase)
 
 
+def average_curve_spans(
+    points: tuple[CurvePoint, ...], start_phases: ArrayLike, end_phases: ArrayLike
+) -> FloatArray:
+    """:func:`average_curve` over many intervals at once, the same value for each.
+
+    Used for the extra weaves' clay tracks, a whole ring or spiral at a time
+    (multi-weave plan §5); Weave 1 keeps its one-interval-at-a-time average.
+    """
+
+    starts = np.asarray(start_phases, dtype=np.float64)
+    ends = np.asarray(end_phases, dtype=np.float64)
+    if starts.shape != ends.shape or starts.ndim != 1:
+        raise ValueError("curve intervals need matching one-dimensional start and end phases")
+    if not np.isfinite(starts).all() or not np.isfinite(ends).all():
+        raise ValueError("curve interval phases must be finite")
+    if all(point.value == points[0].value for point in points[1:]):
+        return np.full(len(starts), float(points[0].value), dtype=np.float64)
+    curve = _curve(tuple(points))
+    integrals = curve.primitives(ends) - curve.primitives(starts)
+    same = starts == ends
+    widths = np.where(same, 1.0, ends - starts)
+    averages = integrals / widths
+    if np.any(same):
+        averages[same] = curve.evaluate(starts[same])
+    return averages
+
+
 def ring_wave_count(ring: Ring, wavelength: float) -> int | float:
     """Resolve closed whole waves or an open ring's literal fractional cycles.
 
@@ -256,19 +416,77 @@ def ring_wave_count(ring: Ring, wavelength: float) -> int | float:
     return cycles
 
 
+def settings_wave_count(ring: Ring, settings: WeaveSettings) -> int | float:
+    """The count one weave puts round ``ring``, held or the ring's own.
+
+    With Keep the same number of waves off this is exactly
+    ``ring_wave_count(ring, settings.wavelength)``.  On, a closed ring takes
+    the count fitted, by the same half-up rule, at the widest ring of its part
+    of the form (``Ring.hold_circumference``, recorded when the form is
+    sliced), so the count never changes up that part.  Open rings keep their
+    own fractional cycles either way.  A closed ring with no widest ring
+    recorded was not made by slicing a form, and is refused rather than
+    quietly left unheld.
+    """
+
+    if not settings.hold_wave_count or not ring.closed:
+        return ring_wave_count(ring, settings.wavelength)
+    wavelength = settings.wavelength
+    if not math.isfinite(wavelength) or wavelength <= 0.0:
+        raise ValueError("wavelength must be finite and positive")
+    if ring.hold_circumference is None:
+        raise ValueError(
+            "hold_wave_count needs a ring from a sliced form: this closed ring has no "
+            "widest ring of its part recorded (hold_circumference is None)"
+        )
+    return max(1, math.floor(ring.hold_circumference / wavelength + 0.5))
+
+
+def held_phase_shift(ring: Ring, settings: WeaveSettings, wave_count: int | float) -> float:
+    """How far back a held weave's phase sits on ``ring``, so its crests carry on.
+
+    Every band of a sliced form starts its seams afresh, so where a part of
+    the form carries on across a band break its ring's seam can land
+    somewhere else round it.  A weave that keeps the same number of waves
+    counts its ``wave_count`` waves from where the part's seam was below
+    instead (``Ring.hold_u_offset``), which is the phase ``hold_u_offset *
+    wave_count`` back, so its crests stand where they stood on the layer
+    below.  0.0 with the switch off, on open rings, and on every ring of a
+    part's first band, so nothing there changes.
+    """
+
+    if not settings.hold_wave_count or not ring.closed or not ring.hold_u_offset:
+        return 0.0
+    return ring.hold_u_offset * float(wave_count)
+
+
 def ring_phase(
     ring: Ring,
     settings: WeaveSettings,
     *,
     layer_coordinate: float | None = None,
+    spiral: bool = False,
 ) -> FloatArray:
-    """Return unwrapped waveform phase at every resampled ring point."""
+    """Return unwrapped waveform phase at every resampled ring point.
+
+    ``spiral`` places the ring where vase mode's spiral really puts it, which
+    gains a layer's twist on the way round (:func:`spiral_stand_ins`).
+    """
 
     layer = float(ring.provenance.layer_index) if layer_coordinate is None else layer_coordinate
     if not math.isfinite(layer):
         raise ValueError("layer coordinate must be finite")
-    wave_count = ring_wave_count(ring, settings.wavelength)
-    phase = ring.u * float(wave_count) + layer * settings.twist
+    wave_count = settings_wave_count(ring, settings)
+    if spiral:
+        phase = ring.u * (float(wave_count) + settings.twist) + layer * settings.twist
+    else:
+        phase = ring.u * float(wave_count) + layer * settings.twist
+    # A held weave counts its waves from where its part's seam was below a
+    # band break; the twist still runs from this ring's own seam, as the
+    # spiral climbs from it.
+    shift = held_phase_shift(ring, settings, wave_count)
+    if shift:
+        phase = phase - shift
     return _readonly_vector(phase, label="wave_phase")
 
 
@@ -279,16 +497,32 @@ def modulate_ring(
     layer_coordinate: float | None = None,
     profile_scale: float = 1.0,
     pattern_scale: float = 1.0,
+    extra_pattern_scales: Sequence[float] | None = None,
+    spiral: bool = False,
 ) -> ModulatedRing:
-    """Displace a ring only along its supplied local in-plane normals."""
+    """Displace a ring only along its supplied local in-plane normals.
+
+    Every weave pushes along the ring's own outward normals and the pushes
+    add, each weave at its own whole wave count, so the seam closes for every
+    one.  ``pattern_scale`` is Weave 1's Skip-layers scale and
+    ``extra_pattern_scales`` each printed extra weave's, in
+    :func:`printed_weaves` order (None: every extra weave at full).
+    ``spiral`` sets every weave at vase mode's spiral phase, for the stand-in
+    rings its checks read (:func:`spiral_stand_ins`).
+    """
 
     if not math.isfinite(profile_scale) or profile_scale < 0.0:
         raise ValueError("profile_scale must be finite and non-negative")
     if not math.isfinite(pattern_scale) or not 0.0 <= pattern_scale <= 1.0:
         raise ValueError("pattern_scale must be finite and in [0, 1]")
-    phase = ring_phase(ring, pattern.settings, layer_coordinate=layer_coordinate)
-    wave_values = np.asarray(evaluate_curve(pattern.wave, phase), dtype=np.float64)
-    amplitude_scale, curvature_flow_scale = ring_curvature_scales(ring, pattern.settings)
+    weave_one, extras = printed_weaves(pattern)
+    extra_scales = _extra_scales(extras, extra_pattern_scales)
+    phase = ring_phase(ring, pattern.settings, layer_coordinate=layer_coordinate, spiral=spiral)
+    wave_values = np.asarray(evaluate_curve(weave_one.wave, phase), dtype=np.float64)
+    # Weave 1's Wave depth and Clay along the wall as it prints: switched off,
+    # its Clay along the wall is silent (:func:`printed_weaves`).  On, these
+    # are the pattern's own settings.
+    amplitude_scale, curvature_flow_scale = ring_curvature_scales(ring, weave_one.settings)
     if pattern.settings.follow_lobes == 1.0 and pattern.settings.follow_coves == 1.0:
         # This is intentionally the pre-W13 arithmetic expression.  Existing
         # v1 patterns must retain bit-exact geometry and G-code.
@@ -308,6 +542,38 @@ def modulate_ring(
             * wave_values[:, np.newaxis]
             * ring.outward_normals
         )
+    extra_phases: list[FloatArray] = []
+    extra_amplitude_scales: list[FloatArray] = []
+    extra_flow_scales: list[FloatArray] = []
+    for view, scale in zip(extras, extra_scales, strict=True):
+        # Each extra weave rides the form's own normals, never Weave 1's
+        # displaced wall, with its own count, twist, Wave depth and Clay
+        # along the wall.
+        extra_phase = ring_phase(
+            ring, view.settings, layer_coordinate=layer_coordinate, spiral=spiral
+        )
+        extra_values = np.asarray(evaluate_curve(view.wave, extra_phase), dtype=np.float64)
+        extra_amplitude_scale, extra_flow_scale = ring_curvature_scales(ring, view.settings)
+        if view.settings.follow_lobes == 1.0 and view.settings.follow_coves == 1.0:
+            points += (
+                view.settings.amplitude
+                * profile_scale
+                * scale
+                * extra_values[:, np.newaxis]
+                * ring.outward_normals
+            )
+        else:
+            points += (
+                view.settings.amplitude
+                * profile_scale
+                * scale
+                * extra_amplitude_scale[:, np.newaxis]
+                * extra_values[:, np.newaxis]
+                * ring.outward_normals
+            )
+        extra_phases.append(extra_phase)
+        extra_amplitude_scales.append(extra_amplitude_scale)
+        extra_flow_scales.append(extra_flow_scale)
     if ring.closed:
         # A whole wave count makes the values mathematically periodic.  Copying
         # the first coordinate removes any last-bit arithmetic drift too.
@@ -315,24 +581,212 @@ def modulate_ring(
         wave_values[-1] = wave_values[0]
     extrusion_phase = phase + pattern.settings.extrusion_phase_offset
     extrusion_multiplier = np.asarray(
-        evaluate_curve(pattern.extrusion, extrusion_phase), dtype=np.float64
+        evaluate_curve(weave_one.extrusion, extrusion_phase), dtype=np.float64
     )
-    if pattern.settings.flow_lobes != 1.0 or pattern.settings.flow_coves != 1.0:
+    if weave_one.settings.flow_lobes != 1.0 or weave_one.settings.flow_coves != 1.0:
         extrusion_multiplier *= curvature_flow_scale
     if pattern_scale != 1.0:
         extrusion_multiplier = 1.0 + pattern_scale * (extrusion_multiplier - 1.0)
+    extra_extrusion_phases = tuple(
+        extra_phase + view.settings.extrusion_phase_offset
+        for view, extra_phase in zip(extras, extra_phases, strict=True)
+    )
+    clay_held: tuple[str, ...] = ()
+    clay_held_by: tuple[tuple[str, tuple[tuple[int, bool, bool], ...]], ...] = ()
+    tracked = tuple(index for index, view in enumerate(extras) if shapes_clay(view))
+    if tracked:
+        # A flat clay track with neutral Clay along the wall adds exactly
+        # nothing, so only a weave that shapes the clay is summed, and only
+        # then is the total held.  Each weave's term has Weave 1's form: its
+        # own track times its own Clay along the wall, gated by its own Skip
+        # layers.
+        extra_flow = np.zeros(len(extrusion_multiplier), dtype=np.float64)
+        terms: list[tuple[int, FloatArray, FloatArray, FloatArray | None]] = []
+        for index in tracked:
+            clay = np.asarray(
+                evaluate_curve(extras[index].extrusion, extra_extrusion_phases[index]),
+                dtype=np.float64,
+            )
+            # For naming only, never summed: the swell or thinning the track
+            # asks for, and what this weave's Clay along the wall does to it.
+            track_part = extra_scales[index] * (clay - 1.0)
+            wall_part: FloatArray | None = None
+            if has_wall_clay(extras[index]):
+                wall_part = extra_scales[index] * clay * (extra_flow_scales[index] - 1.0)
+                clay = clay * extra_flow_scales[index]
+            term = extra_scales[index] * (clay - 1.0)
+            extra_flow += term
+            terms.append((index, term, track_part, wall_part))
+        unheld = extrusion_multiplier + extra_flow
+        extrusion_multiplier = held_flow(extrusion_multiplier, extra_flow)
+        held_sides = tuple(
+            (name, side, sign)
+            for name, side, sign in (
+                ("high", unheld > extrusion_multiplier, 1.0),
+                ("low", unheld < extrusion_multiplier, -1.0),
+            )
+            if bool(np.any(side))
+        )
+        clay_held = tuple(name for name, _side, _sign in held_sides)
+        clay_held_by = tuple(
+            (name, _clay_pushed_by(terms, side, sign)) for name, side, sign in held_sides
+        )
     if ring.closed:
         extrusion_multiplier[-1] = extrusion_multiplier[0]
     return ModulatedRing(
         points=points,
         wave_phase=phase,
-        wave_count=ring_wave_count(ring, pattern.settings.wavelength),
+        wave_count=settings_wave_count(ring, pattern.settings),
         wave_values=wave_values,
         extrusion_phase=extrusion_phase,
         extrusion_multiplier=extrusion_multiplier,
         amplitude_scale=amplitude_scale,
         curvature_flow_scale=curvature_flow_scale,
+        extra_wave_phases=tuple(extra_phases),
+        extra_wave_counts=tuple(settings_wave_count(ring, view.settings) for view in extras),
+        extra_extrusion_phases=extra_extrusion_phases,
+        extra_amplitude_scales=tuple(extra_amplitude_scales),
+        extra_pattern_scales=extra_scales,
+        extra_curvature_flow_scales=tuple(extra_flow_scales),
+        clay_held=clay_held,
+        clay_held_by=clay_held_by,
     )
+
+
+def _clay_pushed_by(
+    terms: Sequence[tuple[int, FloatArray, FloatArray, FloatArray | None]],
+    side: Any,
+    sign: float,
+) -> tuple[tuple[int, bool, bool], ...]:
+    """Which extra weaves pushed the clay the held way, and with what.
+
+    Only a weave whose own clay pushed that way where the hold took effect is
+    named for it: a swell never answers for a thinning, and a weave on its
+    plain Skip layers adds nothing there at all.  At those points each says
+    which of its own two pushed that way, its track, its Clay along the wall
+    or both, so a cove thinning is never named for a swell on the crests.
+    """
+
+    named: list[tuple[int, bool, bool]] = []
+    for index, term, track_part, wall_part in terms:
+        pushed = side & (sign * term > 0.0)
+        if not bool(np.any(pushed)):
+            continue
+        by_track = bool(np.any(sign * track_part[pushed] > 0.0))
+        by_wall = wall_part is not None and bool(np.any(sign * wall_part[pushed] > 0.0))
+        named.append((index, by_track, by_wall))
+    return tuple(named)
+
+
+def printed_weaves(pattern: Pattern) -> tuple[Pattern, tuple[Pattern, ...]]:
+    """Weave 1 as it prints, and each extra weave that prints, every one alone.
+
+    Each comes back as a single-weave pattern on the whole wall's settings
+    (:meth:`Pattern.weave_views`).  A weave switched off prints nothing of
+    its own: no wave, no clay track and no Clay along the wall.  Weave 1
+    switched off keeps its place, its phase and its whole-wall settings, with
+    its wave, track and Clay along the wall silenced here, at the source, so
+    every reader of Weave 1's clay reads it from the weave this returns.  An
+    extra weave switched off is left out.  Its settings stay on the pattern
+    either way, for when it is switched back on.  One weave, switched on, is
+    the pattern itself.
+    """
+
+    if pattern.settings.wave_on and not pattern.extra_weaves:
+        return pattern, ()
+    return _printed_weaves(pattern)
+
+
+@lru_cache(maxsize=16)
+def _printed_weaves(pattern: Pattern) -> tuple[Pattern, tuple[Pattern, ...]]:
+    weave_one = replace(pattern, extra_weaves=())
+    if not pattern.settings.wave_on:
+        # Switched off, Weave 1 prints nothing of its own, as an extra weave
+        # switched off does: its Clay along the wall falls silent with its
+        # wave and track (2026-10-18).
+        weave_one = replace(
+            weave_one,
+            wave=_SILENT_WAVE,
+            extrusion=_PLAIN_TRACK,
+            settings=replace(weave_one.settings, flow_lobes=1.0, flow_coves=1.0),
+        )
+    views = pattern.weave_views()[1:]
+    return weave_one, tuple(view for view in views if view.settings.wave_on)
+
+
+def spiral_stand_ins(pattern: Pattern) -> bool:
+    """Whether vase mode's per-ring stand-ins sit at the spiral's own phase.
+
+    Pinch, overhang and the safe offer read one stand-in ring per layer in
+    vase mode.  With one weave they keep their long-standing phase,
+    u·count + layer·twist.  With extra weaves printing, two weaves of
+    different twist would drift up to half a wave apart there, so every
+    weave is placed where the spiral puts it: u·(count + twist) + layer·twist
+    (2026-10-18, multi-weave plan §2).
+    """
+
+    return pattern.settings.z_blend and bool(printed_weaves(pattern)[1])
+
+
+def printed_extra_numbers(pattern: Pattern) -> tuple[int, ...]:
+    """The potter's number (2 or 3) of each extra weave that prints, in order."""
+
+    return tuple(
+        position + 2 for position, extra in enumerate(pattern.extra_weaves) if extra.wave_on
+    )
+
+
+def has_clay_track(weave: Pattern) -> bool:
+    """Whether this weave's clay track changes the flow anywhere."""
+
+    return any(point.value != 1.0 for point in weave.extrusion)
+
+
+def has_wall_clay(weave: Pattern) -> bool:
+    """Whether this weave's Clay along the wall pushes more or less clay anywhere."""
+
+    return weave.settings.flow_lobes != 1.0 or weave.settings.flow_coves != 1.0
+
+
+def shapes_clay(weave: Pattern) -> bool:
+    """Whether this weave changes the clay at all.
+
+    By its clay track, or by its own Clay along the wall, which shapes the
+    clay even with a flat track.  An extra weave that does is added to the
+    wall's clay and holds it (:func:`held_flow`); one that does not adds
+    exactly nothing.
+    """
+
+    return has_clay_track(weave) or has_wall_clay(weave)
+
+
+def held_flow(weave_one_flow: Any, extra_flow: Any) -> Any:
+    """Weave 1's clay plus the extra weaves' swell or thinning, held.
+
+    Used at every place the wall's flow is summed, and only when an extra
+    weave shapes the clay (:func:`shapes_clay`).  Extras can never push the wall
+    outside a quarter to three times a plain coil, and never pull Weave 1's
+    own flow back inside it.  Works on numbers and on arrays alike.
+    """
+
+    total = weave_one_flow + extra_flow
+    low = np.minimum(FLOW_HOLD_LOW, weave_one_flow)
+    high = np.maximum(FLOW_HOLD_HIGH, weave_one_flow)
+    held = np.minimum(np.maximum(total, low), high)
+    return held if isinstance(held, np.ndarray) else float(held)
+
+
+def _extra_scales(
+    extras: tuple[Pattern, ...], supplied: Sequence[float] | None
+) -> tuple[float, ...]:
+    if supplied is None:
+        return (1.0,) * len(extras)
+    scales = tuple(float(scale) for scale in supplied)
+    if len(scales) != len(extras):
+        raise ValueError("extra_pattern_scales must give one scale per printed extra weave")
+    if any(not math.isfinite(scale) or not 0.0 <= scale <= 1.0 for scale in scales):
+        raise ValueError("extra_pattern_scales must be finite and in [0, 1]")
+    return scales
 
 
 def pattern_layer_is_active(
@@ -564,8 +1018,8 @@ def preset_pattern(name: str, *, seed: int | None = None) -> Pattern:
     return Pattern(wave=wave, name=normalized, seed=seed)
 
 
-def extrusion_preset(name: str, *, base: Pattern | None = None) -> Pattern:
-    """Replace only the editable extrusion curve on a pattern.
+def extrusion_preset(name: str, *, base: Pattern | None = None, weave: int = 0) -> Pattern:
+    """Replace only the editable extrusion curve of one weave on a pattern.
 
     ``ridge-boost`` puts a gentle 1.4x swell ON the base wave's actual
     outward crest — measured from the wave curve itself, not assumed.  The
@@ -583,18 +1037,26 @@ def extrusion_preset(name: str, *, base: Pattern | None = None) -> Pattern:
     ridge-boost's 0.25).
 
     ``flat`` restores the neutral 1.0 multiplier.  Every other pattern
-    field is kept.
+    field is kept, the other weaves included.
+
+    ``weave`` counts from 0, the pattern's own weave; 1 and 2 are its extra
+    weaves, and a boost there is measured on that weave's own wave.
     """
 
     source = Pattern() if base is None else base
     if not isinstance(source, Pattern):
         raise TypeError("base must be a Pattern")
+    if isinstance(weave, bool) or not isinstance(weave, int):
+        raise ValueError("weave must be an integer")
+    if not 0 <= weave <= len(source.extra_weaves):
+        raise ValueError(f"this pattern has no weave {weave + 1}")
+    wave = source.wave if weave == 0 else source.extra_weaves[weave - 1].wave
     normalized = name.strip().lower().replace("_", "-").replace(" ", "-")
     if normalized == "flat":
         extrusion = _points(((0.0, 1.0), (0.5, 1.0)))
     elif normalized in ("ridge-boost", "trough-boost"):
         lowest = normalized == "trough-boost"
-        shift = (_wave_crest_phase(source.wave, lowest=lowest) - 0.25) % 1.0
+        shift = (_wave_crest_phase(wave, lowest=lowest) - 0.25) % 1.0
         extrusion = _points(
             tuple(
                 sorted(
@@ -605,16 +1067,13 @@ def extrusion_preset(name: str, *, base: Pattern | None = None) -> Pattern:
         )
     else:
         raise ValueError("unknown extrusion preset; choose flat, ridge-boost, or trough-boost")
-    return Pattern(
-        wave=source.wave,
-        extrusion=extrusion,
-        settings=source.settings,
-        interpolation=source.interpolation,
-        version=source.version,
-        name=source.name,
-        seed=source.seed,
-        wavelength_follows_nozzle=source.wavelength_follows_nozzle,
-    )
+    # replace() copies every field, so nothing added to Pattern later is lost
+    # here the way a hand-built copy would lose it.
+    if weave == 0:
+        return replace(source, extrusion=extrusion)
+    extras = list(source.extra_weaves)
+    extras[weave - 1] = replace(extras[weave - 1], extrusion=extrusion)
+    return replace(source, extra_weaves=tuple(extras))
 
 
 def pattern_to_json(pattern: Pattern) -> str:
@@ -711,8 +1170,18 @@ def pattern_to_json(pattern: Pattern) -> str:
         payload["settings"]["stack_pieces"] = True
         if pattern.settings.nozzle_clearance_mm != DEFAULT_NOZZLE_CLEARANCE_MM:
             payload["settings"]["nozzle_clearance_mm"] = float(pattern.settings.nozzle_clearance_mm)
+    # On is the frozen default; only a weave switched off writes its switch.
+    if not pattern.settings.wave_on:
+        payload["settings"]["wave_on"] = False
+    # Keep the same number of waves: off is the frozen default and writes
+    # nothing; only a weave that holds its count writes its switch.
+    if pattern.settings.hold_wave_count:
+        payload["settings"]["hold_wave_count"] = True
     if pattern.wavelength_follows_nozzle is not None:
         payload["settings"]["wavelength_follows_nozzle"] = pattern.wavelength_follows_nozzle
+    # One weave writes no key at all, so its file is the one 0.8.3 wrote.
+    if pattern.extra_weaves:
+        payload["extra_weaves"] = [_extra_weave_payload(extra) for extra in pattern.extra_weaves]
     return json.dumps(
         payload,
         sort_keys=True,
@@ -732,7 +1201,7 @@ def pattern_from_json(text: str) -> Pattern:
     except json.JSONDecodeError as error:
         raise ValueError(f"invalid pattern JSON: {error.msg}") from error
     _require_object(payload, "pattern")
-    _require_exact_keys(payload, _TOP_LEVEL_KEYS, "pattern")
+    _require_exact_keys(payload, _TOP_LEVEL_KEYS, "pattern", optional=_OPTIONAL_TOP_LEVEL_KEYS)
     if payload["schema"] != _PATTERN_SCHEMA:
         raise ValueError(f"unsupported pattern schema {payload['schema']!r}")
     version = _strict_int(payload["version"], "version")
@@ -937,6 +1406,16 @@ def pattern_from_json(text: str) -> Pattern:
                 settings_payload["nozzle_clearance_mm"], "settings.nozzle_clearance_mm"
             )
         ),
+        wave_on=(
+            True
+            if "wave_on" not in settings_payload
+            else _strict_bool(settings_payload["wave_on"], "settings.wave_on")
+        ),
+        hold_wave_count=(
+            False
+            if "hold_wave_count" not in settings_payload
+            else _strict_bool(settings_payload["hold_wave_count"], "settings.hold_wave_count")
+        ),
     )
     return Pattern(
         wave=_curve_from_payload(payload["wave"], "wave"),
@@ -953,6 +1432,11 @@ def pattern_from_json(text: str) -> Pattern:
                 settings_payload["wavelength_follows_nozzle"],
                 "settings.wavelength_follows_nozzle",
             )
+        ),
+        extra_weaves=(
+            ()
+            if "extra_weaves" not in payload
+            else _extra_weaves_from_payload(payload["extra_weaves"])
         ),
     )
 
@@ -1095,6 +1579,138 @@ def _curve_point_payload(point: CurvePoint) -> dict[str, float]:
     return {"u": float(point.u), "value": float(point.value)}
 
 
+def _extra_weave_payload(extra: ExtraWeave) -> dict[str, Any]:
+    settings: dict[str, Any] = {
+        "amplitude": float(extra.amplitude),
+        "wavelength": float(extra.wavelength),
+        "twist": float(extra.twist),
+        "extrusion_phase_offset": float(extra.extrusion_phase_offset),
+        "follow_lobes": float(extra.follow_lobes),
+        "follow_coves": float(extra.follow_coves),
+    }
+    # Optional keys follow Weave 1's rule: written only when set, so a plain
+    # extra weave reads the same however it was made.  Clay along the wall is
+    # written only when it moves the clay, so every extra weave saved before
+    # it was the weave's own keeps its bytes.
+    if extra.flow_lobes != 1.0:
+        settings["flow_lobes"] = float(extra.flow_lobes)
+    if extra.flow_coves != 1.0:
+        settings["flow_coves"] = float(extra.flow_coves)
+    if extra.layer_skip_enabled:
+        settings.update(
+            layer_skip_enabled=True,
+            layer_skip_start=extra.layer_skip_start,
+            layer_skip_on=extra.layer_skip_on,
+            layer_skip_off=extra.layer_skip_off,
+            layer_skip_end=extra.layer_skip_end,
+        )
+    if extra.wavelength_follows_nozzle:
+        settings["wavelength_follows_nozzle"] = True
+    if not extra.wave_on:
+        settings["wave_on"] = False
+    if extra.hold_wave_count:
+        settings["hold_wave_count"] = True
+    return {
+        "name": extra.name,
+        "seed": extra.seed,
+        "wave": [_curve_point_payload(point) for point in extra.wave],
+        "extrusion": [_curve_point_payload(point) for point in extra.extrusion],
+        "settings": settings,
+    }
+
+
+def _extra_weaves_from_payload(value: Any) -> tuple[ExtraWeave, ...]:
+    if not isinstance(value, list):
+        raise ValueError("extra_weaves must be an array of weaves")
+    if not value:
+        raise ValueError(
+            "A pattern with only its own weave leaves extra_weaves out; "
+            "an empty list of extra weaves is not one Clayline writes."
+        )
+    if len(value) > MAX_EXTRA_WEAVES:
+        raise ValueError(TOO_MANY_EXTRA_WEAVES)
+    return tuple(
+        _extra_weave_from_payload(item, f"extra_weaves[{index}]")
+        for index, item in enumerate(value)
+    )
+
+
+def _extra_weave_from_payload(value: Any, label: str) -> ExtraWeave:
+    _require_object(value, label)
+    _require_exact_keys(value, _EXTRA_WEAVE_KEYS, label)
+    name = value["name"]
+    if name is not None and (not isinstance(name, str) or not name.strip()):
+        raise ValueError(f"{label}.name must be null or non-blank text")
+    seed = value["seed"]
+    if seed is not None:
+        seed = _valid_seed(seed)
+    settings = value["settings"]
+    settings_label = f"{label}.settings"
+    _require_object(settings, settings_label)
+    _require_exact_keys(
+        settings,
+        _EXTRA_WEAVE_SETTINGS_KEYS,
+        settings_label,
+        optional=_OPTIONAL_EXTRA_WEAVE_SETTINGS_KEYS,
+    )
+    skip_keys = _EXTRA_WEAVE_SKIP_KEYS & set(settings)
+    if skip_keys and skip_keys != _EXTRA_WEAVE_SKIP_KEYS:
+        missing = ", ".join(sorted(_EXTRA_WEAVE_SKIP_KEYS - skip_keys))
+        raise ValueError(f"{settings_label} schema mismatch: missing {missing}")
+
+    def number(key: str) -> float:
+        return _strict_number(settings[key], f"{settings_label}.{key}")
+
+    def skip_count(key: str, default: int) -> int:
+        if not skip_keys:
+            return default
+        return _strict_int(settings[key], f"{settings_label}.{key}")
+
+    return ExtraWeave(
+        wave=_curve_from_payload(value["wave"], f"{label}.wave"),
+        extrusion=_curve_from_payload(value["extrusion"], f"{label}.extrusion"),
+        amplitude=number("amplitude"),
+        wavelength=number("wavelength"),
+        twist=number("twist"),
+        extrusion_phase_offset=number("extrusion_phase_offset"),
+        follow_lobes=number("follow_lobes"),
+        follow_coves=number("follow_coves"),
+        flow_lobes=1.0 if "flow_lobes" not in settings else number("flow_lobes"),
+        flow_coves=1.0 if "flow_coves" not in settings else number("flow_coves"),
+        layer_skip_enabled=(
+            False
+            if not skip_keys
+            else _strict_bool(
+                settings["layer_skip_enabled"], f"{settings_label}.layer_skip_enabled"
+            )
+        ),
+        layer_skip_start=skip_count("layer_skip_start", 0),
+        layer_skip_on=skip_count("layer_skip_on", 2),
+        layer_skip_off=skip_count("layer_skip_off", 2),
+        layer_skip_end=skip_count("layer_skip_end", 0),
+        wavelength_follows_nozzle=(
+            False
+            if "wavelength_follows_nozzle" not in settings
+            else _strict_bool(
+                settings["wavelength_follows_nozzle"],
+                f"{settings_label}.wavelength_follows_nozzle",
+            )
+        ),
+        wave_on=(
+            True
+            if "wave_on" not in settings
+            else _strict_bool(settings["wave_on"], f"{settings_label}.wave_on")
+        ),
+        hold_wave_count=(
+            False
+            if "hold_wave_count" not in settings
+            else _strict_bool(settings["hold_wave_count"], f"{settings_label}.hold_wave_count")
+        ),
+        name=name,
+        seed=seed,
+    )
+
+
 def _curve_from_payload(value: Any, label: str) -> tuple[CurvePoint, ...]:
     if not isinstance(value, list):
         raise ValueError(f"{label} must be an array of control points")
@@ -1186,15 +1802,24 @@ def _readonly_vector(value: ArrayLike, *, label: str) -> FloatArray:
 
 
 __all__ = [
+    "FLOW_HOLD_HIGH",
+    "FLOW_HOLD_LOW",
     "ModulatedRing",
     "average_curve",
+    "average_curve_spans",
     "evaluate_curve",
     "extrusion_preset",
+    "has_clay_track",
+    "has_wall_clay",
+    "held_flow",
+    "held_phase_shift",
     "load_pattern",
     "modulate_ring",
     "pattern_from_json",
     "pattern_to_json",
     "preset_pattern",
+    "printed_extra_numbers",
+    "printed_weaves",
     "profile_amplitude_scale",
     "profile_blend_progress",
     "ring_amplitude_scale",
@@ -1202,4 +1827,7 @@ __all__ = [
     "ring_extrusion_scale",
     "ring_phase",
     "ring_wave_count",
+    "settings_wave_count",
+    "shapes_clay",
+    "spiral_stand_ins",
 ]

@@ -449,7 +449,7 @@
                 </div>
               </div>
               <p class="section-copy">Load the form your pattern wraps.</p>
-              <label class="drop-zone" id="weaveDropZone" for="weaveFileInput" title="Load one STL, OBJ, PLY, or 3MF mesh in millimetres, open a saved project, bring back every setting from a print file Clayline saved (it then asks for its model by name), rebuild a form from another slicer's print file, or load a saved pattern.">
+              <label class="drop-zone" id="weaveDropZone" for="weaveFileInput" title="Load one STL, OBJ, PLY, or 3MF mesh in millimetres, open a saved project, bring back every setting from a print file Clayline saved (with no model loaded, its printed surface becomes the form when Clayline can make one), rebuild a form from another slicer's print file, or load a saved pattern.">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg>
                 <span><strong>Drop a file here</strong><small>mesh · project · print file · saved pattern</small></span>
                 <input id="weaveFileInput" type="file" accept=".stl,.obj,.ply,.3mf,.clayline,.gcode,.json,model/stl,model/obj,model/3mf,text/x-gcode,application/json">
@@ -460,6 +460,10 @@
               </div>
               <p class="field-hint project-status" id="weaveProjectStatus" role="status" aria-live="polite" hidden></p>
               <div class="file-summary" id="weaveFileSummary" aria-live="polite">No model loaded</div>
+              <div class="from-print-line" id="weaveFromPrint" hidden>
+                <p class="field-hint" id="weaveFromPrintText" aria-live="polite"></p>
+                <button class="secondary-button compact-button" id="weaveFromPrintChoose" type="button" title="Open the model this print file was sliced from, in place of the form made from it. It is placed as it printed." hidden>Choose the model…</button>
+              </div>
               <div class="model-size-line" id="weaveModelSize" hidden title="The placed size on the bed — width × depth × height. Type a new height and the form rescales uniformly; nothing hidden, same honest rescale.">
                 <span id="weaveSizeText"></span>
                 <label class="height-edit"><span>height</span><input id="weaveHeightEdit" type="number" min="0.1" step="0.5" data-unit="mm"><span id="weaveHeightUnit">mm</span></label>
@@ -563,11 +567,23 @@
             <div class="section-index">04</div>
             <div class="section-body">
               <h2>Pattern</h2>
-              <p class="section-copy">The trace is one wrapped cycle. Drag a point; ghost cycles expose the seam before clay does.</p>
-              <div class="scope-frame">
-                <canvas id="weaveWaveCanvas" width="640" height="220" tabindex="0" aria-label="Editable periodic waveform with ghosted neighbouring cycles" title="Click blank space to add a point. Right-click a point to delete it; two points are always kept."></canvas>
-                <div class="scope-legend"><span>−1 ghost</span><strong id="weaveWaveState">flat · no wobble</strong><span>+1 ghost</span></div>
+              <div class="preset-row weave-strip" id="weaveStrip" role="group" aria-label="Weaves">
+                <button type="button" data-weave-tab="0" class="is-active" aria-pressed="true" title="Weave 1 carries the wall's own settings. It can't be removed, but it can be switched off.">Weave 1</button>
+                <button type="button" id="weaveAddWeave" aria-disabled="false" title="Add another weave on the same wall, at a clearly different size.">Add weave</button>
               </div>
+              <div class="weave-use-row" id="weaveUseRow">
+                <label class="switch-row" id="weaveUseWeaveRow" title="Off leaves this weave out of the print. Its settings stay, and you can still tune it.">
+                  <span><strong>Use this weave</strong></span>
+                  <input id="weaveUseWeave" type="checkbox" role="switch" checked>
+                </label>
+                <button class="secondary-button compact-button" id="weaveRemoveWeave" type="button" title="Take this weave off the wall. Undo brings it back." hidden>Remove</button>
+              </div>
+              <p class="field-hint" id="weaveFromPrintHint" title="Switching a weave on here lays it over the pattern already in the surface." hidden></p>
+              <div class="scope-frame">
+                <canvas id="weaveWaveCanvas" width="640" height="220" tabindex="0" aria-label="Editable wave: one repeat, with faded copies either side" title="Click blank space to add a point. Right-click a point to delete it; two points are always kept."></canvas>
+                <div class="scope-legend"><span>← repeat</span><strong id="weaveWaveState">flat · no wave</strong><span>repeat →</span></div>
+              </div>
+              <p class="field-hint">Drag a point to shape one wave. The faded copies either side show how its ends meet round the wall.</p>
               <div class="preset-row" id="weaveWavePresets" role="group" aria-label="Wave presets">
                 <button type="button" data-wave-preset="flat" class="is-active">Flat</button>
                 <button type="button" data-wave-preset="sine">Sine</button>
@@ -576,9 +592,9 @@
                 <button type="button" data-wave-preset="rounded-square">Rounded</button>
                 <button type="button" data-wave-preset="pulse">Pulse</button>
                 <button type="button" data-wave-preset="noise">Noise</button>
-                <button type="button" id="weaveNoiseRegenerate" title="Deal a fresh random variation of the noise wave.">Regenerate</button>
+                <button type="button" id="weaveNoiseRegenerate" title="Deal a fresh random variation of the noise wave.">New noise</button>
               </div>
-              <div class="scope-subhead weave-texture-subhead"><span>Textures</span><strong>complete patterns</strong></div>
+              <div class="scope-subhead weave-texture-subhead"><span>Textures</span><strong>traced from real prints</strong></div>
               <div class="preset-row" id="weaveTexturePresets" role="group" aria-label="Fitted texture presets">
                 <span class="texture-loading">Loading textures…</span>
               </div>
@@ -587,54 +603,56 @@
                 <label class="field" id="weaveAmplitudeField" title="How far the wall moves inward and outward from the original form."><span>Amplitude <output id="weaveAmplitudeOutput">0.0 mm</output></span><input id="weaveAmplitude" type="range" value="0" min="0" max="15" step="0.1"></label>
                 <label class="field" id="weaveWavelengthField" title="Physical crest-to-crest spacing in millimetres; each closed ring rounds to a whole wave count."><span><span class="field-word">Wavelength (mm)</span> <button type="button" class="follow-chip" id="weaveWavelengthFollow" aria-pressed="true" title="Following the coil width at 3.5× — one crest every 3.5 coils. Type a value to take over; click to follow again.">auto</button></span><input id="weaveWavelength" type="number" value="18" min="0.1" step="0.5"></label>
               </div>
-              <p class="physical-readout" id="weavePhysicalReadout">Slice the form to calculate whole waves from real ring circumferences.</p>
+              <label class="switch-row" id="weaveHoldWaveCountRow" title="Fits the waves once, where each part of the form is widest, and keeps that number all the way up that part, so the ridges stack up a taper instead of stepping. Wavelength sets the count there; the spacing narrows where the form narrows.">
+                <span><strong>Keep the same number of waves</strong></span>
+                <input id="weaveHoldWaveCount" type="checkbox" role="switch">
+              </label>
+              <p class="physical-readout" id="weavePhysicalReadout">Slice the form to see how many waves fit each ring.</p>
               <div class="control-grid weave-pattern-controls">
                 <label class="field" id="weaveTwistField" title="How many waveform cycles the pattern turns between neighbouring layers."><span>Twist <output id="weaveTwistOutput">0 cycles · 0°</output></span><input id="weaveTwist" type="range" value="0" min="-1" max="1" step="0.01" aria-describedby="weaveTwistHint"></label>
               </div>
               <div class="preset-row weave-twist-presets" id="weaveTwistPresets" role="group" aria-label="Twist presets" aria-describedby="weaveTwistHint">
                 <button type="button" data-twist-preset="0" title="Align neighbouring wave peaks into vertical ribs.">Ribs · 0</button>
-                <button type="button" data-twist-preset="0.5" title="Place each layer's peaks over the previous layer's valleys.">Weave · 0.5</button>
+                <button type="button" data-twist-preset="0.5" title="Place each layer's peaks over the previous layer's valleys.">Stagger · 0.5</button>
                 <button type="button" data-twist-preset="0.1" title="Turn the waveform gradually into a rising spiral.">Spiral · +0.1</button>
               </div>
-              <p class="field-hint" id="weaveTwistHint">Twist shifts the waveform continuously from layer to layer.</p>
+              <p class="field-hint" id="weaveTwistHint">Turns the wave a little further round the wall on each layer.</p>
 
-              <div class="scope-subhead" title="The pot's wall unrolled flat, like a fabric swatch: several neighbouring layers of the wave drawn side by side, so you can see ribs lining up, weave alternating, or the pattern drifting where the wave count changes — before any clay moves."><span>Pattern preview</span><strong id="weaveStripLabel">from the sliced form</strong></div>
+              <div class="scope-subhead" title="The pot's wall unrolled flat, like a fabric swatch: several neighbouring layers of the wave drawn side by side, so you can see ribs lining up, crests staggering, or the pattern drifting where the wave count changes — before any clay moves."><span>Pattern preview</span><strong id="weaveStripLabel">from the sliced form</strong></div>
               <div class="unrolled-frame">
                 <button class="pattern-preview-expand" id="weavePatternExpand" type="button" aria-haspopup="dialog" aria-controls="weavePatternOverlay" title="Slice a form before expanding its pattern preview." disabled>Expand</button>
                 <canvas id="weaveUnrolledCanvas" width="640" height="230" aria-label="Several neighbouring layers of the pattern, unrolled flat"></canvas>
-                <p id="weaveUnrolledEmpty">Slice a form to see neighbouring layers of the pattern side by side — ribs line up, weave alternates, drift slides.</p>
+                <p id="weaveUnrolledEmpty">Slice a form to see neighbouring layers of the pattern side by side — ribs line up, crests stagger, drift slides.</p>
               </div>
-              <p class="physical-readout" id="weaveCombCaption">0.0 mm swing · one cycle ≈ 18.0 mm → — waves at the widest ring.</p>
-              <div class="weave-control-block follow-form-block" id="weaveFollowFormBlock">
-                <div class="scope-subhead"><span>Follow the form</span><strong>curvature response</strong></div>
-                <p class="field-hint">Shapes the wave by the form's own curves.</p>
-                <div class="scope-subhead compact-subhead"><span>Wave depth</span><strong>amplitude only</strong></div>
+              <p class="physical-readout" id="weaveCombinedSwing" hidden></p>
+              <div class="weave-control-block follow-form-block" id="weaveFollowFormBlock" title="Follow the form: the wave gets shallower or deeper by the form's own curves.">
+                <div class="scope-subhead"><span>Wave depth</span><strong>follows the form's curves</strong></div>
                 <div class="control-grid two-up">
                   <label class="field" id="weaveFollowLobesField" title="Make the wave shallower or deeper on outward lobes. Zero leaves it unchanged."><span>On the lobes <output id="weaveFollowLobesOutput">unchanged</output></span><input id="weaveFollowLobes" type="range" value="0" min="-1" max="2" step="0.05"></label>
                   <label class="field" id="weaveFollowCovesField" title="Make the wave shallower or deeper in inward coves. Zero leaves it unchanged."><span>In the coves <output id="weaveFollowCovesOutput">unchanged</output></span><input id="weaveFollowCoves" type="range" value="0" min="-1" max="2" step="0.05"></label>
                 </div>
-                <p class="physical-readout" id="weaveAmplitudeReadout">Local in/out swing is uniform until form following changes.</p>
+                <p class="physical-readout" id="weaveAmplitudeReadout">The wave swings the same depth everywhere until these change.</p>
               </div>
 
-              <div class="scope-subhead"><span>Clay along the wall</span><strong>works with a flat wave</strong></div>
+              <div class="scope-subhead" title="More or less clay on the form's own lobes and in its coves, even with a flat wave. It scales this weave's extrusion track, adds to the other weaves' clay and pauses on this weave's plain layers. On a Flat track it adds the same clay on any weave."><span>Clay along the wall</span><strong>on lobes and in coves</strong></div>
               <div class="control-grid two-up">
-                <label class="field" title="Push less or more clay on outward lobes, independently of the wave. Zero leaves flow unchanged."><span>Flow on lobes <output id="weaveFlowLobesOutput">unchanged</output></span><input id="weaveFlowLobes" type="range" value="0" min="-0.75" max="2" step="0.05"></label>
-                <label class="field" title="Push less or more clay in inward coves, independently of the wave. Zero leaves flow unchanged."><span>Flow in coves <output id="weaveFlowCovesOutput">unchanged</output></span><input id="weaveFlowCoves" type="range" value="0" min="-0.75" max="2" step="0.05"></label>
+                <label class="field" title="Push less or more clay on outward lobes. Zero leaves flow unchanged."><span>Flow on lobes <output id="weaveFlowLobesOutput">unchanged</output></span><input id="weaveFlowLobes" type="range" value="0" min="-0.75" max="2" step="0.05"></label>
+                <label class="field" title="Push less or more clay in inward coves. Zero leaves flow unchanged."><span>Flow in coves <output id="weaveFlowCovesOutput">unchanged</output></span><input id="weaveFlowCoves" type="range" value="0" min="-0.75" max="2" step="0.05"></label>
               </div>
-              <div class="scope-subhead"><span>Extrusion track</span><strong>baseline 1.0</strong></div>
+              <div class="scope-subhead"><span>Extrusion track</span><strong>Flat is even clay</strong></div>
               <div class="scope-frame extrusion-frame">
                 <canvas id="weaveExtrusionCanvas" width="640" height="150" tabindex="0" aria-label="Editable periodic extrusion curve" title="Click blank space to add a point. Right-click a point to delete it; two points are always kept."></canvas>
               </div>
               <div class="preset-row" id="weaveExtrusionPresets" role="group" aria-label="Extrusion presets">
                 <button type="button" data-extrusion-preset="flat" class="is-active">Flat</button>
-                <button type="button" data-extrusion-preset="ridge-boost">Ridge boost</button>
+                <button type="button" data-extrusion-preset="ridge-boost" title="Swells the clay on the wave's crests, so the ridges stand proud.">Ridge boost</button>
                 <button type="button" data-extrusion-preset="trough-boost" title="Swells the clay in the wave's troughs — valleys round into soft beads instead of creases.">Trough boost</button>
-                <label class="compact-field" id="weaveExtrusionPhaseField" title="Shift the extrusion curve around the wall relative to the waveform."><span>Phase</span><input id="weaveExtrusionPhase" type="number" value="0" min="0" max="0.99" step="0.01" aria-describedby="weaveExtrusionPhaseHint"></label>
+                <label class="compact-field" id="weaveExtrusionPhaseField" title="Slides the swell round the wall so it lands on the crest, in the trough, or between: 0 to 0.99 of one wave."><span>Phase</span><input id="weaveExtrusionPhase" type="number" value="0" min="0" max="0.99" step="0.01" aria-describedby="weaveExtrusionPhaseHint"></label>
               </div>
               <p class="dependent-control-hint" id="weaveExtrusionPhaseHint" hidden>Extrusion phase has no effect while the extrusion track is flat.</p>
               <div class="weave-control-block layer-rhythm-block" id="weaveLayerRhythmBlock">
-                <label class="switch-row">
-                  <span><strong>Skip layers</strong><small>Alternate patterned and plain wall layers without restarting the weave.</small></span>
+                <label class="switch-row" title="Leaves this weave off whole layers in a rhythm; any other weave carries on. Use this weave, at the top of the section, leaves it off every layer.">
+                  <span><strong>Skip layers</strong><small>Leave this weave off some layers without restarting it.</small></span>
                   <input id="weaveLayerSkipEnabled" type="checkbox" role="switch" aria-controls="weaveLayerRhythmControls">
                 </label>
                 <div id="weaveLayerRhythmControls" class="layer-rhythm-controls" aria-describedby="weaveLayerRhythmSummary">
@@ -649,9 +667,9 @@
               </div>
 
               <div class="pattern-file-row">
-                <button class="secondary-button compact-button" id="weavePatternSave" type="button" title="Write the wave, the extrusion curve and every setting in this section except Pattern smoothness to a small file you can load onto another form.">Save pattern</button>
-                <button class="secondary-button compact-button" id="weavePatternLoad" type="button" title="Load a pattern file saved by Clayline. The form, its size and its settings stay as they are.">Load pattern</button>
-                <button class="secondary-button compact-button" id="weaveRestoreButton" type="button" title="Pull the pattern out of a print file Clayline saved. Only the pattern comes across: not the model, the size, the layers, or the range.">Restore pattern from G-code…</button>
+                <button class="secondary-button compact-button" id="weavePatternSave" type="button" title="Write every weave, its wave, its extrusion curve and every setting in this section except Pattern smoothness to a small file you can load onto another form.">Save pattern</button>
+                <button class="secondary-button compact-button" id="weavePatternLoad" type="button" title="Load a pattern file saved by Clayline, every weave in it. The form, its size and its settings stay as they are.">Load pattern</button>
+                <button class="secondary-button compact-button" id="weaveRestoreButton" type="button" title="Pull the pattern, every weave of it, out of a print file Clayline saved. Only the pattern comes across: not the model, the size, the layers, or the range.">Restore pattern from G-code…</button>
                 <input id="weavePatternFile" type="file" accept="application/json,.json" hidden>
                 <input id="weaveRestoreFile" type="file" accept=".gcode,text/x-gcode,text/plain" hidden>
               </div>
@@ -781,9 +799,10 @@
           <div class="bed-grid" aria-hidden="true"></div>
           <div class="empty-state" id="weaveEmptyState">
             <svg class="weave-empty-illustration" viewBox="0 0 200 180" aria-hidden="true"><path d="M51 134c4-19 12-32 14-51 2-16-4-31 0-42 8-20 62-20 70 0 4 11-2 26 0 42 2 19 10 32 14 51"/><path d="M56 118c25 8 63 8 88 0M61 91c22 7 56 7 78 0M64 62c21 6 51 6 72 0"/></svg>
-            <h2>Load a base mesh</h2>
-            <p>Clayline slices it into real rings before any pattern is applied.</p>
+            <h2 id="weaveEmptyTitle">Load a base mesh</h2>
+            <p id="weaveEmptyText">Clayline slices it into real rings before any pattern is applied.</p>
             <div class="empty-actions">
+              <button class="secondary-button" id="weaveEmptyChooseModelButton" type="button" title="Open the model this print file was sliced from. It is placed as it printed." hidden>Choose the model…</button>
               <button class="secondary-button" id="weaveEmptyOpenProjectButton" type="button" title="Open a project file saved by Clayline. It brings back the design and every setting.">Open project…</button>
             </div>
           </div>

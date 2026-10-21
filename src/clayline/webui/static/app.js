@@ -4167,6 +4167,12 @@ window.claylineDesktop = Object.freeze({
     window.claylineWeaveMode?.activate();
     return window.claylineWeaveMode?.importMesh(payload) || false;
   },
+  // A print file from File > Open Recent, Finder or the Dock: Weave takes it
+  // the way its Model box takes one.
+  importPrintFile: (payload) => {
+    window.claylineWeaveMode?.activate();
+    return window.claylineWeaveMode?.importPrintFile?.(payload) || false;
+  },
   saveProject: () => {
     if (document.body.dataset.claylineMode === "weave") {
       return Boolean(window.claylineWeaveMode?.saveProject?.());

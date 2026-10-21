@@ -287,3 +287,73 @@ def test_bundle_audit_requires_the_project_file_type(tmp_path: Path) -> None:
         "UTExportedTypeDeclarations must map com.clayline.project to .clayline" in failure
         for failure in failures_for(wrong_extension)
     )
+
+
+def test_bundle_opens_print_files_for_open_with_and_the_docks_recents(tmp_path: Path) -> None:
+    """A print file is a document Clayline views: Finder's Open With and the
+    Dock's recent files reach it, and every earlier type stays declared."""
+
+    with (ROOT / "app" / "ClaylineMac" / "Info.plist").open("rb") as handle:
+        shipped = plistlib.load(handle)
+
+    print_files = [
+        item
+        for item in shipped["CFBundleDocumentTypes"]
+        if "com.clayline.gcode" in item["LSItemContentTypes"]
+    ]
+    assert len(print_files) == 1
+    assert print_files[0]["CFBundleTypeName"] == "G-code print file"
+    assert print_files[0]["CFBundleTypeRole"] == "Viewer"
+    assert print_files[0]["LSHandlerRank"] == "Alternate"
+    assert print_files[0]["LSItemContentTypes"] == ["com.clayline.gcode"]
+
+    registered = {
+        uti for item in shipped["CFBundleDocumentTypes"] for uti in item["LSItemContentTypes"]
+    }
+    assert registered == {
+        "public.svg-image",
+        "com.clayline.project",
+        "public.geometry-definition-format",
+        "public.standard-tesselated-geometry-format",
+        "com.clayline.mesh.3mf",
+        "public.polygon-file-format",
+        "com.clayline.gcode",
+    }
+    exported = {
+        declaration["UTTypeIdentifier"]: declaration
+        for declaration in shipped["UTExportedTypeDeclarations"]
+    }
+    assert set(exported) == {"com.clayline.project", "com.clayline.gcode"}
+    tags = exported["com.clayline.gcode"]["UTTypeTagSpecification"]
+    assert tags["public.filename-extension"] == ["gcode"]
+    assert exported["com.clayline.gcode"]["UTTypeConformsTo"] == ["public.plain-text"]
+
+    resources = tmp_path / "Resources"
+    resources.mkdir()
+
+    def failures_for(info: dict) -> list[str]:
+        audit = Audit()
+        _audit_plist(info, resources, audit)
+        return audit.failures
+
+    assert not [failure for failure in failures_for(shipped) if "gcode" in failure]
+
+    without_document_type = plistlib.loads(plistlib.dumps(shipped))
+    without_document_type["CFBundleDocumentTypes"] = [
+        item
+        for item in without_document_type["CFBundleDocumentTypes"]
+        if "com.clayline.gcode" not in item["LSItemContentTypes"]
+    ]
+    assert any(
+        "CFBundleDocumentTypes must declare the G-code print file type" in failure
+        for failure in failures_for(without_document_type)
+    )
+
+    wrong_extension = plistlib.loads(plistlib.dumps(shipped))
+    for declaration in wrong_extension["UTExportedTypeDeclarations"]:
+        if declaration["UTTypeIdentifier"] == "com.clayline.gcode":
+            declaration["UTTypeTagSpecification"]["public.filename-extension"] = ["nc"]
+    assert any(
+        "UTExportedTypeDeclarations must map com.clayline.gcode to .gcode" in failure
+        for failure in failures_for(wrong_extension)
+    )

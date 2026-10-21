@@ -11,7 +11,10 @@ struct ClaylineApp: App {
         .windowStyle(.titleBar)
         .defaultSize(width: 1_440, height: 900)
         .commands {
-            ClaylineCommands(actions: appDelegate.coordinator.webActions)
+            ClaylineCommands(
+                actions: appDelegate.coordinator.webActions,
+                recentFiles: appDelegate.coordinator.webActions.recentFiles
+            )
         }
     }
 }

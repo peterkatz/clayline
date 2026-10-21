@@ -445,6 +445,10 @@ def prepare_weave_result(
         # measured truth: a solid or infill interior fills layers that already
         # exist rather than adding any.  Adding a fill-layer count here would
         # re-import the same bug into a feature that starts out honest.
+        #
+        # form_from_print.py (``_laid_layers``) reads this field back as a
+        # ceiling on the layers a print's body lays, which holds whether or
+        # not the bottoms are added here.
         "layer_count": len(selected.layers) + resolved_pattern.settings.bottom_layers,
         "layer_range_from": range_facts["from"],
         "layer_range_semantics": LAYER_RANGE_SEMANTICS,

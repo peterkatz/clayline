@@ -17,13 +17,18 @@ from clayline import emit_core
 from clayline.emit_core import coordinate_rounding_allowance
 from clayline.wave import (
     evaluate_curve,
+    has_wall_clay,
+    held_flow,
+    held_phase_shift,
     pattern_layer_is_active,
+    printed_weaves,
     profile_amplitude_scale,
     profile_blend_progress,
     ring_curvature_scales,
-    ring_wave_count,
+    settings_wave_count,
+    shapes_clay,
 )
-from clayline.weave_models import Pattern, Ring, SeamPolicy, SlicedForm
+from clayline.weave_models import Pattern, Ring, SeamPolicy, SlicedForm, WeaveSettings
 
 # This dimensionless ratio becomes ``layer_height / bead_width`` for each
 # slice.  It is a physical clay-overhang limit, deliberately named because it
@@ -36,8 +41,52 @@ class ZBlendGeometryError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class ZBlendExtraWeave:
+    """Weave 2's or 3's own phase facts at one path sample.
+
+    Each printed extra weave climbs the spiral on a running position of its
+    own, seeded and carried as Weave 1's is on the point itself
+    (2026-10-18, multi-weave plan §2).  ``amplitude_scale`` holds the height
+    fade and Skip-layers scale, as Weave 1's does.  ``curvature_flow_scale``
+    is this weave's own Clay along the wall here (2026-10-18, after Pete's
+    question in the plan), blended from one ring to the next as Weave 1's is;
+    one when it is neutral.
+    """
+
+    wave_phase: float
+    extrusion_phase: float
+    wave_value: float
+    amplitude_scale: float
+    pattern_scale: float
+    curvature_flow_scale: float = 1.0
+
+    def __post_init__(self) -> None:
+        numeric = (
+            self.wave_phase,
+            self.extrusion_phase,
+            self.wave_value,
+            self.amplitude_scale,
+            self.pattern_scale,
+            self.curvature_flow_scale,
+        )
+        if not all(math.isfinite(value) for value in numeric):
+            raise ValueError("z-blend point values must be finite")
+        if (
+            self.amplitude_scale < 0.0
+            or not 0.0 <= self.pattern_scale <= 1.0
+            or self.curvature_flow_scale < 0.0
+        ):
+            raise ValueError("z-blend curvature scales cannot be negative")
+
+
+@dataclass(frozen=True, slots=True)
 class ZBlendPoint:
-    """One immutable path sample with emission-ready unwrapped phase facts."""
+    """One immutable path sample with emission-ready unwrapped phase facts.
+
+    ``extra_weaves`` holds each printed extra weave's own facts in
+    :func:`clayline.wave.printed_weaves` order, and is empty with one weave.
+    ``x``, ``y`` and ``extrusion_multiplier`` are always the whole wall's.
+    """
 
     x: float
     y: float
@@ -58,6 +107,7 @@ class ZBlendPoint:
     is_crown: bool = False
     profile_z_offset: float = 0.0
     pattern_scale: float = 1.0
+    extra_weaves: tuple[ZBlendExtraWeave, ...] = ()
 
     def __post_init__(self) -> None:
         numeric = (
@@ -95,7 +145,11 @@ class ZBlendPoint:
 
 @dataclass(frozen=True, slots=True)
 class ZBlendRevolution:
-    """One inclusive revolution, either a layer ramp or the final level rim."""
+    """One inclusive revolution, either a layer ramp or the final level rim.
+
+    ``extra_wave_counts`` is each printed extra weave's own whole count on
+    this lap, matching every point's ``extra_weaves``; empty with one weave.
+    """
 
     index: int
     source_layer_index: int
@@ -104,12 +158,17 @@ class ZBlendRevolution:
     is_level_rim: bool
     points: tuple[ZBlendPoint, ...]
     is_crown: bool = False
+    extra_wave_counts: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if self.index < 0 or self.source_layer_index < 0 or self.target_layer_index < 0:
             raise ValueError("z-blend revolution indices cannot be negative")
         if self.wave_count < 1 or len(self.points) < 2:
             raise ValueError("a z-blend revolution needs a wave count and at least two points")
+        if any(count < 1 for count in self.extra_wave_counts):
+            raise ValueError("every extra weave needs a positive wave count")
+        if any(len(point.extra_weaves) != len(self.extra_wave_counts) for point in self.points):
+            raise ValueError("every revolution point must carry each extra weave")
         if self.points[0].revolution_u != 0.0 or self.points[-1].revolution_u != 1.0:
             raise ValueError("a z-blend revolution must span u=0 through u=1")
         if any(point.wave_count != self.wave_count for point in self.points):
@@ -224,7 +283,7 @@ class ZBlendPath:
         return self.top_follow is not None
 
 
-def zblend_pattern_scales_by_source_layer(path: ZBlendPath) -> dict[int, float]:
+def zblend_pattern_scales_by_source_layer(path: ZBlendPath, weave: int = 0) -> dict[int, float]:
     """Return the actual printed rhythm envelope keyed by source layer.
 
     A Z-blend prints revolutions, not every sliced source layer. Split-top
@@ -232,11 +291,17 @@ def zblend_pattern_scales_by_source_layer(path: ZBlendPath) -> dict[int, float]:
     level-rim finish adds one printable line without adding a source layer.
     Diagnostics must derive their rhythm domain from this path rather than
     re-counting ``SlicedForm.layers``.
+
+    ``weave`` 0 is Weave 1; 1 and 2 are the printed extra weaves, in
+    :func:`clayline.wave.printed_weaves` order, each with its own rhythm.
     """
 
     scales: dict[int, float] = {}
     for revolution in path.revolutions:
-        scale = max(point.pattern_scale for point in revolution.points)
+        if weave == 0:
+            scale = max(point.pattern_scale for point in revolution.points)
+        else:
+            scale = max(point.extra_weaves[weave - 1].pattern_scale for point in revolution.points)
         scales[revolution.source_layer_index] = max(
             scales.get(revolution.source_layer_index, 0.0),
             scale,
@@ -264,6 +329,20 @@ def _crown_split_layer_index(sliced: SlicedForm) -> int | None:
         if count > base_count:
             return layer.index
     return None
+
+
+def vase_lapped_layer_end(sliced: SlicedForm, pattern: Pattern) -> int | None:
+    """The first layer vase mode never laps, or None when it laps them all.
+
+    Vase mode laps the one continuous wall below a top that splits
+    (:func:`build_zblend_path`); the layers from the split up never print as
+    laps, and Follow the top edge only shapes the last lap's rise over them.
+    None when vase mode is off, or the top never splits.
+    """
+
+    if not pattern.settings.z_blend:
+        return None
+    return _crown_split_layer_index(sliced)
 
 
 def _crown_prefix_hint(sliced: SlicedForm, crown_layer_index: int) -> str | None:
@@ -526,12 +605,20 @@ def _wall_revolutions(
     layer_height: float,
     compensate_thickness: bool,
     pattern_line_count: int,
-) -> tuple[list[ZBlendRevolution], float]:
-    """Build ordinary vase revolutions at one resolved top-follow scale."""
+) -> tuple[list[ZBlendRevolution], float, tuple[float, ...]]:
+    """Build ordinary vase revolutions at one resolved top-follow scale.
+
+    Returns the revolutions, Weave 1's phase where they end, and each printed
+    extra weave's.
+    """
 
     revolutions: list[ZBlendRevolution] = []
-    phase_cursor = (
-        float(rings[0].provenance.layer_index + source_layer_offset) * pattern.settings.twist
+    weave_one, extras = printed_weaves(pattern)
+    phase_cursor = _seeded_cursor(rings[0], pattern.settings, source_layer_offset)
+    # Each extra weave climbs on a cursor of its own, seeded as Weave 1's is,
+    # so a count change in one never jolts another.
+    extra_cursors = tuple(
+        _seeded_cursor(rings[0], extra.settings, source_layer_offset) for extra in extras
     )
     for revolution_index, (source, target) in enumerate(pairwise(rings)):
         if pattern.settings.layer_skip_enabled:
@@ -551,11 +638,15 @@ def _wall_revolutions(
             )
         else:
             pattern_active = previous_pattern_active = True
-        wave_count = _closed_wave_count(source, pattern.settings.wavelength)
+        wave_count = _closed_wave_count(source, pattern.settings)
+        laps = tuple(
+            _extra_lap(extra, source, cursor, revolution_index, pattern_line_count)
+            for extra, cursor in zip(extras, extra_cursors, strict=True)
+        )
         points = _blend_revolution(
             source,
             target,
-            pattern,
+            weave_one,
             wave_count=wave_count,
             phase_start=phase_cursor,
             source_layer_offset=source_layer_offset,
@@ -568,6 +659,7 @@ def _wall_revolutions(
             top_follow_scale=top_follow_scale,
             pattern_active=pattern_active,
             previous_pattern_active=previous_pattern_active,
+            extra_laps=laps,
         )
         if top_follow and compensate_thickness:
             points = _with_thickness_compensation(
@@ -586,10 +678,146 @@ def _wall_revolutions(
                 is_level_rim=False,
                 points=points,
                 is_crown=False,
+                extra_wave_counts=tuple(lap.wave_count for lap in laps),
             )
         )
         phase_cursor = points[-1].wave_phase
-    return revolutions, phase_cursor
+        extra_cursors = tuple(extra.wave_phase for extra in points[-1].extra_weaves)
+    return revolutions, phase_cursor, extra_cursors
+
+
+def _seeded_cursor(first: Ring, settings: WeaveSettings, source_layer_offset: int) -> float:
+    """Where one weave's phase starts the first lap: its layer's twist.
+
+    A weave that keeps the same number of waves starts its count where its
+    part's seam was below a band break (:func:`clayline.wave.held_phase_shift`).
+    Vase mode laps only one band, every ring of it on one track, so that
+    shift is the same on every lap and riding the cursor carries it up the
+    whole spiral; on the band at the foot of a form it is zero.
+    """
+
+    cursor = float(first.provenance.layer_index + source_layer_offset) * settings.twist
+    if not settings.hold_wave_count:
+        return cursor
+    shift = held_phase_shift(first, settings, _closed_wave_count(first, settings))
+    if shift:
+        cursor = cursor - shift
+    return cursor
+
+
+@dataclass(frozen=True, slots=True)
+class _ExtraLap:
+    """One printed extra weave over one lap: its count, start and rhythm."""
+
+    weave: Pattern
+    wave_count: int
+    phase_start: float
+    pattern_active: bool
+    previous_pattern_active: bool
+    tracked: bool
+
+
+def _extra_lap(
+    weave: Pattern,
+    ring: Ring,
+    phase_start: float,
+    line_index: int,
+    pattern_line_count: int,
+) -> _ExtraLap:
+    """An extra weave's lap, counted on ``ring`` with its own Skip layers.
+
+    A plain line of one weave never switches another off, and each weave
+    eases in and out over the same first 5% of a lap as Weave 1.
+    """
+
+    if weave.settings.layer_skip_enabled:
+        active = pattern_layer_is_active(weave.settings, line_index, pattern_line_count)
+        previous_active = (
+            active
+            if line_index == 0
+            else pattern_layer_is_active(weave.settings, line_index - 1, pattern_line_count)
+        )
+    else:
+        active = previous_active = True
+    return _ExtraLap(
+        weave=weave,
+        wave_count=_closed_wave_count(ring, weave.settings),
+        phase_start=phase_start,
+        pattern_active=active,
+        previous_pattern_active=previous_active,
+        tracked=shapes_clay(weave),
+    )
+
+
+# One extra weave at one sample: its amplitude, wave phase, clay-track phase,
+# wave value, Wave-depth scale, Skip-layers scale, clay-track value (None for
+# a weave that shapes no clay, which adds nothing) and its own Clay along the
+# wall.
+_ExtraSample = tuple[float, float, float, float, float, float, float | None, float]
+
+
+def _extra_lap_samples(
+    lap: _ExtraLap, u: np.ndarray, depth_scales: np.ndarray, flow_scales: np.ndarray
+) -> list[_ExtraSample]:
+    """An extra weave at every sample of one lap, the whole lap at once.
+
+    Weave 1 is still read one sample at a time.  Each extra weave's curves
+    are read once per lap over all its phases instead (multi-weave plan §5);
+    the curves' array path does the scalar path's arithmetic on each phase,
+    so every value is the one a sample at a time would give.
+    """
+
+    settings = lap.weave.settings
+    phases = lap.phase_start + u * (lap.wave_count + settings.twist)
+    extrusion_phases = phases + settings.extrusion_phase_offset
+    values = np.asarray(evaluate_curve(lap.weave.wave, phases), dtype=np.float64)
+    if lap.previous_pattern_active == lap.pattern_active:
+        pattern_scales = [1.0 if lap.pattern_active else 0.0] * len(u)
+    else:
+        pattern_scales = [
+            _pattern_transition_scale(value, lap.previous_pattern_active, lap.pattern_active)
+            for value in u.tolist()
+        ]
+    clay: list[float] | list[None] = (
+        np.asarray(evaluate_curve(lap.weave.extrusion, extrusion_phases), dtype=np.float64).tolist()
+        if lap.tracked
+        else [None] * len(u)
+    )
+    amplitude = settings.amplitude
+    return [
+        (amplitude, phase, extrusion_phase, value, depth, scale, track, lobes)
+        for phase, extrusion_phase, value, depth, scale, track, lobes in zip(
+            phases.tolist(),
+            extrusion_phases.tolist(),
+            values.tolist(),
+            depth_scales.tolist(),
+            pattern_scales,
+            clay,
+            flow_scales.tolist(),
+            strict=True,
+        )
+    ]
+
+
+def _extra_samples_by_point(
+    laps: tuple[_ExtraLap, ...],
+    u: np.ndarray,
+    depth_scales: tuple[np.ndarray, ...],
+    flow_scales: tuple[np.ndarray, ...],
+) -> list[tuple[_ExtraSample, ...]]:
+    """Every printed extra weave's sample at each point of one lap, in order."""
+
+    if not laps:
+        return [()] * len(u)
+    return list(
+        zip(
+            *(
+                _extra_lap_samples(lap, u, depth, lobes)
+                for lap, depth, lobes in zip(laps, depth_scales, flow_scales, strict=True)
+            ),
+            strict=True,
+        )
+    )
 
 
 def _top_follow_plan(
@@ -713,7 +941,7 @@ def build_zblend_path(
     profile_shapes, profile_slope_clamped = profile_shape_result
     pattern_line_count = max(0, len(rings) - 1) + int(pattern.settings.level_rim)
     if follow_top:
-        raw_revolutions, _ = _wall_revolutions(
+        raw_revolutions, _, _ = _wall_revolutions(
             rings,
             pattern,
             source_layer_offset=source_layer_offset,
@@ -736,7 +964,7 @@ def build_zblend_path(
         )
     else:
         top_follow_scale = 1.0
-    revolutions, phase_cursor = _wall_revolutions(
+    revolutions, phase_cursor, extra_cursors = _wall_revolutions(
         rings,
         pattern,
         source_layer_offset=source_layer_offset,
@@ -753,7 +981,7 @@ def build_zblend_path(
 
     if pattern.settings.level_rim:
         top = rings[-1]
-        wave_count = _closed_wave_count(top, pattern.settings.wavelength)
+        wave_count = _closed_wave_count(top, pattern.settings)
         if pattern.settings.layer_skip_enabled:
             rim_index = len(revolutions)
             rim_pattern_active = pattern_layer_is_active(
@@ -768,9 +996,14 @@ def build_zblend_path(
             )
         else:
             rim_pattern_active = previous_rim_pattern_active = True
+        weave_one, extras = printed_weaves(pattern)
+        rim_laps = tuple(
+            _extra_lap(extra, top, cursor, len(revolutions), pattern_line_count)
+            for extra, cursor in zip(extras, extra_cursors, strict=True)
+        )
         points = _level_rim_revolution(
             top,
-            pattern,
+            weave_one,
             wave_count=wave_count,
             phase_start=phase_cursor,
             source_layer_offset=source_layer_offset,
@@ -779,6 +1012,7 @@ def build_zblend_path(
             profile_shape=profile_shapes.get(top.provenance),
             pattern_active=rim_pattern_active,
             previous_pattern_active=previous_rim_pattern_active,
+            extra_laps=rim_laps,
         )
         if revolutions:
             _assert_continuous_boundary(revolutions[-1].points[-1], points[0])
@@ -791,6 +1025,7 @@ def build_zblend_path(
                 is_level_rim=True,
                 points=points,
                 is_crown=False,
+                extra_wave_counts=tuple(lap.wave_count for lap in rim_laps),
             )
         )
 
@@ -832,6 +1067,7 @@ def _blend_revolution(
     top_follow_scale: float,
     pattern_active: bool,
     previous_pattern_active: bool,
+    extra_laps: tuple[_ExtraLap, ...] = (),
 ) -> tuple[ZBlendPoint, ...]:
     if source.sample_count != target.sample_count:
         raise ZBlendGeometryError(
@@ -841,8 +1077,35 @@ def _blend_revolution(
             f"({source.sample_count} and {target.sample_count}); reslice the form before "
             "enabling Z-blend."
         )
+    # ``pattern`` is Weave 1 as it prints (clayline.wave.printed_weaves), so
+    # its Clay along the wall is silent while it is switched off.
     source_scale, source_flow_scale = ring_curvature_scales(source, pattern.settings)
     target_scale, target_flow_scale = ring_curvature_scales(target, pattern.settings)
+    # Each extra weave's own Wave depth and Clay along the wall, blended from
+    # one ring to the next as Weave 1's are.
+    lap_u = np.asarray(source.u, dtype=np.float64)
+    extra_scales = tuple(
+        (
+            ring_curvature_scales(source, lap.weave.settings),
+            ring_curvature_scales(target, lap.weave.settings),
+        )
+        for lap in extra_laps
+    )
+    extra_samples = _extra_samples_by_point(
+        extra_laps,
+        lap_u,
+        tuple(
+            (1.0 - lap_u) * from_ring[0] + lap_u * to_ring[0] for from_ring, to_ring in extra_scales
+        ),
+        # A weave whose Clay along the wall is neutral keeps exact ones, so
+        # its clay is the track alone, as it was before the setting was its own.
+        tuple(
+            (1.0 - lap_u) * from_ring[1] + lap_u * to_ring[1]
+            if has_wall_clay(lap.weave)
+            else np.ones(len(lap_u), dtype=np.float64)
+            for lap, (from_ring, to_ring) in zip(extra_laps, extra_scales, strict=True)
+        ),
+    )
     points: list[ZBlendPoint] = []
     for index, u_value in enumerate(source.u):
         u = float(u_value)
@@ -918,6 +1181,7 @@ def _blend_revolution(
                     previous_pattern_active,
                     pattern_active,
                 ),
+                extras=extra_samples[index],
             )
         )
     return tuple(points)
@@ -935,8 +1199,24 @@ def _level_rim_revolution(
     profile_shape: np.ndarray | None,
     pattern_active: bool,
     previous_pattern_active: bool,
+    extra_laps: tuple[_ExtraLap, ...] = (),
 ) -> tuple[ZBlendPoint, ...]:
+    # Weave 1 as it prints, as on every lap below it.
     form_scale, form_flow_scale = ring_curvature_scales(top, pattern.settings)
+    rim_u = np.asarray(top.u, dtype=np.float64)
+    extra_fades: list[np.ndarray] = []
+    extra_lobes: list[np.ndarray] = []
+    for lap in extra_laps:
+        depth, lobes = ring_curvature_scales(top, lap.weave.settings)
+        fade = depth * (1.0 - rim_u)
+        # Every weave fades out together over the last lap, to nothing at its end.
+        fade[top.sample_count] = 0.0
+        extra_fades.append(fade)
+        # Its Clay along the wall stays its own over the rim, as Weave 1's does.
+        extra_lobes.append(np.asarray(lobes, dtype=np.float64))
+    extra_samples = _extra_samples_by_point(
+        extra_laps, rim_u, tuple(extra_fades), tuple(extra_lobes)
+    )
     points: list[ZBlendPoint] = []
     layer = top.provenance.layer_index
     for index, u_value in enumerate(top.u):
@@ -989,6 +1269,7 @@ def _level_rim_revolution(
                     previous_pattern_active,
                     pattern_active,
                 ),
+                extras=extra_samples[index],
             )
         )
     final = points[-1]
@@ -1011,6 +1292,7 @@ def _level_rim_revolution(
         is_crown=False,
         profile_z_offset=0.0,
         pattern_scale=final.pattern_scale,
+        extra_weaves=tuple(replace(extra, amplitude_scale=0.0) for extra in final.extra_weaves),
     )
     return tuple(points)
 
@@ -1235,12 +1517,62 @@ def _pattern_point(
     pattern: Pattern,
     profile_z_offset: float = 0.0,
     pattern_scale: float = 1.0,
+    extras: tuple[_ExtraSample, ...] = (),
 ) -> ZBlendPoint:
+    """One sample of the whole wall.
+
+    ``pattern`` is Weave 1 as it prints.  ``extras`` gives each printed extra
+    weave's sample here, read a lap at a time (:func:`_extra_lap_samples`).
+    """
+
     wave_value = float(evaluate_curve(pattern.wave, phase))
     amplitude_scale *= profile_scale
     displacement = pattern.settings.amplitude * amplitude_scale * pattern_scale * wave_value
+    extra_weaves: tuple[ZBlendExtraWeave, ...] = ()
+    extra_flow = 0.0
+    tracked = False
+    if extras:
+        # Every weave pushes along the same normal, so the pushes add first,
+        # in the weaves' own order, and the sum moves the point once.
+        records: list[ZBlendExtraWeave] = []
+        for (
+            extra_amplitude,
+            extra_phase,
+            extra_extrusion_phase,
+            extra_value,
+            extra_amplitude_scale,
+            extra_pattern_scale,
+            extra_clay,
+            extra_lobes,
+        ) in extras:
+            extra_amplitude_scale *= profile_scale
+            displacement += (
+                extra_amplitude * extra_amplitude_scale * extra_pattern_scale * extra_value
+            )
+            if extra_clay is not None:
+                # A weave that shapes no clay adds exactly nothing, so only a
+                # weave with a track or Clay along the wall of its own is
+                # summed, in Weave 1's form, and only then is the total held.
+                tracked = True
+                extra_flow += extra_pattern_scale * (extra_clay * extra_lobes - 1.0)
+            records.append(
+                ZBlendExtraWeave(
+                    wave_phase=extra_phase,
+                    extrusion_phase=extra_extrusion_phase,
+                    wave_value=extra_value,
+                    amplitude_scale=extra_amplitude_scale * extra_pattern_scale,
+                    pattern_scale=extra_pattern_scale,
+                    curvature_flow_scale=extra_lobes,
+                )
+            )
+        extra_weaves = tuple(records)
     xy = base + displacement * normal
     extrusion_phase = phase + pattern.settings.extrusion_phase_offset
+    extrusion_multiplier = 1.0 + pattern_scale * (
+        float(evaluate_curve(pattern.extrusion, extrusion_phase)) * curvature_flow_scale - 1.0
+    )
+    if tracked:
+        extrusion_multiplier = held_flow(extrusion_multiplier, extra_flow)
     return ZBlendPoint(
         x=float(xy[0]),
         y=float(xy[1]),
@@ -1253,20 +1585,14 @@ def _pattern_point(
         wave_phase=phase,
         extrusion_phase=extrusion_phase,
         wave_value=wave_value,
-        extrusion_multiplier=(
-            1.0
-            + pattern_scale
-            * (
-                float(evaluate_curve(pattern.extrusion, extrusion_phase)) * curvature_flow_scale
-                - 1.0
-            )
-        ),
+        extrusion_multiplier=extrusion_multiplier,
         amplitude_scale=amplitude_scale * pattern_scale,
         curvature_flow_scale=curvature_flow_scale,
         is_level_rim=is_level_rim,
         is_crown=is_crown,
         profile_z_offset=profile_z_offset,
         pattern_scale=pattern_scale,
+        extra_weaves=extra_weaves,
     )
 
 
@@ -1305,8 +1631,10 @@ def _interpolated_unit_normal(
     return blended / length
 
 
-def _closed_wave_count(ring: Ring, wavelength: float) -> int:
-    result = ring_wave_count(ring, wavelength)
+def _closed_wave_count(ring: Ring, settings: WeaveSettings) -> int:
+    # Held or the ring's own: with Keep the same number of waves off this is
+    # ring_wave_count(ring, settings.wavelength), the count every lap had.
+    result = settings_wave_count(ring, settings)
     if not isinstance(result, int):
         raise AssertionError("z-blend eligibility must guarantee a closed ring")
     return result
@@ -1337,10 +1665,35 @@ def _assert_continuous_boundary(previous: ZBlendPoint, following: ZBlendPoint) -
             raise ZBlendGeometryError(
                 f"z-blend {label} is discontinuous at nominal layer {following.source_layer_index}"
             )
+    if not previous.extra_weaves and not following.extra_weaves:
+        return
+    if len(previous.extra_weaves) != len(following.extra_weaves):
+        raise ZBlendGeometryError(
+            "z-blend extra weaves are discontinuous at nominal layer "
+            f"{following.source_layer_index}"
+        )
+    # Numbered among the weaves that print, Weave 1 first.
+    for number, (before, after) in enumerate(
+        zip(previous.extra_weaves, following.extra_weaves, strict=True), start=2
+    ):
+        extra_values = (
+            (before.wave_phase, after.wave_phase, "wave phase"),
+            (before.extrusion_phase, after.extrusion_phase, "extrusion phase"),
+            (before.wave_value, after.wave_value, "wave value"),
+            (before.amplitude_scale, after.amplitude_scale, "amplitude scale"),
+            (before.pattern_scale, after.pattern_scale, "pattern scale"),
+        )
+        for left, right, label in extra_values:
+            if left != right:
+                raise ZBlendGeometryError(
+                    f"z-blend weave {number} {label} is discontinuous at nominal layer "
+                    f"{following.source_layer_index}"
+                )
 
 
 __all__ = [
     "TopFollowPlan",
+    "ZBlendExtraWeave",
     "ZBlendGeometryError",
     "ZBlendPath",
     "ZBlendPoint",
