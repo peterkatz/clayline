@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from golden_support import historical_release_text
 
 from clayline.emit import EmissionLaunch, EmissionMotion
 from clayline.models import MoveKind, ThreadProtectionModel
@@ -70,9 +71,9 @@ def test_versionless_positive_pause_drape_keeps_legacy_layout_but_corrects_runs(
     legacy_gcode = str(legacy["gcode"])
 
     # Explicit legacy remains the exact pre-tranche compatibility oracle.
-    assert legacy_gcode == (BASELINE / "drape-versionless-positive-pause.gcode").read_text(
-        encoding="utf-8"
-    )
+    assert historical_release_text(legacy_gcode) == (
+        BASELINE / "drape-versionless-positive-pause.gcode"
+    ).read_text(encoding="utf-8")
     frozen_report = json.loads(
         (BASELINE / "drape-versionless-positive-pause.report.json").read_text(encoding="utf-8")
     )

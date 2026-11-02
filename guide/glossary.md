@@ -20,7 +20,7 @@ Words as Clayline uses them, in the order you're likely to meet them.
 
 **Stroke.** One continuous run of clay without lifting. Clayline joins your lines into as few strokes as it can.
 
-**Travel.** A move between one stroke and the next, where the nozzle lifts and crosses. No clay flows on it, except in Weave with **Keep clay flowing on crossings** on. Fewer is better: every travel is a place where the thread breaks.
+**Travel.** A move between one stroke and the next, where the nozzle lifts and crosses. No clay flows on it, except in Mesh Mode with **Keep clay flowing on crossings** on. Fewer is better: every travel is a place where the thread breaks.
 
 **Join, weld.** Where two line ends close together are treated as the same point, so a slightly rough hand-drawn corner still prints as one stroke.
 
@@ -38,7 +38,7 @@ Words as Clayline uses them, in the order you're likely to meet them.
 
 **SVG.** The file type for line drawings from apps such as Illustrator, Inkscape, or Affinity Designer. Clayline reads the lines in it, not filled shapes.
 
-**Mesh, 3D model.** The file for a solid form: STL, OBJ, PLY, or 3MF. In Weave mode, Clayline cuts it into rings.
+**Mesh, 3D model.** The file for a solid form: STL, OBJ, PLY, or 3MF. In Mesh Mode, Clayline cuts it into rings.
 
 **Ring.** One horizontal slice of the model's wall. Each ring becomes one layer of coil.
 
@@ -46,7 +46,7 @@ Words as Clayline uses them, in the order you're likely to meet them.
 
 **Vase mode.** The wall climbs in one continuous coil with no layer seams at all.
 
-**Amplitude.** In Weave, how far the wall moves in and out from the original form.
+**Amplitude.** In Mesh Mode, how far the wall moves in and out from the original form.
 
 **Wavelength.** The distance from one crest of the wave to the next, in millimetres.
 

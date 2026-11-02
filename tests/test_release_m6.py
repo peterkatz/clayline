@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -160,7 +161,8 @@ def test_extracted_wheel_runs_cli_and_serves_vendored_ui_assets(
         check=False,
     )
     assert version.returncode == 0, version.stdout + version.stderr
-    assert version.stdout.strip() == "clayline 0.9.0"
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    assert version.stdout.strip() == f"clayline {project['project']['version']}"
 
     output = tmp_path / "wheel-smoke.gcode"
     planned = subprocess.run(

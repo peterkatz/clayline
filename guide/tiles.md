@@ -179,3 +179,7 @@ The **scrubber** under the preview walks through the print move by move. Press p
 | **Area too narrow to fill** | There isn't room for a fill coil inside the line. It prints empty. |
 | **An area prints empty** | The fill couldn't be laid without running outside its area or over coil already laid. Try the other pattern, or split the area with a line. |
 | **A fill was too short to print** / **A fill will print thin** | A very small area gives a coil too short for the printer to get going. Make the area bigger or leave it empty. |
+
+### Opening panels and typing slider values
+
+Click a numbered section header to open or close its accordion; several can stay open together. Closing a section keeps its settings. The number beside a slider is editable: Enter or leaving the field applies it, Escape cancels, and an invalid value leaves the last valid setting in place. This includes drawing Smooth and reference Fade. The preview scrubber accepts exact one-based From and To move numbers.

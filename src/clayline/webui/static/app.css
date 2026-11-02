@@ -49,6 +49,64 @@ input[type="range"] {
   cursor: pointer;
 }
 
+.palette-toggle {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 0 20px 0 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+  position: relative;
+}
+
+.palette-toggle::after { content: "−"; position: absolute; right: 0; top: 0; }
+.palette-toggle[aria-expanded="false"]::after { content: "+"; }
+.palette-toggle:focus-visible { outline: 2px solid var(--sage); outline-offset: 5px; }
+.palette-summary { font-size: 10px; line-height: 1.5; font-weight: 400; color: var(--muted); overflow-wrap: anywhere; }
+.palette-toggle[aria-expanded="true"] .palette-summary { display: none; }
+.palette-content { display: grid; gap: 12px; margin-top: 12px; min-width: 0; }
+.palette-content[hidden] { display: none; }
+.palette-closed .section-body { gap: 0; }
+.slider-original-output { display: none; }
+.field > span .slider-value-editor, .slider-value-editor {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-left: auto;
+  font-weight: 400;
+}
+.field .slider-value-editor input.slider-number, .slider-value-editor input.slider-number {
+  width: 68px;
+  min-width: 50px;
+  min-height: 25px;
+  padding: 3px 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--canvas);
+  color: var(--ink);
+  text-align: right;
+  font: 11px ui-monospace, monospace;
+}
+.slider-value-editor small { font-size: 10px; font-weight: 400; }
+.slider-number[aria-invalid="true"] { border-color: #a63e2d; }
+.slider-value-error { color: #a63e2d; font-weight: 400; }
+.scrub-exact { display: flex; gap: 3px; align-items: center; font-size: 10px; color: var(--muted); }
+.scrub-exact input { width: 62px; padding: 4px; border: 1px solid var(--line); background: var(--canvas); font-size: 10px; }
+.mesh-export-menu { position: relative; }
+.mesh-export-menu > summary { cursor: pointer; white-space: nowrap; }
+.mesh-export-options { position: absolute; right: 0; top: 100%; z-index: 20; width: 260px; display: grid; gap: 8px; padding: 12px; background: var(--canvas); border: 1px solid var(--line-strong); box-shadow: 0 5px 20px #0002; }
+.mesh-export-options button { text-align: left; display: grid; gap: 4px; }
+.mesh-export-options small { font-weight: 400; color: var(--muted); }
+.draw-tray-field:has(.slider-value-editor) { min-width: 140px; }
+.draw-tray-field .slider-value-editor { margin: 0; }
+.effect-disclosure > summary { cursor: pointer; font-size: 11px; font-weight: 650; padding: 7px 0; }
+.effect-disclosure > .advanced-panel { display: grid; gap: 12px; }
+
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,

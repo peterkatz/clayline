@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from golden_support import assert_historical_gcode
 
 from clayline.calibrate import (
     CALIBRATION_KINDS,
@@ -23,7 +24,9 @@ def test_every_calibration_uses_production_emitter_lints_and_matches_golden(kind
     profile = load_profile("potterbot-xl")
     artifact = generate_calibration(kind, profile)
     assert artifact.lint_report.ok, artifact.lint_report.format()
-    assert artifact.gcode == (GOLDEN / artifact.filename).read_text(encoding="utf-8")
+    assert_historical_gcode(
+        artifact.gcode, (GOLDEN / artifact.filename).read_text(encoding="utf-8"), profile
+    )
     assert f"; parameter.calibration={kind}" in artifact.gcode
     assert "; speed_first_layer_mm_s=30" in artifact.gcode
 

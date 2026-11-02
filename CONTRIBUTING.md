@@ -19,9 +19,23 @@ make check
 The emission core is part of Clayline. A fresh install resolves only the declared
 package-index dependencies; the test suite and runtime must remain offline.
 
-`make check` is the required local gate. It runs Ruff linting, Ruff formatting
-checks, the complete pytest suite, and the fixture inventory validator. Run the
+`make check` is the required local release gate. It runs Ruff linting, Ruff formatting
+checks, the supported-behavior pytest suite, the fixture inventory validator, and
+isolated performance checks. Run the
 whole command before proposing a change, not only the focused test you added.
+
+`make deferred-contracts` separately runs intact acceptance tests for explicitly
+deferred features. Revision 3's whole-form continuous threading across every
+seam/topology mode was deferred in August 2026; its red-first acceptance module
+is marked `deferred_contract`. Its assertions remain unchanged and its failures
+remain visible when that target runs. The current release instead checks the
+accepted CHAINED threading, safe warned breaks, and preserved PINNED/SCATTER
+placement. Do not use this marker for a regression in a supported feature.
+
+Historical G-code is audited against its frozen printer profile. Current output
+must independently lint against the current profile. A release label or a
+documented printer-prime correction must be compared explicitly, without
+rewriting the old evidence or discarding motion/pressure/safety checks.
 
 ## Keep one real pipeline
 

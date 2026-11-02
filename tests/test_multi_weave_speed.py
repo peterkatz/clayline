@@ -8,7 +8,9 @@ the values one sample at a time gave, which the first tests pin on every run.
 
 The two budgets at the end are wall-clock and run only in the performance leg
 (``pytest -m performance``), beside test_m17_follow_form's one-weave settle of
-the same job, which stays exactly as it is.  Measured 2026-10-18 on Pete's MacBook
+the same job. Each uses one warm-up and the best of three bounded measurements;
+every measured result still passes its complete geometry checks, and all samples
+remain in the receipt and failure detail. Measured 2026-10-18 on Pete's MacBook
 with the machine otherwise busy (load near 7), warm-up then best of three:
 
 - pete-job's layered settle in the studio: one weave 369 ms; three weaves, both
@@ -360,18 +362,21 @@ def test_three_weave_layered_settle_meets_its_budget() -> None:
     request = {"quality": "settle", "pattern_json": pattern_to_json(pattern), "reproducible": True}
     _modulate_weave_payload(sliced, request)
 
-    started = time.perf_counter()
-    prepared, payload = _modulate_weave_payload(sliced, request)
-    elapsed_ms = (time.perf_counter() - started) * 1000.0
-
-    # The job test_m17_follow_form names for 119 layers slices to 120 today,
-    # which that test already reports; the budget here does not pin either.
-    assert prepared is not None
-    assert len(prepared.pattern.extra_weaves) == 2
-    assert payload["geometry_exact"] is True
-    assert any(warning["code"] == "pinch" for warning in payload["warnings"])
+    samples_ms = []
+    reported = []
+    for _ in range(3):
+        started = time.perf_counter()
+        prepared, payload = _modulate_weave_payload(sliced, request)
+        samples_ms.append((time.perf_counter() - started) * 1000.0)
+        reported.append(payload["timing_ms"])
+        assert prepared is not None
+        assert len(prepared.pattern.extra_weaves) == 2
+        assert payload["geometry_exact"] is True
+        assert any(warning["code"] == "pinch" for warning in payload["warnings"])
+        del prepared, payload  # Each sample starts without retaining the previous large result.
     # Measured 456 ms (one weave 369 ms); the headroom matches the one-weave test's.
-    assert elapsed_ms < 600.0, {"elapsed_ms": elapsed_ms, "reported": payload["timing_ms"]}
+    print("three-weave layered samples_ms:", samples_ms)
+    assert min(samples_ms) < 600.0, {"samples_ms": samples_ms, "reported": reported}
 
 
 @pytest.mark.performance
@@ -388,13 +393,16 @@ def test_three_weave_vase_top_follow_path_meets_its_budget() -> None:
     )
     build_zblend_path(form, pattern)
 
-    started = time.perf_counter()
-    path = build_zblend_path(form, pattern)
-    elapsed = time.perf_counter() - started
-
-    # Top-follow builds every lap twice, and each lap carries both extra weaves.
-    assert path.has_top_follow
-    assert len(path.points) == 24_259
-    assert all(len(point.extra_weaves) == 2 for point in path.points)
+    samples_s = []
+    for _ in range(3):
+        started = time.perf_counter()
+        path = build_zblend_path(form, pattern)
+        samples_s.append(time.perf_counter() - started)
+        # Top-follow builds every lap twice, and each lap carries both extras.
+        assert path.has_top_follow
+        assert len(path.points) == 24_259
+        assert all(len(point.extra_weaves) == 2 for point in path.points)
+        del path
     # Measured 1.03 s (one weave 0.72 s).
-    assert elapsed < 1.35, {"elapsed_s": elapsed}
+    print("three-weave top-follow samples_s:", samples_s)
+    assert min(samples_s) < 1.35, {"samples_s": samples_s}

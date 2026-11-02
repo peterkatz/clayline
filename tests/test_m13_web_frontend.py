@@ -39,7 +39,7 @@ def _function(name: str, following: str) -> str:
 
 def test_two_modes_are_mounted_with_exact_public_language_and_unique_ids() -> None:
     assert ">Draw in Clay</button>" in HTML
-    assert ">Weave · mesh</button>" in HTML
+    assert ">Mesh Mode</button>" in HTML
     assert 'id="tilesWorkspace" data-mode-panel="tiles"' in HTML
     assert 'id="weaveWorkspace" data-mode-panel="weave" hidden' in HTML
     assert '<script src="/static/weave.js" defer></script>' in HTML
@@ -184,6 +184,7 @@ def test_weave_rail_order_and_complete_ui_states_are_explicit() -> None:
         "printer",
         "wall",
         "pattern",
+        "images",
         "inside",
         "print",
     ]
@@ -192,6 +193,7 @@ def test_weave_rail_order_and_complete_ui_states_are_explicit() -> None:
         "Printer and coil",
         "Wall",
         "Pattern",
+        "Images",
         "Inside and floor",
         "Print",
     ]
@@ -388,7 +390,10 @@ def test_wave_extrusion_pattern_and_capability_rules_are_all_live() -> None:
     assert "layer.x_mm" in WEAVE and "layer.displacement_mm" in WEAVE
     assert "payload.pattern?.canonical_json" in WEAVE
     assert "pattern_json: source" in WEAVE
-    assert "Amplitude, Wavelength, Twist and Wave depth have no visible effect while the wave is flat." in WEAVE
+    assert (
+        "Amplitude, Wavelength, Twist and Wave depth have no visible effect while the wave is flat."
+        in WEAVE
+    )
     assert "A continuous spiral has no layer seam." in WEAVE
     assert "S.previousSeam" in WEAVE
     assert "z_blend_disabled_hint" in WEAVE
@@ -450,7 +455,8 @@ def test_every_verifier_reported_nullified_weave_setting_is_disabled_with_a_reas
     for reason in (
         "Amplitude has no visible effect while the wave is flat.",
         "Wavelength has no visible effect while the wave is flat.",
-        "Amplitude, Wavelength, Twist and Wave depth have no visible effect while the wave is flat.",
+        "Amplitude, Wavelength, Twist and Wave depth have no visible effect "
+        "while the wave is flat.",
         "Form following has no visible effect while the wave is flat.",
         "Extrusion phase has no effect while the extrusion track is flat.",
         _OVERLAP_COPY,
@@ -648,9 +654,11 @@ def test_warnings_are_grouped_by_cause_with_a_live_spot_stepper() -> None:
 def test_shared_tiles_and_scrubber_surfaces_stay_mode_scoped() -> None:
     # Two drawing-surface sliders opt out of the shared dirty-marking: the
     # photo's fade never invalidates a slice, and Smooth marks dirty itself
-    # only when a drag actually commits a relaxed line.
+    # only when a drag actually commits a relaxed line. Exact scrubber move
+    # fields are navigation and also must not dirty the project.
     assert (
-        "#tilesWorkspace input:not(#fileInput):not(#drawArrangeFade):not(#drawSmooth), "
+        "#tilesWorkspace input:not(#fileInput):not(#drawArrangeFade):not(#drawSmooth)"
+        ":not([data-scrub-navigation]), "
         "#tilesWorkspace select" in APP
     )
     assert "window.claylineTilesMode" in APP
@@ -685,9 +693,7 @@ _OVERLAP_COPY = (
 
 def _interior_section() -> str:
     return HTML[
-        HTML.index('data-weave-section="inside"') : HTML.index(
-            'data-weave-section="print"'
-        )
+        HTML.index('data-weave-section="inside"') : HTML.index('data-weave-section="print"')
     ]
 
 
@@ -710,8 +716,7 @@ def test_interior_offers_three_choices_and_says_what_each_does_to_the_clay() -> 
     # One short line each, said where the choice is made (Pete, 2026-10-03: the
     # section had become walls of text).
     assert (
-        '<p class="section-copy">What the nozzle lays inside the wall, and under it.</p>'
-        in section
+        '<p class="section-copy">What the nozzle lays inside the wall, and under it.</p>' in section
     )
     assert "Just the wall, nothing inside." in section
     sync = _function("syncInteriorControls", "function syncControls")
@@ -1137,8 +1142,7 @@ def test_the_sections_opening_promise_matches_what_choosing_a_fill_now_does() ->
     # The opening line promises nothing; each clearing says so where it lives.
     assert "nothing switches on its own" not in section
     assert (
-        '<p class="section-copy">What the nozzle lays inside the wall, and under it.</p>'
-        in section
+        '<p class="section-copy">What the nozzle lays inside the wall, and under it.</p>' in section
     )
     # Every clearing the sentence admits to is really there, and vice versa:
     # the section may not name two while the code performs three.

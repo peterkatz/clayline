@@ -72,7 +72,7 @@ planner, and the shipped app is built from this tree.
 | M7 — kiss-hop and release | Software PASS; physical product exit accepted | M7 status |
 | M8 — native macOS app | PASS; Developer ID-signed and notarized 0.1.0 download published | M8 status |
 | M9 — artist-first UX overhaul (scrubber, honest defaults, fuse/lap re-cut, pages sidebar, live bed fit) | PASS — verified live in-app + two independent clean-env verifiers | M9 status |
-| M10–M14 — Weave mesh mode | Software PASS; synthetic, real TwistTumbler/GH parity, clean-snapshot, and installed-app gates verified | M13 status · M14 status · completion audit; current nozzle confirmation remains pending |
+| M10–M14 — Mesh Mode | Software PASS; synthetic, real TwistTumbler/GH parity, clean-snapshot, and installed-app gates verified | M13 status · M14 status · completion audit; current nozzle confirmation remains pending |
 | M16 — Weave print range + reprint-this | Software PASS; real tumbler broken-rim trim restores Z-blend and reproducible restore is byte-identical | M16 status |
 | Tiles product exit | ACCEPTED | Full PotterBot XL tiles printed and accepted by Pete, 2026-09-18 |
 | Weave product exit (M15) | ACCEPTED | Weave forms printed and accepted by Pete, 2026-09-18; M15 status and print sheet |
@@ -113,7 +113,7 @@ adding a drawing starts there too. The folders are built at packaging time from
 `tools/build_gallery.py`; the source files stay flat under `examples/`.
 
 Open **Clayline** and choose **Draw in Clay** for SVGs or an on-bed drawing, or
-**Weave · mesh** for a 3D model. In Draw, arrange the ordered Passes and select
+**Mesh Mode** for a 3D model. In Draw, arrange the ordered Passes and select
 **Slice job**. In Mesh, place the form, select **Slice form**, then adjust its
 Weaves and Images live. Use the export buttons or **Shift-Command-E** to save
 G-code through the native macOS save panel. **Command-S** saves the whole job instead — the drawings or the
@@ -164,9 +164,22 @@ python -m pip install '.[ui]'
 clayline --version
 ```
 
-## Weave mode in 60 seconds
+## Mesh Mode in 60 seconds
 
-Weave mode turns a closed OBJ, STL, 3MF, or PLY mesh into an in/out wobble or
+The numbered settings sections open independently as accordions. Click the number
+beside a slider to type an exact value; Enter applies it and Escape cancels.
+Inside Weaves, **Invert wave** exchanges ridges and grooves and **Reverse wave**
+reads a repeat backwards, with one Undo per action. New repeating Images use
+**Pattern size** to preserve their proportions; older files keep their previous
+**Copies around + Repeat height along wall** sizing.
+
+**Export mesh…** by the preview, or **File → Export Mesh…** in the Mac app,
+offers **Printed coils** with layer lines after slicing and **Designed surface**
+with supported geometric Weaves and Images, without bead lines. Both write OBJ
+in millimetres. The surface export covers the whole placed form and reports any
+unsupported geometry or wall mode instead of losing its design.
+
+Mesh Mode turns a closed OBJ, STL, 3MF, or PLY mesh into an in/out wobble or
 woven vessel path. The runnable walkthrough deliberately uses a small
 **synthetic stand-in**. Real TwistTumbler exports and their Grasshopper
 statistics reference live under `tests/fixtures/reference/`; they are frozen

@@ -51,10 +51,12 @@ def _app_function(name: str) -> str:
 
 # A fake clock and the same writer + history + gate wiring both modes use.
 RIG = """
-const ui = require(%(module)s);
+const ui = require(__MODULE__);
 function rig() {
   let now = 0, timers = [], id = 0;
-  const setTimer = (cb, wait) => { const t = { id: ++id, at: now + wait, cb }; timers.push(t); return t.id; };
+  const setTimer = (cb, wait) => {
+    const t = { id: ++id, at: now + wait, cb }; timers.push(t); return t.id;
+  };
   const clearTimer = (gone) => { timers = timers.filter((t) => t.id !== gone); };
   const advance = (ms) => {
     const end = now + ms;
@@ -81,7 +83,7 @@ function rig() {
   r.edit = (patch) => { Object.assign(state, patch); r.writer.schedule(); };
   return r;
 }
-""" % {"module": json.dumps(str(MODULE))}
+""".replace("__MODULE__", json.dumps(str(MODULE)))
 
 
 def test_defects_1_and_10_a_quick_undo_records_the_waiting_edit_first_and_loses_nothing() -> None:
@@ -287,7 +289,9 @@ def test_the_undo_shelf_is_a_bounded_most_recently_used_cache() -> None:
         shelf.put("c", 3);       // b goes, a stays
         const afterCap = shelf.keys();
         shelf.drop((value) => value === 3);
-        console.log(JSON.stringify({{ afterCap, afterDrop: shelf.keys(), missing: shelf.get("b") }}));
+        console.log(JSON.stringify({{
+          afterCap, afterDrop: shelf.keys(), missing: shelf.get("b"),
+        }}));
         """
     )
     assert result == {"afterCap": ["a", "c"], "afterDrop": ["a"], "missing": None}
@@ -296,7 +300,9 @@ def test_the_undo_shelf_is_a_bounded_most_recently_used_cache() -> None:
 def test_the_slice_cache_key_is_the_rule_that_drops_a_slice_and_nothing_else() -> None:
     helpers = "\n".join(
         [
-            WEAVE[WEAVE.index("  const SLICE_KEY_FIELDS = [") : WEAVE.index("  function meshKeyOf")],
+            WEAVE[
+                WEAVE.index("  const SLICE_KEY_FIELDS = [") : WEAVE.index("  function meshKeyOf")
+            ],
             _weave_function("meshKeyOf", "function sliceKeyOf"),
             _weave_function("sliceKeyOf", "// The print range a slice fills in"),
         ]
@@ -315,7 +321,9 @@ def test_the_slice_cache_key_is_the_rule_that_drops_a_slice_and_nothing_else() -
           },
         };
         const key = sliceKeyOf(base);
-        const variant = (patch) => sliceKeyOf({ ...base, ...patch, slice: { ...base.slice, ...(patch.slice || {}) } });
+        const variant = (patch) => sliceKeyOf({
+          ...base, ...patch, slice: { ...base.slice, ...(patch.slice || {}) },
+        });
         console.log(JSON.stringify({
           pattern: variant({ pattern_json: "{\\"amplitude\\":4}" }) === key,
           range: variant({ slice: { range_enabled: true, range_to: 20, range_total: 27 } }) === key,
@@ -345,7 +353,9 @@ def test_the_slice_cache_key_is_the_rule_that_drops_a_slice_and_nothing_else() -
 FAKE_DOM = """
 class Node {}
 class Element extends Node {
-  constructor(tag, { type = "", attrs = {} } = {}) { super(); this.tag = tag; this.type = type; this.attrs = attrs; this.blurs = 0; }
+  constructor(tag, { type = "", attrs = {} } = {}) {
+    super(); this.tag = tag; this.type = type; this.attrs = attrs; this.blurs = 0;
+  }
   contains(node) { return node === this; }
   matches(selector) {
     if (selector === COMMITTABLE_FIELD) {
@@ -353,12 +363,15 @@ class Element extends Node {
         && !["checkbox", "radio", "range", "button", "submit", "file"].includes(this.type));
     }
     if (selector.startsWith("textarea, [contenteditable]")) {
-      return this.tag === "textarea" || (this.attrs.contenteditable !== undefined && this.attrs.contenteditable !== "false");
+      return this.tag === "textarea" || (this.attrs.contenteditable !== undefined
+        && this.attrs.contenteditable !== "false");
     }
     throw new Error(`unexpected selector ${selector}`);
   }
   closest(selector) { return this.matches(selector) ? this : null; }
-  blur() { this.blurs += 1; document.activeElement = document.body; calls.push(`blur:${this.tag}`); }
+  blur() {
+    this.blurs += 1; document.activeElement = document.body; calls.push(`blur:${this.tag}`);
+  }
 }
 class HTMLElement extends Element {}
 class HTMLInputElement extends HTMLElement {}
@@ -500,9 +513,12 @@ def test_item_13_in_the_mac_app_one_command_z_steps_once_through_the_edit_menu()
 
 
 def test_defect_1_both_modes_record_the_waiting_edit_before_they_step() -> None:
-    assert "writer?.flush();" in MODULE.read_text(encoding="utf-8").split(
-        "function stepHistory", 1
-    )[1].split("function createRecentShelf", 1)[0]
+    assert (
+        "writer?.flush();"
+        in MODULE.read_text(encoding="utf-8")
+        .split("function stepHistory", 1)[1]
+        .split("function createRecentShelf", 1)[0]
+    )
     step = _weave_function("stepWeaveHistory", "function undoWeaveSettings")
     assert "window.ClaylineStudioState.stepHistory({" in step
     assert "writer: weaveStateWriter," in step
@@ -513,10 +529,10 @@ def test_defect_1_both_modes_record_the_waiting_edit_before_they_step() -> None:
     # A direct upload supersedes the debounced one, so a fast undo after a
     # move sends the model once.
     upload = _weave_function("uploadMesh", "async function recoverFromExpiredSession")
-    assert upload.index("window.clearTimeout(S.timers.mesh);") < upload.index("newStage(\"mesh\")")
+    assert upload.index("window.clearTimeout(S.timers.mesh);") < upload.index('newStage("mesh")')
 
 
-def test_defects_3_and_10_each_gizmo_release_is_one_step_and_a_press_on_the_view_leaves_fields() -> None:
+def test_each_gizmo_release_is_one_step_and_a_view_press_leaves_fields() -> None:
     for name, following in (
         ("commitGizmoMove", "function commitGizmoRotate"),
         ("commitGizmoRotate", "function commitGizmoScale"),
@@ -540,8 +556,14 @@ def test_defects_3_and_10_each_gizmo_release_is_one_step_and_a_press_on_the_view
     assert 'tilesWorkspace?.addEventListener("change", commitSoon);' in draw_points
     assert "queueMicrotask(commitPendingDrawEdit)" in draw_points
     # Typing again after Enter waits for the field's own commit.
-    assert "if (event.isTrusted && document.activeElement === control) weaveHistoryGestureActive = true;" in WEAVE
-    assert "if (event.isTrusted && document.activeElement === control) drawHistoryGestureActive = true;" in APP
+    assert (
+        "if (event.isTrusted && document.activeElement === control) "
+        "weaveHistoryGestureActive = true;" in WEAVE
+    )
+    assert (
+        "if (event.isTrusted && document.activeElement === control) "
+        "drawHistoryGestureActive = true;" in APP
+    )
 
 
 def test_draw_bed_map_drags_commit_a_typed_field_first_then_record_one_step() -> None:
@@ -623,7 +645,9 @@ def test_defect_6_loading_a_model_is_one_step_that_undo_reverses() -> None:
     ]
     assert order == sorted(order)
     assert "const WEAVE_MODEL_LIMIT = 3;" in WEAVE
-    assert "adoptWeaveModel(S.file);" in _weave_function("openWeaveProject", "function bindHistoryFieldCommits")
+    assert "adoptWeaveModel(S.file);" in _weave_function(
+        "openWeaveProject", "function bindHistoryFieldCommits"
+    )
     switch = _weave_function("switchWeaveModel", "function historyLanding")
     assert "weaveModelShelf?.get(token)" in switch
     assert 'showWeaveState("empty");' in switch
@@ -632,9 +656,9 @@ def test_defect_6_loading_a_model_is_one_step_that_undo_reverses() -> None:
 def test_defect_9_restoring_every_setting_from_a_print_file_is_one_step() -> None:
     restore = _weave_function("restoreFromGcode", "function ensureRestoreProfileOption")
     everything = restore[restore.index("if (everything) {") :]
-    assert everything.index("weaveStateWriter?.suspend(() => applyWeaveSettings(snapshot, { settle: true }));") < (
-        everything.index("commitPendingWeaveEdit();\n        const source")
-    )
+    assert everything.index(
+        "weaveStateWriter?.suspend(() => applyWeaveSettings(snapshot, { settle: true }));"
+    ) < (everything.index("commitPendingWeaveEdit();\n        const source"))
 
 
 def test_defect_8_a_cancelled_draw_drag_ends_its_gesture() -> None:
@@ -757,15 +781,19 @@ def test_review_1_a_carried_change_keeps_the_step_exact_down_to_the_pattern_text
         f"""
         const ui = require({json.dumps(str(MODULE))});
         const pattern = (settings, wave) => JSON.stringify({{ schema: "p", wave, settings }});
-        const step = {{ pattern_json: pattern({{ amplitude: 2, z_blend: true }}, [1, 2]), texture: "basket", x: 0 }};
+        const step = {{ pattern_json: pattern({{ amplitude: 2, z_blend: true }}, [1, 2]),
+          texture: "basket", x: 0 }};
         // Nothing of the potter's waiting: the step becomes exactly what is live.
         const before = {{ ...step }};
-        const after = {{ pattern_json: pattern({{ amplitude: 2.004, z_blend: false }}, [1, 2]), texture: null, x: 0 }};
+        const after = {{ pattern_json: pattern({{ amplitude: 2.004, z_blend: false }}, [1, 2]),
+          texture: null, x: 0 }};
         const whole = ui.carryStudioChange(step, before, after);
         // A curve point still held changes the live wave: the step keeps its own
         // wave and takes only the vase switch.
-        const live = {{ ...step, pattern_json: pattern({{ amplitude: 2, z_blend: true }}, [1, 2, 3]), x: 5 }};
-        const later = {{ ...live, pattern_json: pattern({{ amplitude: 2, z_blend: false }}, [1, 2, 3]), texture: null }};
+        const live = {{ ...step,
+          pattern_json: pattern({{ amplitude: 2, z_blend: true }}, [1, 2, 3]), x: 5 }};
+        const later = {{ ...live,
+          pattern_json: pattern({{ amplitude: 2, z_blend: false }}, [1, 2, 3]), texture: null }};
         const held = ui.carryStudioChange(step, live, later);
         // A key the studio removes is removed from the step too.
         const removed = ui.carryStudioChange({{ a: 1, b: 2 }}, {{ a: 1, b: 2 }}, {{ a: 1 }});
@@ -780,7 +808,11 @@ def test_review_1_a_carried_change_keeps_the_step_exact_down_to_the_pattern_text
     assert result == {
         "whole": True,
         "held": {
-            "pattern_json": {"schema": "p", "wave": [1, 2], "settings": {"amplitude": 2, "z_blend": False}},
+            "pattern_json": {
+                "schema": "p",
+                "wave": [1, 2],
+                "settings": {"amplitude": 2, "z_blend": False},
+            },
             "texture": None,
             "x": 0,
         },
@@ -809,7 +841,9 @@ def test_review_1_vase_mode_comes_off_for_real_and_every_landing_says_so() -> No
         // A form that can take vase mode keeps it.
         box.checked = true; S.zBlendUnavailable = false;
         const kept = dropUnavailableVase();
-        console.log(JSON.stringify({ first, second, exact, kept, boxAfterKept: box.checked, cleared }));
+        console.log(JSON.stringify({
+          first, second, exact, kept, boxAfterKept: box.checked, cleared,
+        }));
         """
     )
     # The switch and the pattern that is sent agree, so the final path never

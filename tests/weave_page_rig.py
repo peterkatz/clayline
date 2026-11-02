@@ -101,6 +101,7 @@ def run_page(
     weave_source: str | None = None,
     html: str | None = None,
     timeout_s: float = 180.0,
+    studio_controls: bool = False,
 ) -> dict[str, Any]:
     """Run ``script`` against the Weave page and return its ``out`` object."""
 
@@ -128,6 +129,7 @@ def run_page(
             "CLAYLINE_PAGE_WEAVE": str(weave),
             "CLAYLINE_PAGE_STATIC": str(STATIC),
             "CLAYLINE_PAGE_SCRIPT": str(steps),
+            "CLAYLINE_PAGE_CONTROLS": "1" if studio_controls else "0",
         }
         result: dict[str, Any] | None = None
         with errors.open("w", encoding="utf-8") as stderr, TestClient(create_app()) as client:

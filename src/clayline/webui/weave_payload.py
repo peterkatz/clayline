@@ -338,6 +338,8 @@ def images_payload(pattern: Pattern, sliced: SlicedForm | None = None) -> list[d
         if circumference > 0 and image.placement == "repeat":
             fit = fit_repeat(image, circumference)
             row.update(
+                reference_circumference_mm=circumference,
+                applied_copies=max(1, round(circumference / fit.width_mm)),
                 applied_angle_deg=fit.rotation_deg,
                 applied_width_mm=fit.width_mm,
                 applied_height_mm=fit.height_mm,

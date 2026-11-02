@@ -2,6 +2,27 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.11.0 — 2026-11-02
+
+- Rename the mesh workspace **Mesh Mode**, keeping **Weave** as the waveform effect.
+- Organize both modes into independent, locally remembered accordion sections.
+- Type precise values beside sliders, including between drag increments, with
+  Enter/blur to apply, Escape to cancel, range feedback, and one Undo per edit.
+- Add **Invert wave** and **Reverse wave** for the selected Weave's saved curve.
+- Default new repeating Images to proportional **Pattern size** with whole-copy
+  seamless fitting. Keep **Set repeats & height** for deliberate stretching and
+  preserve the appearance of existing patterns and projects.
+- Offer **Printed coils** and **Designed surface** OBJ exports. The new surface
+  export preserves the whole placed source, bakes supported geometric effects,
+  checks cross-section agreement, and explains unsupported designs.
+- Enter exact one-based move numbers in the preview scrubber.
+- Check first-layer links between separate fill pockets against the actual
+  material. An unproved link now uses the existing safe travel and warning;
+  contained joins and ordinary print paths retain their exact bytes.
+- Align release checks with the current layer, metadata, and continuity
+  contracts while preserving historical machine evidence. Explicitly deferred
+  Revision 3 acceptance remains separately runnable.
+
 ## 0.10.0 — 2026-11-01
 
 ### New

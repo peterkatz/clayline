@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import pytest
+from golden_support import historical_profile
 
 from clayline.emit import EmissionSettings, emit_gcode
 from clayline.lint import lint_file, lint_gcode
@@ -105,7 +106,9 @@ def test_lint_rejects_forged_or_missing_deferred_e_marker() -> None:
 
 
 def test_valid_golden_passes_independent_modal_lint() -> None:
-    profile = load_profile("potterbot-xl")
+    # An archived print must be audited against the printer blocks it actually
+    # contains. Current-profile emissions are independently exercised below.
+    profile = historical_profile()
     report = lint_file(GOLDEN, profile)
     assert report.ok, report.format()
     # Successful PotterBot reference contract: measured width x layer height.
@@ -119,7 +122,7 @@ def test_valid_golden_passes_independent_modal_lint() -> None:
 def test_thread_release_does_not_exempt_later_low_xy_from_clearance_lint() -> None:
     """Descending after release cannot license XY travel through deposited clay."""
 
-    profile = load_profile("potterbot-xl")
+    profile = historical_profile()
     gcode = CORRECTED_GOLDEN.read_text(encoding="utf-8")
     assert lint_gcode(gcode, profile).ok
 

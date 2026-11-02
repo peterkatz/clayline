@@ -24,9 +24,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "src" / "clayline" / "webui" / "static"
 VIEWPORT = (STATIC / "viewport3d.js").read_text(encoding="utf-8")
-BRIDGE = (ROOT / "app" / "ClaylineMac" / "Sources" / "Clayline" / "SpaceMouseBridge.swift").read_text(
-    encoding="utf-8"
-)
+BRIDGE = (
+    ROOT / "app" / "ClaylineMac" / "Sources" / "Clayline" / "SpaceMouseBridge.swift"
+).read_text(encoding="utf-8")
 
 BLEND = max(0.08, 1 - 0.9 * 0.6)
 
@@ -48,9 +48,13 @@ function element(extra) {
     clientWidth: 800, clientHeight: 600,
     append() {}, remove() {}, setPointerCapture() {}, releasePointerCapture() {},
     addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
-    removeEventListener(type, fn) { listeners[type] = (listeners[type] || []).filter((f) => f !== fn); },
+    removeEventListener(type, fn) {
+      listeners[type] = (listeners[type] || []).filter((f) => f !== fn);
+    },
     getClientRects() { return [{}]; },
-    getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 600, right: 800, bottom: 600 }; },
+    getBoundingClientRect() {
+      return { left: 0, top: 0, width: 800, height: 600, right: 800, bottom: 600 };
+    },
     getContext() { return null; },
   }, extra || {});
 }
@@ -88,11 +92,14 @@ function studio() {
   const api = ctx.claylineViewport3d;
   const host = element();
   api.init(host);
-  api.setInteractionHandlers(new Proxy({}, { get: (_, name) => (...args) => calls.push(String(name)) }));
+  api.setInteractionHandlers(new Proxy({}, {
+    get: (_, name) => (...args) => calls.push(String(name)),
+  }));
   // A 40 mm cube standing on the bed, centred off the origin.
   const v = [];
   for (const x of [-10, 30]) for (const y of [-40, 0]) for (const z of [0, 40]) v.push([x, y, z]);
-  const f = [[0,1,3],[0,3,2],[4,6,7],[4,7,5],[0,4,5],[0,5,1],[2,3,7],[2,7,6],[0,2,6],[0,6,4],[1,5,7],[1,7,3]];
+  const f = [[0,1,3],[0,3,2],[4,6,7],[4,7,5],[0,4,5],[0,5,1],
+    [2,3,7],[2,7,6],[0,2,6],[0,6,4],[1,5,7],[1,7,3]];
   api.setMesh(v, f);
   api.resetView();
   const frame = () => frames.splice(0).forEach((cb) => cb());
@@ -101,14 +108,16 @@ function studio() {
   const camera = drawn.camera;
   const mesh = scene.children.find((child) => child.isMesh);
   calls.length = 0;
-  return { ctx, api, sm: ctx.claylineSpaceMouse, host, win, camera, mesh, scene, calls, frame, THREE: ctx.THREE };
+  return { ctx, api, sm: ctx.claylineSpaceMouse, host, win, camera, mesh, scene,
+    calls, frame, THREE: ctx.THREE };
 }
 
 function pose(camera) {
   return { p: camera.position.toArray(), q: camera.quaternion.toArray() };
 }
 function near(a, b, tol, what) {
-  a.forEach((value, i) => assert.ok(Math.abs(value - b[i]) <= tol, `${what}[${i}]: ${value} vs ${b[i]}`));
+  a.forEach((value, i) => assert.ok(
+    Math.abs(value - b[i]) <= tol, `${what}[${i}]: ${value} vs ${b[i]}`));
 }
 const DEG = Math.PI / 180;
 // The upright turntable's screen axes at the opening view (azimuth -45, elevation 28).
@@ -123,7 +132,8 @@ function screenAxes(THREE) {
 // Where Refab's turn of the scene by `degrees` about `axis` through `pivot`
 // puts this camera: the camera carried the opposite way.
 function turned(THREE, before, axis, degrees, pivot) {
-  const back = new THREE.Quaternion().setFromAxisAngle(axis.clone().normalize(), degrees * DEG).invert();
+  const back = new THREE.Quaternion()
+    .setFromAxisAngle(axis.clone().normalize(), degrees * DEG).invert();
   const p = new THREE.Vector3().fromArray(before.p).sub(pivot).applyQuaternion(back).add(pivot);
   const q = new THREE.Quaternion().fromArray(before.q).premultiply(back);
   return { p: p.toArray(), q: q.toArray() };
@@ -158,7 +168,11 @@ def test_refabs_smoothing_and_speed_are_the_defaults_the_view_uses() -> None:
     assert result["smoothing"] == 0.6
     assert result["speed"] == 1.0
     assert (result["orbitGain"], result["panGain"], result["zoomGain"]) == (0.02, 0.015, 0.012)
-    assert (result["degreesPerUnit"], result["zoomPerUnit"], result["panPerUnit"]) == (0.35, 0.0025, 0.004)
+    assert (result["degreesPerUnit"], result["zoomPerUnit"], result["panPerUnit"]) == (
+        0.35,
+        0.0025,
+        0.004,
+    )
 
 
 def test_a_twist_turns_the_view_about_the_screens_up_axis_by_refabs_angle() -> None:
@@ -174,8 +188,7 @@ def test_a_twist_turns_the_view_about_the_screens_up_axis_by_refabs_angle() -> N
         near(pose(s.camera).p, want.p, 1e-6, "position");
         near(pose(s.camera).q, want.q, 1e-9, "orientation");
         console.log(JSON.stringify({ ok: true }));
-        """
-        % {"degrees": degrees}
+        """.replace("%(degrees)r", repr(degrees))
     )
     assert result == {"ok": True}
     assert math.isclose(degrees, -1.40765552, rel_tol=1e-6)
@@ -204,8 +217,7 @@ def test_tilting_forward_pitches_and_tilting_sideways_rolls_about_their_own_axes
         // horizon tips.
         near(pose(r.camera).p, before.p, 1e-6, "roll keeps the camera");
         console.log(JSON.stringify({ ok: true }));
-        """
-        % {"first": first}
+        """.replace("%(first)r", repr(first))
     )
     assert result == {"ok": True}
 
@@ -216,7 +228,8 @@ def test_slide_lift_and_push_pan_and_zoom_by_refabs_factors() -> None:
     result = _run(
         """
         const results = {};
-        for (const [name, args] of [["slide", [100, 0, 0, 0, 0, 0]], ["lift", [0, 0, 100, 0, 0, 0]], ["push", [0, 100, 0, 0, 0, 0]]]) {
+        for (const [name, args] of [["slide", [100, 0, 0, 0, 0, 0]],
+          ["lift", [0, 0, 100, 0, 0, 0]], ["push", [0, 100, 0, 0, 0, 0]]]) {
           const s = studio();
           const target = new s.THREE.Box3().setFromObject(s.mesh).getCenter(new s.THREE.Vector3());
           const start = s.camera.position.clone();
@@ -243,7 +256,9 @@ def test_slide_lift_and_push_pan_and_zoom_by_refabs_factors() -> None:
         others = {"across", "upward", "outward"} - {along}
         assert all(abs(moved[key]) < 1e-9 for key in others), (name, moved)
     push = result["push"]
-    assert math.isclose(push["after"], push["distance"] * math.exp(-first * 0.012 * 0.0025), rel_tol=1e-9)
+    assert math.isclose(
+        push["after"], push["distance"] * math.exp(-first * 0.012 * 0.0025), rel_tol=1e-9
+    )
     assert abs(push["across"]) < 1e-9 and abs(push["upward"]) < 1e-9
 
 
@@ -272,13 +287,17 @@ def test_the_3d_mouse_never_moves_the_form_its_gizmo_or_reports_an_edit() -> Non
           quaternion: s.mesh.quaternion.toArray(),
           scale: s.mesh.scale.toArray(),
           vertices: Array.from(s.mesh.geometry.attributes.position.array),
-          others: s.scene.children.filter((c) => c.isGroup).map((g) => [g.position.toArray(), g.scale.toArray(), g.quaternion.toArray(), g.visible]),
+          others: s.scene.children.filter((c) => c.isGroup).map((g) => [
+            g.position.toArray(), g.scale.toArray(), g.quaternion.toArray(), g.visible]),
         });
         const before = snap();
         const start = pose(s.camera);
         const sweeps = [[300, 0, 0, 0, 0, 0], [0, -300, 0, 0, 0, 0], [0, 0, 300, 0, 0, 0],
-          [0, 0, 0, 300, 0, 0], [0, 0, 0, 0, 300, 0], [0, 0, 0, 0, 0, 300], [-350, 350, -350, 350, -350, 350]];
-        for (const sweep of sweeps) for (let i = 0; i < 25; i += 1) assert.equal(s.sm.motion(...sweep, 3), true);
+          [0, 0, 0, 300, 0, 0], [0, 0, 0, 0, 300, 0], [0, 0, 0, 0, 0, 300],
+          [-350, 350, -350, 350, -350, 350]];
+        for (const sweep of sweeps) for (let i = 0; i < 25; i += 1) {
+          assert.equal(s.sm.motion(...sweep, 3), true);
+        }
         s.frame();
         assert.notDeepEqual(pose(s.camera), start, "the view did move");
         assert.equal(snap(), before, "the form and its gizmo stayed put");
@@ -338,7 +357,8 @@ def test_the_view_holds_still_while_the_form_is_being_dragged() -> None:
     result = _run(
         """
         const s = studio();
-        const press = { button: 0, shiftKey: false, clientX: 400, clientY: 300, pointerId: 7, preventDefault() {} };
+        const press = { button: 0, shiftKey: false, clientX: 400, clientY: 300,
+          pointerId: 7, preventDefault() {} };
         s.host.listeners.pointerdown.forEach((fn) => fn(press));
         const held = pose(s.camera);
         const moved = s.sm.motion(200, 0, 200, 0, 0, 200);
@@ -360,7 +380,8 @@ def test_a_mouse_pan_after_a_3d_mouse_turn_still_follows_the_screen() -> None:
         const up = new s.THREE.Vector3(0, 1, 0).applyQuaternion(s.camera.quaternion);
         assert.ok(Math.abs(right.z) > 0.2, "the horizon is tipped");
         const start = s.camera.position.clone();
-        const at = (x, y) => ({ button: 2, shiftKey: false, clientX: x, clientY: y, pointerId: 3, preventDefault() {} });
+        const at = (x, y) => ({ button: 2, shiftKey: false, clientX: x, clientY: y,
+          pointerId: 3, preventDefault() {} });
         s.host.listeners.pointerdown.forEach((fn) => fn(at(400, 300)));
         s.host.listeners.pointermove.forEach((fn) => fn(at(440, 300)));
         const moved = s.camera.position.clone().sub(start).normalize();

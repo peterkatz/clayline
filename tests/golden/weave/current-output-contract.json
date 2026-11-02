@@ -1,0 +1,87 @@
+{
+  "m11": {
+    "cone-ribs.gcode": {
+      "layer_count": 15,
+      "sha256": "0a17600573cea7afedee60c9ce936c1868f368382727766942982d823a8ec260",
+      "warning_counts": {
+        "overhang": 4
+      }
+    },
+    "cone-spiral.gcode": {
+      "layer_count": 15,
+      "sha256": "3ab2efa2c107ef09a84a040354b5bf0920a0f17c5b6ec3f6d27463d2c026c21c",
+      "warning_counts": {
+        "overhang": 4
+      }
+    },
+    "cone-weave.gcode": {
+      "layer_count": 15,
+      "sha256": "cedcb909b00b909c2417405efd789431570e8b520dc4ebc861c2ccca174f15d6",
+      "warning_counts": {
+        "overhang": 1
+      }
+    },
+    "cylinder-ribs.gcode": {
+      "layer_count": 15,
+      "sha256": "4b3d7b23afd103fab71b5a29b34089996e353d062eab05eea3fee9b72e66b701",
+      "warning_counts": {}
+    },
+    "cylinder-spiral.gcode": {
+      "layer_count": 15,
+      "sha256": "15f9eb38d5c2f52c18c02dc735645da92b189971c6b9797855da35a725ce1fb3",
+      "warning_counts": {}
+    },
+    "cylinder-weave.gcode": {
+      "layer_count": 15,
+      "sha256": "8ebfb3b5532a77fb3e5454a61889f3fc1b5dfc55bff234334c097534ef9e9009",
+      "warning_counts": {}
+    }
+  },
+  "m12": {
+    "cone-zblend-level-rim.gcode": {
+      "layer_count": 15,
+      "sha256": "0a089d6e395b75f17ecaaa5c39c0cfc43caa29c11cefdb4586d50373164848d2",
+      "warning_counts": {
+        "overhang": 1
+      }
+    },
+    "cone-zblend-open-rim.gcode": {
+      "layer_count": 15,
+      "sha256": "601de3fcbff878297586b719684e93953117bd509c681c17055c687b323864e9",
+      "warning_counts": {
+        "overhang": 1
+      }
+    },
+    "hollow-cylinder-bottom3.gcode": {
+      "layer_count": 10,
+      "sha256": "34721da17ba7b7b298dcf6bcee44501996c506098f98ff4b99664f673ee9e4fd",
+      "warning_counts": {}
+    },
+    "lobed-weave-zblend-bottom3.gcode": {
+      "layer_count": 15,
+      "sha256": "aeadab93955adbeff92c73f81aa1ae9bf49db503244312c42cd97880fd4465da",
+      "warning_counts": {
+        "overhang": 1
+      }
+    },
+    "tall-tumbler-infill-lines-cap.gcode": {
+      "layer_count": 40,
+      "sha256": "98100778269f19be4bcbe7a867b93a377c436135608a85905851a2f47a734b0b",
+      "warning_counts": {
+        "infill_drift": 1,
+        "infill_ramp_bridge": 1
+      }
+    },
+    "teapot-lid-solid-crossing.gcode": {
+      "layer_count": 7,
+      "sha256": "2d0021ef96ad9f468264ba65aed5f8de631478f925bd1ef98c7a0ed7e2cf8fe8",
+      "warning_counts": {
+        "overhang": 1
+      }
+    }
+  },
+  "profile": "potterbot-xl@1.4.0",
+  "release_stamp_normalization": "clayline_version=<release>; actual header must equal clayline.__version__",
+  "schema": "clayline.current-output-contract.v1",
+  "source_commit": "bb1b7c841ffba0de086ce51cff521bfbb151c141"
+}

@@ -180,7 +180,9 @@ def test_job_defaults_to_legacy_pages_and_requires_explicit_opt_in() -> None:
 def test_job_settings_appends_protection_model_without_moving_legacy_fields() -> None:
     protection_model = _enum("ThreadProtectionModel")
     names = tuple(field.name for field in fields(JobSettings))
-    assert names == (*LEGACY_JOB_SETTINGS_FIELDS, "thread_protection_model")
+    # The bed-height feature appended its field after the protection model;
+    # both additions preserve every historical positional argument.
+    assert names == (*LEGACY_JOB_SETTINGS_FIELDS, "thread_protection_model", "bed_offset")
 
     legacy_positional_values = (
         3,
@@ -204,12 +206,18 @@ def test_job_settings_appends_protection_model_without_moving_legacy_fields() ->
         legacy_positional_values
     )
     assert settings.thread_protection_model is None
+    assert settings.bed_offset == 0.0
 
     explicit = JobSettings(
         *legacy_positional_values,
         thread_protection_model=protection_model.LEGACY_FLOW_ONLY_V1,
     )
     assert explicit.thread_protection_model is protection_model.LEGACY_FLOW_ONLY_V1
+    assert explicit.bed_offset == 0.0
+
+    elevated = JobSettings(*legacy_positional_values, protection_model.LEGACY_FLOW_ONLY_V1, 2.75)
+    assert elevated.thread_protection_model is protection_model.LEGACY_FLOW_ONLY_V1
+    assert elevated.bed_offset == 2.75
 
 
 def test_slice_time_protection_resolver_matrix() -> None:

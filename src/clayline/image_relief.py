@@ -42,6 +42,13 @@ class ImageEffect:
     enabled: bool = True
     placement: str = "repeat"
     repeats: int = 8
+    # Missing fields in older patterns retain their exact stretch-based fit.
+    repeat_size_mode: str = "manual"
+    pattern_size_mm: float = 40.0
+    # A rotated proportional lattice may not have an integer nominal width
+    # count. Keep its starting width when switching to manual until Copies
+    # around is edited; a ratio keeps that intent stable as the form scales.
+    repeat_reference_width_ratio: float | None = None
     width_mm: float = 40.0
     height_mm: float = 40.0
     rotation_deg: float = 0.0
@@ -83,10 +90,19 @@ class ImageEffect:
         for key in ("enabled", "flip_x", "flip_y", "invert", "blend_edges", "layer_skip_enabled"):
             if not isinstance(getattr(self, key), bool):
                 raise ValueError(f"Image {key} must be a boolean")
+        if self.repeat_size_mode not in {"manual", "proportional"}:
+            raise ValueError("Image repeat sizing must be manual or proportional")
         if self.placement not in {"repeat", "once"}:
             raise ValueError("Image placement must be repeat or once")
-        for key in ("repeats", "layer_skip_start", "layer_skip_on", "layer_skip_off",
-                    "layer_skip_end", "fade_in_layers", "fade_out_layers"):
+        for key in (
+            "repeats",
+            "layer_skip_start",
+            "layer_skip_on",
+            "layer_skip_off",
+            "layer_skip_end",
+            "fade_in_layers",
+            "fade_out_layers",
+        ):
             value = getattr(self, key)
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError(f"Image {key} must be an integer")
@@ -95,9 +111,21 @@ class ImageEffect:
                 raise ValueError(f"Image {key} must be at least {minimum}")
         if self.repeats > 4096:
             raise ValueError("Image repeat count must be at most 4096")
-        numeric = ("width_mm", "height_mm", "rotation_deg", "offset_around_deg",
-                   "offset_height_mm", "feather_mm", "amplitude", "follow_lobes", "follow_coves",
-                   "flow_lobes", "flow_coves", "extrusion_phase_offset")
+        numeric = (
+            "width_mm",
+            "height_mm",
+            "pattern_size_mm",
+            "rotation_deg",
+            "offset_around_deg",
+            "offset_height_mm",
+            "feather_mm",
+            "amplitude",
+            "follow_lobes",
+            "follow_coves",
+            "flow_lobes",
+            "flow_coves",
+            "extrusion_phase_offset",
+        )
         for key in numeric:
             value = getattr(self, key)
             if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float)):
@@ -105,10 +133,29 @@ class ImageEffect:
             if not np.isfinite(value):
                 raise ValueError(f"Image {key} must be a finite number")
             object.__setattr__(self, key, float(value))
-        if min(self.width_mm, self.height_mm) <= 0:
+        reference_width = self.repeat_reference_width_ratio
+        if reference_width is not None:
+            if (
+                isinstance(reference_width, (bool, np.bool_))
+                or not isinstance(reference_width, (int, float))
+                or not np.isfinite(reference_width)
+                or reference_width <= 0
+            ):
+                raise ValueError("Image repeat reference width must be positive and finite")
+            object.__setattr__(self, "repeat_reference_width_ratio", float(reference_width))
+        if min(self.width_mm, self.height_mm, self.pattern_size_mm) <= 0:
             raise ValueError("Image width and height must be positive")
-        if min(self.feather_mm, self.amplitude, self.follow_lobes, self.follow_coves,
-               self.flow_lobes, self.flow_coves) < 0:
+        if (
+            min(
+                self.feather_mm,
+                self.amplitude,
+                self.follow_lobes,
+                self.follow_coves,
+                self.flow_lobes,
+                self.flow_coves,
+            )
+            < 0
+        ):
             raise ValueError("Image depth, feather, and wall multipliers cannot be negative")
         try:
             extrusion = tuple(self.extrusion)
@@ -127,10 +174,21 @@ class ImageEffect:
         """The shared per-effect controls, with the same limits as a Weave."""
         from clayline.weave_models import WeaveSettings
 
-        names = ("amplitude", "follow_lobes", "follow_coves", "flow_lobes", "flow_coves",
-                 "extrusion_phase_offset", "layer_skip_enabled", "layer_skip_start",
-                 "layer_skip_on", "layer_skip_off", "layer_skip_end", "fade_in_layers",
-                 "fade_out_layers")
+        names = (
+            "amplitude",
+            "follow_lobes",
+            "follow_coves",
+            "flow_lobes",
+            "flow_coves",
+            "extrusion_phase_offset",
+            "layer_skip_enabled",
+            "layer_skip_start",
+            "layer_skip_on",
+            "layer_skip_off",
+            "layer_skip_end",
+            "fade_in_layers",
+            "fade_out_layers",
+        )
         # Older callers can load the source module before the wall engine is
         # upgraded; the current engine supplies these same fade fields.
         accepted = {item.name for item in fields(WeaveSettings)}
@@ -166,6 +224,13 @@ def image_from_payload(value: Any) -> ImageEffect:
 def image_to_payload(effect: ImageEffect) -> dict[str, Any]:
     """Keep original uploaded bytes inside patterns and portable projects."""
     payload = {item.name: getattr(effect, item.name) for item in fields(effect)}
+    # Canonical restore capsules compare the original pattern bytes. Do not
+    # add default sizing fields to artwork saved before linked sizing existed.
+    if effect.repeat_size_mode == "manual" and effect.pattern_size_mm == 40.0:
+        payload.pop("repeat_size_mode")
+        payload.pop("pattern_size_mm")
+    if effect.repeat_reference_width_ratio is None:
+        payload.pop("repeat_reference_width_ratio")
     payload["extrusion"] = [{"u": float(p.u), "value": float(p.value)} for p in effect.extrusion]
     return payload
 
@@ -175,10 +240,16 @@ def image_catalogue() -> tuple[dict[str, Any], ...]:
     """The 80 original, 16-bit relief masters in a stable catalogue order."""
     root = files("clayline").joinpath("image_catalogue")
     return tuple(
-        {"id": p.name.removesuffix(".png"),
-         "name": p.name.removesuffix(".png").replace("-", " ").title(),
-         "filename": p.name, "width": 1024, "height": 1024, "seamless": True}
-        for p in sorted(root.iterdir(), key=lambda p: p.name) if p.name.endswith(".png")
+        {
+            "id": p.name.removesuffix(".png"),
+            "name": p.name.removesuffix(".png").replace("-", " ").title(),
+            "filename": p.name,
+            "width": 1024,
+            "height": 1024,
+            "seamless": True,
+        }
+        for p in sorted(root.iterdir(), key=lambda p: p.name)
+        if p.name.endswith(".png")
     )
 
 
@@ -278,12 +349,21 @@ def image_info(effect: ImageEffect) -> dict[str, Any]:
     dx = np.abs(relief[:, 0] - relief[:, -1])
     dy = np.abs(relief[0, :] - relief[-1, :])
     edge_error = float(max(np.mean(dx), np.mean(dy)))
-    nearby = max((float(np.mean(np.abs(d))) for d in
-                  (np.diff(relief[:, :8], axis=1), np.diff(relief[:8, :], axis=0))
-                  if d.size), default=0.0)
+    nearby = max(
+        (
+            float(np.mean(np.abs(d)))
+            for d in (np.diff(relief[:, :8], axis=1), np.diff(relief[:8, :], axis=0))
+            if d.size
+        ),
+        default=0.0,
+    )
     seamless = bool(effect.source_id) or edge_error <= max(0.025, nearby * 3)
-    return {"width": relief.shape[1], "height": relief.shape[0],
-            "seamless": seamless, "edge_error": edge_error}
+    return {
+        "width": relief.shape[1],
+        "height": relief.shape[0],
+        "seamless": seamless,
+        "edge_error": edge_error,
+    }
 
 
 def image_edge_mismatch(effect: ImageEffect) -> float:
@@ -332,8 +412,9 @@ def _sample(data: NDArray, u: NDArray, v: NDArray, *, wrap: bool) -> NDArray:
     nx, ny = (ix + 1) % width, (iy + 1) % height
     if not wrap:
         nx, ny = np.minimum(ix + 1, width - 1), np.minimum(iy + 1, height - 1)
-    return ((1 - fy) * ((1 - fx) * data[iy, ix] + fx * data[iy, nx])
-            + fy * ((1 - fx) * data[ny, ix] + fx * data[ny, nx]))
+    return (1 - fy) * ((1 - fx) * data[iy, ix] + fx * data[iy, nx]) + fy * (
+        (1 - fx) * data[ny, ix] + fx * data[ny, nx]
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,8 +437,17 @@ def fit_repeat(effect: ImageEffect, reference_circumference_mm: float) -> Repeat
     through a taper. Moving a nozzle start never enters these coordinates.
     """
     circumference = max(float(reference_circumference_mm), 1e-6)
-    width = circumference / effect.repeats
-    height = effect.height_mm
+    if effect.repeat_size_mode == "proportional":
+        source, _ = _source_data(effect.source_id, effect.data_base64)
+        width = effect.pattern_size_mm
+        height = width * source.shape[0] / source.shape[1]
+    else:
+        width = (
+            circumference * effect.repeat_reference_width_ratio
+            if effect.repeat_reference_width_ratio is not None
+            else circumference / effect.repeats
+        )
+        height = effect.height_mm
     angle = np.deg2rad(effect.rotation_deg)
     desired_m = circumference * np.cos(angle) / width
     desired_n = -circumference * np.sin(angle) / height
@@ -366,15 +456,19 @@ def fit_repeat(effect: ImageEffect, reference_circumference_mm: float) -> Repeat
         # For a tile taller than a tiny piece, the closest nonzero lattice
         # vector is still a usable repeat and is reported beside Rotate.
         candidates = ((1, 0), (-1, 0), (0, 1), (0, -1))
-        m, n = min(candidates, key=lambda p: (p[0] - desired_m) ** 2 +
-                   (p[1] - desired_n) ** 2)
+        m, n = min(candidates, key=lambda p: (p[0] - desired_m) ** 2 + (p[1] - desired_n) ** 2)
     scale = np.hypot(m * width, n * height) / circumference
     fitted_angle = np.arctan2(-n * height, m * width)
     applied_width, applied_height = width / scale, height / scale
-    return RepeatFit(m=m, n=n, rotation_deg=float(np.rad2deg(fitted_angle)),
-                     width_mm=float(applied_width), height_mm=float(applied_height),
-                     u_height_per_mm=float(np.sin(fitted_angle) / applied_width),
-                     v_height_per_mm=float(np.cos(fitted_angle) / applied_height))
+    return RepeatFit(
+        m=m,
+        n=n,
+        rotation_deg=float(np.rad2deg(fitted_angle)),
+        width_mm=float(applied_width),
+        height_mm=float(applied_height),
+        u_height_per_mm=float(np.sin(fitted_angle) / applied_width),
+        v_height_per_mm=float(np.cos(fitted_angle) / applied_height),
+    )
 
 
 def evaluate_image(
@@ -393,7 +487,8 @@ def evaluate_image(
     ``phase_offset`` shifts a clay track while leaving relief coordinates alone.
     """
     around, vertical, circumference = np.broadcast_arrays(
-        np.asarray(around, dtype=np.float64), np.asarray(surface_height_mm, dtype=np.float64),
+        np.asarray(around, dtype=np.float64),
+        np.asarray(surface_height_mm, dtype=np.float64),
         np.asarray(circumference_mm, dtype=np.float64),
     )
     if not effect.enabled or not (effect.source_id or effect.data_base64):
@@ -402,7 +497,15 @@ def evaluate_image(
     vertical = vertical - effect.offset_height_mm
     if effect.placement == "repeat":
         fit = fit_repeat(effect, reference_circumference_mm)
-        s = around - offset - phase_offset / effect.repeats
+        phase_repeats = (
+            reference_circumference_mm / fit.width_mm
+            if (
+                effect.repeat_size_mode == "proportional"
+                or effect.repeat_reference_width_ratio is not None
+            )
+            else effect.repeats
+        )
+        s = around - offset - phase_offset / max(phase_repeats, 1e-6)
         u = fit.m * s + fit.u_height_per_mm * vertical
         # Image rows increase downward; positive surface height reads upward.
         v = fit.n * s + fit.v_height_per_mm * vertical
@@ -410,16 +513,25 @@ def evaluate_image(
     else:
         # A stencil center may cross the artwork wrap freely. The shortest
         # arc is measured in millimeters on this original sliced contour.
-        s = np.remainder(around - offset - phase_offset * effect.width_mm /
-                         np.maximum(circumference, 1e-6) + 0.5, 1) - 0.5
+        s = (
+            np.remainder(
+                around
+                - offset
+                - phase_offset * effect.width_mm / np.maximum(circumference, 1e-6)
+                + 0.5,
+                1,
+            )
+            - 0.5
+        )
         x = s * circumference
         c, sn = np.cos(np.deg2rad(effect.rotation_deg)), np.sin(np.deg2rad(effect.rotation_deg))
         u = (c * x + sn * vertical) / effect.width_mm + 0.5
         v = (-sn * x + c * vertical) / effect.height_mm + 0.5
         coverage = ((u >= 0) & (u <= 1) & (v >= 0) & (v <= 1)).astype(float)
         if effect.feather_mm > 0:
-            edge = np.minimum(np.minimum(u, 1 - u) * effect.width_mm,
-                              np.minimum(v, 1 - v) * effect.height_mm)
+            edge = np.minimum(
+                np.minimum(u, 1 - u) * effect.width_mm, np.minimum(v, 1 - v) * effect.height_mm
+            )
             t = np.clip(edge / effect.feather_mm, 0, 1)
             coverage *= t * t * (3 - 2 * t)
     if effect.flip_x:
@@ -427,8 +539,9 @@ def evaluate_image(
     # A source shown upright in the picker must also climb upright on the pot.
     if not effect.flip_y:
         v = 1 - v
-    source = (_blended_source if effect.blend_edges and effect.placement == "repeat"
-              else _source_data)
+    source = (
+        _blended_source if effect.blend_edges and effect.placement == "repeat" else _source_data
+    )
     relief_data, alpha_data = source(effect.source_id, effect.data_base64)
     wrap = effect.placement == "repeat"
     alpha = _sample(alpha_data, u, v, wrap=wrap) * coverage
@@ -442,7 +555,11 @@ def evaluate_image(
 
 
 def image_preview_png(
-    effect: ImageEffect, *, repeat: int = 2, blend: bool | None = None, size: int = 256,
+    effect: ImageEffect,
+    *,
+    repeat: int = 2,
+    blend: bool | None = None,
+    size: int = 256,
 ) -> bytes:
     """Display-only preview: original relief data remains at full precision."""
     from PIL import Image
@@ -461,8 +578,9 @@ def image_preview_png(
     value = np.divide(weighted, opacity, out=np.zeros_like(weighted), where=opacity > 1e-12)
     if effect.invert:
         value = -value
-    gray = np.rint(np.clip(128 + np.where(value < 0, value * 128, value * 127),
-                          0, 255)).astype(np.uint8)
+    gray = np.rint(np.clip(128 + np.where(value < 0, value * 128, value * 127), 0, 255)).astype(
+        np.uint8
+    )
     rgba = np.stack((gray, gray, gray, np.rint(opacity * 255).astype(np.uint8)), axis=-1)
     stream = io.BytesIO()
     Image.fromarray(rgba).save(stream, format="PNG")
