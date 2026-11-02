@@ -40,7 +40,9 @@ It needs stacked passes. Add a second pass with **Repeat pass**.
 **Nothing changes in the preview when I edit.**
 The preview is showing **Sliced**, the checked path from the last slice. Slice again after an edit, or switch to **Draw** to see the editable drawing.
 
-## In Mesh Mode {#in-weave}
+<div id="in-weave" aria-hidden="true"></div>
+
+## In Mesh Mode {#in-mesh-mode}
 
 **The sliced rings look like a tangled contour map instead of stacked walls.**
 The model's up axis is wrong. Change **Up axis** under **Advanced** in 01 Form. Rhino exports are usually Y up.
