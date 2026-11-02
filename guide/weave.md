@@ -1,10 +1,12 @@
-# Mesh Mode {#weave-mesh}
+<div id="weave-mesh" aria-hidden="true"></div>
+
+# Mesh Mode {#mesh-mode}
 
 Shape a vessel from a 3D model, with wave patterns and image relief in its wall. Switch to **Mesh Mode** at the top of the window. Up to three Weaves and three Images work together on the same exterior; each keeps its own depth, clay flow and layer settings.
 
 ![Mesh Mode after slicing a vase with a sawtooth weave twisting up its wall: the form in the middle, Before you print on the right](images/tentacles-vase-sliced.png)
 
-## What Mesh mode does
+## What Mesh Mode does
 
 Clayline cuts the model into horizontal rings, one per layer, then builds a nozzle path along them. A Weave moves that path in and out of the original surface according to a wave you shape. Stack the wave's crests and you get vertical ribs. Offset them by half a wave each layer and the wall weaves. Turn them a little each layer and the pattern spirals up the pot. An Image uses the lightness of a depth map or picture to raise and recess the wall instead.
 
