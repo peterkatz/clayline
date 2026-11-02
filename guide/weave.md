@@ -8,6 +8,24 @@ Shape a vessel from a 3D model, with wave patterns and image relief in its wall.
 
 Clayline cuts the model into horizontal rings, one per layer, then builds a nozzle path along them. A Weave moves that path in and out of the original surface according to a wave you shape. Stack the wave's crests and you get vertical ribs. Offset them by half a wave each layer and the wall weaves. Turn them a little each layer and the pattern spirals up the pot. An Image uses the lightness of a depth map or picture to raise and recess the wall instead.
 
+<div class="cl-pair" markdown>
+
+<figure markdown>
+
+![A vessel fresh off the printer, its wave crests turned a little each layer into a spiral](images/prints/spiral-vessel-greenware.jpg)
+
+<figcaption>Crests turned a little each layer: a spiral climbing the pot.</figcaption>
+</figure>
+
+<figure markdown>
+
+![A vase whose wall ripples like woven cloth](images/prints/woven-vase-greenware.jpg)
+
+<figcaption>Crests offset from one layer to the next: the wall weaves.</figcaption>
+</figure>
+
+</div>
+
 Once the form is sliced, changing a Weave or Image rebuilds the final path in front of you. Choose discrete layers or a continuously rising Vase path, then a hollow, solid or ribbed interior as the form allows.
 
 ![The Images controls and fitted relief on a tapered, lobed vase](images/clayline-images-vase.png)
@@ -63,6 +81,13 @@ The wave editor shows one wave, with a faded repeat either side so you can see h
 | **Wavelength** | Crest-to-crest spacing in millimetres. Auto makes it 3.5 coils. Each closed ring rounds to a whole number of waves so the seam closes; the line under it says how many fit the widest ring. **Keep the same number of waves**, just above that line, keeps that count all the way up each part of the form. |
 | **Twist** | How many wave cycles the pattern turns between one layer and the next. |
 | **Ribs · 0**, **Stagger · 0.5**, **Spiral · +0.1** | Three presets for Twist: crests stacked into ribs, staggered like bricks, or turned gradually into a rising spiral. |
+
+<figure class="cl-photo cl-photo--tall" markdown>
+
+![A bottle with a slow spiral ridge winding up its neck over a fine staggered texture](images/prints/twisted-bottle.jpg)
+
+<figcaption>A long, slow wave spiralling up a bottle, with a fine staggered wave underneath it.</figcaption>
+</figure>
 
 **Pattern preview** shows the pot's wall unrolled flat like a fabric swatch, several layers side by side, so you can see ribs lining up, crests staggering, or the pattern drifting where the wave count changes on a taper. **Expand** opens it large.
 

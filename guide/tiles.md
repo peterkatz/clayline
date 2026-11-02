@@ -4,6 +4,24 @@ From a line drawing to a printed tile or open lacework. This is the mode Claylin
 
 ![Draw in Clay after slicing a gallery design: the workflow on the left, the plan in the middle, Before you print on the right](images/tiles-sliced.png)
 
+<div class="cl-pair" markdown>
+
+<figure markdown>
+
+![A tile fresh off the printer: a rosette inside a border of rings](images/prints/rosette-tile-greenware.jpg)
+
+<figcaption>Fresh off the printer: a rosette inside a border of rings, built up in stacked passes.</figcaption>
+</figure>
+
+<figure markdown>
+
+![The same drawing after glaze firing, a red rosette inside pale rings](images/prints/rosette-tile-glazed.jpg)
+
+<figcaption>The same drawing after glaze firing. Every line in the drawing became one coil of clay.</figcaption>
+</figure>
+
+</div>
+
 ## How Clayline reads a drawing
 
 Every line you give Clayline becomes the centre of a coil of clay. That one idea decides how to draw:
@@ -44,6 +62,13 @@ Drop one or more SVG files on the box, or click it to choose them. Each file bec
 
 **Browse the gallery** opens the example drawings that come with Clayline: 98 tiles sorted into folders by tradition, from Celtic knots and Japanese waves to Victorian ornament and a small zoo. They're the quickest way to see what the printer does with different kinds of line before you draw your own, and every one of them is yours to resize, repeat, and print. **File → Open from Gallery…** goes to the same place.
 
+<figure class="cl-photo" markdown>
+
+![A wall piece in the shape of a flag, made of dozens of small glazed tiles with rosette, star and lattice drawings](images/prints/tile-flag.jpg)
+
+<figcaption>Dozens of small tiles, each printed from its own drawing, glazed and set into one wall piece.</figcaption>
+</figure>
+
 Until you've opened a drawing from a folder of your own, choosing files starts in the gallery too. After that it starts in your own folder, wherever you last opened a drawing, and the gallery button always takes you back.
 
 ### 02 Passes
@@ -71,6 +96,13 @@ This section sets the physical coil and how each pass rises from the bed.
 | **First layer height** | The nozzle height for the very first pass only, which sets how hard the first coil is pressed onto the bed. Never changes the spacing of later passes. |
 | **Nozzle height above canvas** | Drape mode only. How high the nozzle rides above the canvas while the coil falls. The verified setup uses 20 mm. |
 | **Raise nozzle each pass** | Drape mode only. How much the nozzle rises after each pass. 0 keeps it fixed while the stack grows up toward it. |
+
+<figure class="cl-photo" markdown>
+
+![A tile printing in Drape: the nozzle rides high above the bed and the coil falls into a loose lattice](images/prints/drape-printing.jpg)
+
+<figcaption>Drape: the nozzle rides high above the work and the coil falls onto the canvas, settling into open lacework.</figcaption>
+</figure>
 
 The readout under these settings tells you what your numbers mean in clay: how much clay goes into each millimetre of line, how much the coil is squashed, how far apart side-by-side lines sit, and how much free coil there is before it squashes. Its last line is a verdict on the squash:
 
