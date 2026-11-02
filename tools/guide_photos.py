@@ -3,7 +3,8 @@
 Usage:
     python tools/guide_photos.py SOURCE_DIR guide/images/prints
 
-SOURCE_DIR holds the camera files as N.png (N is the number in the table).
+SOURCE_DIR holds the camera files as N.png (N is the number in the table) or
+under the file name the table gives; a source that is not there is skipped.
 Every output is sRGB JPEG with no camera metadata, cropped to the frame the
 page uses, gently white-balanced where the piece sat on a white bed, and
 sharpened once after shrinking.
@@ -15,6 +16,11 @@ rectangles to patch over with bed from an offset.
 """
 import io, os, sys
 from PIL import Image, ImageCms, ImageDraw, ImageFilter, ImageOps
+try:
+    import pi_heif
+    pi_heif.register_heif_opener()
+except ImportError:
+    pass
 
 SRC, OUT = sys.argv[1], sys.argv[2]
 SRGB = ImageCms.createProfile("sRGB")
@@ -42,6 +48,7 @@ PHOTOS = [
     (46, "twisted-bottle",          0.7,  (0.08, 0.04, 0.87, 0.89), 1000, 0.6, []),
     # printing page
     (43, "bottle-neck-printing",    0.8,  (0.00, 0.00, 1.00, 0.94), 1000, 0.6, []),
+    ("IMG_3523.HEIC", "potterbot-finished-print", 0.7, (0.12, 0.08, 0.93, 0.95), 1100, 0.5, []),
 ]
 
 def to_srgb(im):
@@ -74,13 +81,27 @@ def white_balance(im, strength):
     return Image.merge("RGB", bands)
 
 def patch(im, rects):
-    for (x0, y0, x1, y1), (dx, dy) in rects:
+    """Cover a mark on a plain surface: copy the surface from an offset, or
+    ("fill") blend the bands just above and below the box down through it."""
+    for (x0, y0, x1, y1), how in rects:
         w, h = im.size
         box = (int(x0*w), int(y0*h), int(x1*w), int(y1*h))
-        ox, oy = int(dx*w), int(dy*h)
-        src = (box[0]+ox, box[1]+oy, box[2]+ox, box[3]+oy)
-        tile = im.crop(src).filter(ImageFilter.GaussianBlur(1.5))
-        bw, bh = tile.size
+        bw, bh = box[2]-box[0], box[3]-box[1]
+        if how == "fill":
+            band = max(6, bh // 8)
+            above = im.crop((box[0], box[1]-band, box[2], box[1])).resize((bw, 1), Image.BOX)
+            below = im.crop((box[0], box[3], box[2], box[3]+band)).resize((bw, 1), Image.BOX)
+            tile = Image.new("RGB", (bw, bh))
+            for y in range(bh):
+                t = y / max(1, bh-1)
+                row = Image.blend(above, below, t)
+                tile.paste(row, (0, y))
+            tile = tile.filter(ImageFilter.GaussianBlur(2))
+        else:
+            dx, dy = how
+            ox, oy = int(dx*w), int(dy*h)
+            src = (box[0]+ox, box[1]+oy, box[2]+ox, box[3]+oy)
+            tile = im.crop(src).filter(ImageFilter.GaussianBlur(1.5))
         mask = Image.new("L", (bw, bh), 0)
         inset = max(4, int(min(bw, bh)*0.12))
         ImageDraw.Draw(mask).rectangle([inset, inset, bw-inset, bh-inset], fill=255)
@@ -90,7 +111,11 @@ def patch(im, rects):
 
 os.makedirs(OUT, exist_ok=True)
 for num, name, aspect, focus, long_edge, wb, patches in PHOTOS:
-    im = Image.open(f"{SRC}/{num}.png")
+    source = f"{SRC}/{num}.png" if isinstance(num, int) else f"{SRC}/{num}"
+    if not os.path.exists(source):
+        print(f"{name:28s} skipped, no {source}")
+        continue
+    im = Image.open(source)
     im = ImageOps.exif_transpose(im)
     im = to_srgb(im)
     im = patch(im, patches)
