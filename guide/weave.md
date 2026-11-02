@@ -85,10 +85,15 @@ a grayscale or color image. Middle gray preserves the original wall, lighter ton
 inward. Transparent areas leave both the wall and clay flow unchanged. Catalogue
 relief uses the original 16-bit maps; the small previews are for browsing.
 
-Click **Add image** to create an Image, then select its source from **Catalogue**
-or **Upload image…**. Click an Image tab to edit it. **Use this Image** switches
+Click **Add image** to create an Image, then choose **Browse images…** for the
+thumbnail gallery or **Upload image…** for your own artwork. The gallery shows
+each design's number and name; search either, or use **Paisleys** to see that
+set together. Choosing a design keeps the Image's placement, depth, clay flow,
+and other settings. Click an Image tab to edit it. **Use this Image** switches
 its contribution off while keeping its settings; **Remove** takes it out, and
 Undo brings it back. Three Images can sit alongside the three Weaves.
+
+![The Image gallery showing thumbnail previews, names, search, and the Paisleys filter](images/clayline-image-gallery.png)
 
 **Repeat around** holds the same repeat count as the piece narrows or widens.
 Choose the number around and the tile height, then move or rotate the whole

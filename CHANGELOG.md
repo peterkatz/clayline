@@ -10,6 +10,9 @@ What changed in each release of Clayline, newest first. Dates are release dates.
   paisleys numbered 61–80, or upload grayscale, color, or transparent artwork.
   Middle gray preserves the wall, lighter tones push outward, and darker tones
   pull inward. Transparent areas leave the wall and clay flow unchanged.
+- **A visual Image gallery.** Browse thumbnails with each design's number and
+  name, search the catalogue, or filter to the paisleys. Choosing artwork keeps
+  the selected Image's placement, depth, and clay-flow settings.
 - **Repeat around or Place once.** Repeat a whole field around the vessel, with
   rotation and spacing fitted automatically to close the artwork join. Place
   a single stencil in millimeters along the original surface, including across

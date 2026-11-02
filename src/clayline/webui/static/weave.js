@@ -166,6 +166,7 @@
     extraWeaves: [],
     images: [],
     imageCatalogue: [],
+    imageCatalogueStatus: "idle",
     selectedImage: 0,
     imageFits: [],
     // Which weave the Pattern controls show, counted from 0 (Weave 1). Never
@@ -7148,15 +7149,323 @@
     };
   }
 
-  async function loadImageCatalogue() {
-    try {
-      const result = await jsonResponse(await fetch(API.imageCatalogue));
-      S.imageCatalogue = Array.isArray(result.images) ? result.images : [];
-      syncImages();
-    } catch (_error) {
-      $("#weaveImageSourceHint").textContent = "The catalogue is unavailable. You can still upload an image.";
-      syncImages();
+  let imageCatalogueRequest = null;
+  let imageGalleryCatalogueKey = null;
+  let imageGalleryObserver = null;
+  let imageGalleryReturnFocus = null;
+  let imageGalleryWantsSelectionFocus = false;
+  let imageGalleryFilter = "all";
+  const imageSourceVersions = new WeakMap();
+
+  function nextImageSourceVersion(image) {
+    const version = (imageSourceVersions.get(image) || 0) + 1;
+    imageSourceVersions.set(image, version);
+    return version;
+  }
+
+  async function loadImageCatalogue({ retry = false } = {}) {
+    if (imageCatalogueRequest) return imageCatalogueRequest;
+    if (S.imageCatalogueStatus === "ready" && !retry) return true;
+    S.imageCatalogueStatus = "loading";
+    renderImageGallery();
+    imageCatalogueRequest = (async () => {
+      try {
+        const result = await jsonResponse(await fetch(API.imageCatalogue));
+        S.imageCatalogue = Array.isArray(result.images) ? result.images : [];
+        S.imageCatalogueStatus = "ready";
+        return true;
+      } catch (_error) {
+        S.imageCatalogueStatus = "error";
+        return false;
+      } finally {
+        syncImageSourceSummary();
+        renderImageGallery();
+        imageCatalogueRequest = null;
+      }
+    })();
+    return imageCatalogueRequest;
+  }
+
+  function syncImageSourceSummary() {
+    const image = chosenImage();
+    const source = S.imageCatalogue.find((entry) => entry.id === image?.source_id);
+    $("#weaveImageSourceName").textContent = image?.data_base64
+      ? (image.name || "Uploaded image")
+      : (source?.name || (image?.source_id ? image.name : "Choose an image"));
+    $("#weaveImageSourceKind").textContent = image?.data_base64
+      ? "Uploaded artwork"
+      : (image?.source_id ? "Catalogue depth map" : "Catalogue or uploaded artwork");
+    $("#weaveImageBrowse").disabled = !image;
+    drawImageSourceThumbnail();
+    syncImageGallerySelection();
+  }
+
+  function drawImageSourceThumbnail() {
+    const canvas = $("#weaveImageCurrentThumbnail");
+    if (!canvas) return;
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#808080";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    if (imagePreviewBitmap && chosenImage()) context.drawImage(imagePreviewBitmap, 0, 0, canvas.width, canvas.height);
+  }
+
+  function imageGalleryIsOpen() {
+    return !$("#weaveImageGalleryOverlay").hidden;
+  }
+
+  function galleryVisibleCards() {
+    return $$("[data-image-source-id]", $("#weaveImageGalleryGrid")).filter((button) => !button.hidden);
+  }
+
+  function syncImageGallerySelection() {
+    const sourceId = chosenImage()?.source_id;
+    $$("[data-image-source-id]", $("#weaveImageGalleryGrid")).forEach((button) => {
+      const selected = button.dataset.imageSourceId === sourceId;
+      button.classList.toggle("is-selected", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    });
+  }
+
+  function observeImageGalleryThumbnails() {
+    imageGalleryObserver?.disconnect();
+    imageGalleryObserver = null;
+    if (!imageGalleryIsOpen()) return;
+    const pending = $$("img[data-preview-src]", $("#weaveImageGalleryGrid"))
+      .filter((thumbnail) => !thumbnail.getAttribute("src") && !thumbnail.closest("[hidden]"));
+    const load = (thumbnail) => { thumbnail.src = thumbnail.dataset.previewSrc; };
+    if (typeof window.IntersectionObserver !== "function") {
+      // Browser-native lazy loading still bounds old engines that lack the observer.
+      pending.forEach(load);
+      return;
     }
+    imageGalleryObserver = new window.IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting || !imageGalleryIsOpen()) return;
+        load(entry.target);
+        imageGalleryObserver?.unobserve(entry.target);
+      });
+    }, { root: $("#weaveImageGalleryScroll"), rootMargin: "180px" });
+    pending.forEach((thumbnail) => imageGalleryObserver.observe(thumbnail));
+  }
+
+  function makeImageGalleryCard(entry) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "image-gallery-card";
+    button.dataset.imageSourceId = entry.id;
+    button.setAttribute("aria-label", entry.name);
+    button.title = entry.name;
+    const frame = document.createElement("span");
+    frame.className = "image-gallery-thumb is-loading";
+    const thumbnail = document.createElement("img");
+    thumbnail.alt = "";
+    thumbnail.width = 256;
+    thumbnail.height = 256;
+    thumbnail.loading = "lazy";
+    thumbnail.decoding = "async";
+    thumbnail.dataset.previewSrc = entry.preview_url;
+    const missing = document.createElement("span");
+    missing.className = "image-gallery-missing";
+    missing.textContent = "Preview unavailable";
+    missing.hidden = true;
+    thumbnail.addEventListener("load", () => frame.classList.remove("is-loading"));
+    thumbnail.addEventListener("error", () => {
+      frame.classList.remove("is-loading");
+      missing.hidden = false;
+    });
+    frame.append(thumbnail, missing);
+    const caption = document.createElement("span");
+    caption.className = "image-gallery-title";
+    const parts = /^(\d+)\s+(.+)$/.exec(entry.name);
+    if (parts) {
+      const number = document.createElement("span");
+      number.className = "image-gallery-number";
+      number.textContent = parts[1];
+      const name = document.createElement("span");
+      name.textContent = parts[2];
+      caption.append(number, name);
+    } else caption.textContent = entry.name;
+    button.append(frame, caption);
+    button.addEventListener("click", () => chooseCatalogueImage(entry.id));
+    return button;
+  }
+
+  function renderImageGallery() {
+    if (!imageGalleryIsOpen()) return;
+    const grid = $("#weaveImageGalleryGrid");
+    const empty = $("#weaveImageGalleryEmpty");
+    const emptyText = $("#weaveImageGalleryEmptyText");
+    const status = $("#weaveImageGalleryStatus");
+    const clear = $("#weaveImageGalleryClear");
+    const retry = $("#weaveImageGalleryRetry");
+    const state = S.imageCatalogueStatus;
+    empty.hidden = true;
+    clear.hidden = true;
+    retry.hidden = true;
+    grid.hidden = false;
+    $("#weaveImageGalleryScroll").setAttribute("aria-busy", String(state === "loading"));
+    if (state === "loading" || state === "idle") {
+      status.textContent = "Loading images…";
+      if (!grid.children.length) {
+        for (let index = 0; index < 12; index += 1) {
+          const skeleton = document.createElement("div");
+          skeleton.className = "image-gallery-skeleton";
+          skeleton.setAttribute("aria-hidden", "true");
+          skeleton.append(document.createElement("span"));
+          grid.append(skeleton);
+        }
+      }
+      return;
+    }
+    if (state === "error") {
+      grid.hidden = true;
+      empty.hidden = false;
+      emptyText.textContent = "The image catalogue could not be loaded. Try again, or close this window and upload an image.";
+      retry.hidden = false;
+      status.textContent = "Catalogue unavailable";
+      return;
+    }
+    const key = JSON.stringify(S.imageCatalogue.map((entry) => [entry.id, entry.name, entry.preview_url]));
+    if (imageGalleryCatalogueKey !== key) {
+      imageGalleryObserver?.disconnect();
+      grid.replaceChildren(...S.imageCatalogue.map(makeImageGalleryCard));
+      imageGalleryCatalogueKey = key;
+    }
+    const query = $("#weaveImageGallerySearch").value.trim().toLowerCase();
+    $$("[data-image-gallery-filter]").forEach((button) => {
+      const active = button.dataset.imageGalleryFilter === imageGalleryFilter;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+    $$("[data-image-source-id]", grid).forEach((button) => {
+      const entry = S.imageCatalogue.find((image) => image.id === button.dataset.imageSourceId);
+      const number = Number.parseInt(entry.id, 10);
+      const familyMatches = imageGalleryFilter === "all" || (number >= 61 && number <= 80);
+      button.hidden = !familyMatches || !`${entry.name} ${entry.id}`.toLowerCase().includes(query);
+    });
+    const visible = galleryVisibleCards();
+    syncImageGallerySelection();
+    if (!visible.length) {
+      empty.hidden = false;
+      emptyText.textContent = S.imageCatalogue.length
+        ? "No images match. Try another name or number, or show the full catalogue."
+        : "There are no catalogue images available. Close this window to upload your own artwork.";
+      clear.hidden = !S.imageCatalogue.length;
+    }
+    status.textContent = `${visible.length} of ${S.imageCatalogue.length} images${imageGalleryFilter === "paisley" ? " · Paisleys" : ""}`;
+    if (imageGalleryWantsSelectionFocus) {
+      const selected = visible.find((button) => button.dataset.imageSourceId === chosenImage()?.source_id);
+      const target = selected || visible[0] || $("#weaveImageGallerySearch");
+      target.focus({ preventScroll: true });
+      if (target !== $("#weaveImageGallerySearch")) target.scrollIntoView?.({ block: "nearest" });
+      imageGalleryWantsSelectionFocus = false;
+    }
+    observeImageGalleryThumbnails();
+  }
+
+  function openImageGallery({ search = false, query = "" } = {}) {
+    if (!chosenImage() || imageGalleryIsOpen()) return;
+    commitPendingWeaveEdit();
+    imageGalleryReturnFocus = $("#weaveImageBrowse");
+    imageGalleryFilter = "all";
+    $("#weaveImageGallerySearch").value = query;
+    imageGalleryWantsSelectionFocus = !search;
+    const overlay = $("#weaveImageGalleryOverlay");
+    overlay.hidden = false;
+    if (typeof overlay.showModal === "function") overlay.showModal();
+    else overlay.setAttribute("open", "");
+    renderImageGallery();
+    if (search) $("#weaveImageGallerySearch").focus();
+    else if (S.imageCatalogueStatus !== "ready") $("#weaveImageGalleryDialog").focus();
+    if (S.imageCatalogueStatus === "error" || S.imageCatalogueStatus === "idle") loadImageCatalogue({ retry: true });
+  }
+
+  function closeImageGallery() {
+    if (!imageGalleryIsOpen()) return;
+    const overlay = $("#weaveImageGalleryOverlay");
+    imageGalleryObserver?.disconnect();
+    imageGalleryObserver = null;
+    if (typeof overlay.close === "function" && overlay.open) overlay.close();
+    else overlay.removeAttribute("open");
+    overlay.hidden = true;
+    imageGalleryWantsSelectionFocus = false;
+    imageGalleryReturnFocus?.focus();
+    imageGalleryReturnFocus = null;
+  }
+
+  function chooseCatalogueImage(sourceId) {
+    const image = chosenImage();
+    const source = S.imageCatalogue.find((entry) => entry.id === sourceId);
+    if (!image || !source) return;
+    nextImageSourceVersion(image);
+    const unchanged = image.source_id === source.id && !image.data_base64
+      && image.name === source.name && image.blend_edges === false;
+    if (!unchanged) {
+      image.source_id = source.id;
+      image.data_base64 = null;
+      image.name = source.name;
+      image.blend_edges = false;
+      syncImages();
+      refreshImagePreview();
+      imageChanged();
+    } else renderImageLabels();
+    closeImageGallery();
+    if (!unchanged) commitWeaveStep();
+  }
+
+  function bindImageGallery() {
+    $("#weaveImageBrowse").addEventListener("click", () => openImageGallery());
+    $("#weaveImageBrowse").addEventListener("keydown", (event) => {
+      if (event.key === "/") {
+        event.preventDefault();
+        openImageGallery({ search: true });
+      }
+    });
+    $("#weaveImageGalleryClose").addEventListener("click", closeImageGallery);
+    const overlay = $("#weaveImageGalleryOverlay");
+    overlay.addEventListener("cancel", (event) => { event.preventDefault(); closeImageGallery(); });
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) closeImageGallery();
+    });
+    overlay.addEventListener("keydown", (event) => {
+      // Keep the studio's global shortcuts out of the modal and its search field.
+      event.stopPropagation();
+      if (event.key === "Escape") { event.preventDefault(); closeImageGallery(); return; }
+      if ((event.key === "/" && event.target !== $("#weaveImageGallerySearch"))
+        || ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f")) {
+        event.preventDefault();
+        imageGalleryWantsSelectionFocus = false;
+        $("#weaveImageGallerySearch").focus();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = $$("button, input, [href], [tabindex]", overlay)
+        .filter((element) => !element.disabled && !element.closest("[hidden]") && element.getAttribute("tabindex") !== "-1");
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first) { event.preventDefault(); $("#weaveImageGalleryDialog").focus(); return; }
+      if (event.shiftKey && (document.activeElement === first || !focusable.includes(document.activeElement))) {
+        event.preventDefault(); last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !focusable.includes(document.activeElement))) {
+        event.preventDefault(); first.focus();
+      }
+    });
+    $("#weaveImageGallerySearch").addEventListener("input", () => {
+      imageGalleryWantsSelectionFocus = false;
+      renderImageGallery();
+    });
+    $$("[data-image-gallery-filter]").forEach((button) => button.addEventListener("click", () => {
+      imageGalleryWantsSelectionFocus = false;
+      imageGalleryFilter = button.dataset.imageGalleryFilter;
+      renderImageGallery();
+    }));
+    $("#weaveImageGalleryClear").addEventListener("click", () => {
+      imageGalleryFilter = "all";
+      $("#weaveImageGallerySearch").value = "";
+      renderImageGallery();
+      $("#weaveImageGallerySearch").focus();
+    });
+    $("#weaveImageGalleryRetry").addEventListener("click", () => loadImageCatalogue({ retry: true }));
   }
 
   function imageChanged(quality = "settle") {
@@ -7196,19 +7505,7 @@
     const image = chosenImage();
     $("#weaveImageControls").hidden = !image;
     $("#weaveImagesEmpty").hidden = Boolean(image);
-    const source = $("#weaveImageSource");
-    source.replaceChildren();
-    const prompt = document.createElement("option");
-    prompt.value = "";
-    prompt.textContent = image?.data_base64 ? `Uploaded · ${image.name || "Image"}` : "Choose a depth map";
-    source.append(prompt);
-    S.imageCatalogue.forEach((entry) => {
-      const option = document.createElement("option");
-      option.value = entry.id;
-      option.textContent = entry.name;
-      source.append(option);
-    });
-    source.value = image?.source_id || "";
+    syncImageSourceSummary();
     if (!image) return;
     $$("[data-image-key]").forEach((control) => {
       const key = control.dataset.imageKey;
@@ -7240,7 +7537,9 @@
     });
     $$(".image-rhythm-controls input").forEach((control) => { control.disabled = !image.layer_skip_enabled; });
     const hint = $("#weaveImageSourceHint");
-    hint.textContent = image.data_base64
+    hint.textContent = !image.source_id && !image.data_base64
+      ? "Browse the catalogue or upload artwork to shape this Image."
+      : image.data_base64
       ? (repeat && !image.blend_edges
         ? "Your original artwork is preserved. If its edges differ, Blend edges previews a seamless repeat."
         : "Uploaded artwork travels with saved patterns and projects. Transparency leaves the wall unchanged.")
@@ -7274,6 +7573,7 @@
   }
 
   function drawImagePreview() {
+    drawImageSourceThumbnail();
     const canvas = $("#weaveImagePreview");
     const context = canvas.getContext("2d");
     context.fillStyle = "#808080";
@@ -7347,31 +7647,27 @@
       S.selectedImage = Math.max(0, Math.min(S.selectedImage, S.images.length - 1));
       syncImages(); refreshImagePreview(); imageChanged();
     });
-    $("#weaveImageSource").addEventListener("change", (event) => {
-      const image = chosenImage();
-      const source = S.imageCatalogue.find((entry) => entry.id === event.target.value);
-      if (!image || !source) return;
-      image.source_id = source.id; image.data_base64 = null; image.name = source.name;
-      image.placement = "repeat"; image.blend_edges = false;
-      syncImages(); refreshImagePreview(); imageChanged();
-    });
+    bindImageGallery();
     $("#weaveImageUpload").addEventListener("click", () => $("#weaveImageFile").click());
     $("#weaveImageFile").addEventListener("change", async (event) => {
       const file = event.target.files?.[0];
       const target = chosenImage();
       event.target.value = "";
       if (!file || !target) return;
+      const sourceVersion = nextImageSourceVersion(target);
+      const sourceIsCurrent = () => S.images.includes(target) && imageSourceVersions.get(target) === sourceVersion;
       const hint = $("#weaveImageSourceHint");
       hint.textContent = "Opening image…";
       try {
         const dataUrl = await new Promise((resolve, reject) => {
           const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file);
         });
+        if (!sourceIsCurrent()) return;
         const result = await jsonResponse(await fetch(API.imageUpload, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: file.name, data_base64: String(dataUrl).split(",")[1] }),
         }));
-        if (!S.images.includes(target)) return;
+        if (!sourceIsCurrent()) return;
         const uploaded = result.image;
         const initialStamp = target.placement !== "once" && Number(target.offset_height_mm) === 0;
         Object.assign(target, {
@@ -7385,7 +7681,9 @@
         syncImages(); refreshImagePreview(); imageChanged();
         commitWeaveStep();
       } catch (error) {
-        hint.textContent = `This image could not be opened. ${error.message}`;
+        if (sourceIsCurrent() && chosenImage() === target) {
+          hint.textContent = `This image could not be opened. ${error.message}`;
+        }
       }
     });
     $("#weaveImageShowJoin").addEventListener("change", drawImagePreview);

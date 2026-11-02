@@ -75,7 +75,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.10.0</string>
 	<key>CFBundleVersion</key>
-	<string>27</string>
+	<string>28</string>
 	<key>ClaylineEngineExecutable</key>
 	<string>Resources/Engine/ClaylineEngine</string>
 	<key>LSApplicationCategoryType</key>
