@@ -23,7 +23,7 @@
       </a>
       <nav class="mode-switcher" aria-label="Clayline mode">
         <button class="mode-choice is-active" id="tilesModeButton" type="button" data-clayline-mode="tiles" aria-pressed="true">Draw in Clay</button>
-        <button class="mode-choice" id="weaveModeButton" type="button" data-clayline-mode="weave" aria-pressed="false">Weave · mesh</button>
+        <button class="mode-choice" id="weaveModeButton" type="button" data-clayline-mode="weave" aria-pressed="false">Mesh Mode</button>
       </nav>
       <div class="header-meta">
         <div class="header-history" role="group" aria-label="Undo and redo">
@@ -354,6 +354,8 @@
               <button class="scrub-handle" id="scrubHandleA" type="button" role="slider" aria-label="First shown move" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" title="First shown move — drag right to hide earlier moves (arrow keys nudge it)"></button>
               <button class="scrub-handle is-playhead" id="scrubHandleB" type="button" role="slider" aria-label="Print up to this move" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" title="Playhead — the job is printed up to here; drag or use arrow keys to step moves"></button>
             </div>
+            <label class="scrub-exact">From <input id="scrubExactFrom" type="number" min="1" step="1" value="1" data-scrub-navigation aria-label="First shown move number"></label>
+            <label class="scrub-exact">To <input id="scrubExactTo" type="number" min="1" step="1" value="1" data-scrub-navigation aria-label="Last shown move number"></label>
             <button class="scrub-button scrub-all" id="scrubShowAll" type="button" title="Show every move and pass">All</button>
           </div>
         </div>
@@ -425,13 +427,13 @@
     </main>
 
     <main class="workspace weave-workspace" id="weaveWorkspace" data-mode-panel="weave" hidden>
-      <aside class="parameter-rail weave-rail" aria-label="Weave mesh parameters">
+      <aside class="parameter-rail weave-rail" aria-label="Mesh Mode parameters">
         <div class="rail-heading">
           <div>
-            <p class="eyebrow">Weave workflow</p>
+            <p class="eyebrow">Mesh workflow</p>
             <h1>Design a surface pattern</h1>
           </div>
-          <button class="icon-button" id="weaveResetButton" type="button" title="Reset Weave settings without changing Tiles" aria-label="Reset Weave parameters">
+          <button class="icon-button" id="weaveResetButton" type="button" title="Reset Mesh Mode settings" aria-label="Reset Mesh Mode parameters">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8v-4m0 0h4M4 4l3.2 3.2a7 7 0 1 1-1.5 7.6"/></svg>
           </button>
         </div>
@@ -584,6 +586,10 @@
                 <div class="scope-legend"><span>← repeat</span><strong id="weaveWaveState">flat · no wave</strong><span>repeat →</span></div>
               </div>
               <p class="field-hint">Drag a point to shape one wave. The faded copies either side show how its ends meet round the wall.</p>
+              <div class="preset-row" role="group" aria-label="Transform the selected wave">
+                <button type="button" data-wave-action="invert" title="Swap inward and outward on this Weave: ridges become grooves in the same place.">Invert wave</button>
+                <button type="button" data-wave-action="reverse" title="Read this Weave backwards around the form. The nozzle's travel direction and Twist stay the same.">Reverse wave</button>
+              </div>
               <div class="preset-row" id="weaveWavePresets" role="group" aria-label="Wave presets">
                 <button type="button" data-wave-preset="flat" class="is-active">Flat</button>
                 <button type="button" data-wave-preset="sine">Sine</button>
@@ -634,6 +640,8 @@
                 <p class="physical-readout" id="weaveAmplitudeReadout">The wave swings the same depth everywhere until these change.</p>
               </div>
 
+              <details class="advanced-controls weave-clay-flow-group">
+                <summary>Clay flow</summary>
               <div class="scope-subhead" title="More or less clay on the form's own lobes and in its coves, even with a flat wave. It scales this weave's extrusion track, adds to the other weaves' clay and pauses on this weave's plain layers. On a Flat track it adds the same clay on any weave."><span>Clay along the wall</span><strong>on lobes and in coves</strong></div>
               <div class="control-grid two-up">
                 <label class="field" title="Push less or more clay on outward lobes. Zero leaves flow unchanged."><span>Flow on lobes <output id="weaveFlowLobesOutput">unchanged</output></span><input id="weaveFlowLobes" type="range" value="0" min="-0.75" max="2" step="0.05"></label>
@@ -650,6 +658,9 @@
                 <label class="compact-field" id="weaveExtrusionPhaseField" title="Slides the swell round the wall so it lands on the crest, in the trough, or between: 0 to 0.99 of one wave."><span>Phase</span><input id="weaveExtrusionPhase" type="number" value="0" min="0" max="0.99" step="0.01" aria-describedby="weaveExtrusionPhaseHint"></label>
               </div>
               <p class="dependent-control-hint" id="weaveExtrusionPhaseHint" hidden>Extrusion phase has no effect while the extrusion track is flat.</p>
+              </details>
+              <details class="advanced-controls weave-layer-rhythm-group">
+                <summary>Layer rhythm</summary>
               <div class="weave-control-block layer-rhythm-block" id="weaveLayerRhythmBlock">
                 <label class="switch-row" title="Leaves this weave off whole layers in a rhythm; any other weave carries on. Use this weave, at the top of the section, leaves it off every layer.">
                   <span><strong>Skip layers</strong><small>Leave this weave off some layers without restarting it.</small></span>
@@ -670,6 +681,7 @@
                 </div>
                 <p class="field-hint">Ease this weave's relief and clay changes in and out together. Zero keeps a sharp switch.</p>
               </div>
+              </details>
 
 
               <div class="pattern-file-row">
@@ -717,22 +729,28 @@
                     </div>
                   </div>
                   <p class="field-hint" id="weaveImageSourceHint" aria-live="polite"></p>
-                  <div class="image-source-preview"><canvas id="weaveImagePreview" width="480" height="480" aria-label="Grayscale image repeated twice in each direction"></canvas></div>
-                  <label class="image-inline-check"><input id="weaveImageShowJoin" type="checkbox" checked><span>Show the joins in the middle</span></label>
+                  <details class="effect-disclosure">
+                    <summary>Artwork preview</summary>
+                    <div class="image-source-preview"><canvas id="weaveImagePreview" width="480" height="480" aria-label="Grayscale image repeated twice in each direction"></canvas></div>
+                    <label class="image-inline-check"><input id="weaveImageShowJoin" type="checkbox" checked><span>Show the joins in the middle</span></label>
+                  </details>
                   <label class="field"><span>Placement</span><select data-image-key="placement"><option value="repeat">Repeat around</option><option value="once">Place once</option></select></label>
+                  <label class="field" data-image-placement="repeat"><span>Repeat sizing</span><select data-image-key="repeat_size_mode"><option value="proportional">Pattern size · Keep proportions</option><option value="manual">Set repeats &amp; height</option></select></label>
+                  <label class="field" data-image-sizing="proportional"><span>Pattern size (mm)</span><input data-image-key="pattern_size_mm" type="number" min="0.1" step="any" value="40" data-unit="mm"><small>Target width of one copy at the widest ring. Whole copies fit automatically; narrower parts compress the wrap.</small></label>
                   <div class="control-grid two-up">
-                    <label class="field" data-image-placement="repeat"><span>Repeats around</span><input data-image-key="repeats" type="number" min="1" max="4096" step="1" value="8"></label>
-                    <label class="field" data-image-placement="once"><span>Width (mm)</span><input data-image-key="width_mm" type="number" min="0.1" step="1" value="40" data-unit="mm"></label>
-                    <label class="field"><span>Height (mm)</span><input data-image-key="height_mm" type="number" min="0.1" step="1" value="40" data-unit="mm"></label>
+                    <label class="field" data-image-sizing="manual"><span>Copies around</span><input data-image-key="repeats" type="number" min="1" max="4096" step="1" value="8"></label>
+                    <label class="field" data-image-placement="once"><span>Width (mm)</span><input data-image-key="width_mm" type="number" min="0.1" step="any" value="40" data-unit="mm"></label>
+                    <label class="field" id="weaveImageHeightField"><span id="weaveImageHeightLabel">Repeat height along wall (mm)</span><input data-image-key="height_mm" type="number" min="0.1" step="any" value="40" data-unit="mm"><small id="weaveImageHeightHint">Changes vertical stretch. Amplitude sets relief depth.</small></label>
                   </div>
                   <label class="image-inline-check" data-image-placement="once"><input id="weaveImageAspectLock" type="checkbox" checked><span>Keep image proportions when resizing</span></label>
+                  <p class="physical-readout" id="weaveImageFit" aria-live="polite">Repeat rotation fits automatically to close around the form.</p>
+                  <label class="field"><span>Amplitude <output id="weaveImageAmplitudeOutput">0.0 mm</output></span><input data-image-key="amplitude" type="range" min="0" max="15" step="0.1" value="0"></label>
                   <label class="field" data-image-placement="once"><span>Edge feather (mm)</span><input data-image-key="feather_mm" type="number" min="0" step="0.5" value="0" data-unit="mm"><small>Ease the stamp's perimeter back to the wall.</small></label>
                   <div class="control-grid two-up">
                     <label class="field"><span>Position around (°)</span><input data-image-key="offset_around_deg" type="number" step="1" value="0"></label>
                     <label class="field"><span>Position up (mm)</span><input data-image-key="offset_height_mm" type="number" step="1" value="0" data-unit="mm"></label>
                   </div>
                   <label class="field"><span>Rotate <output id="weaveImageRotationOutput">0°</output></span><input data-image-key="rotation_deg" type="range" min="-180" max="180" step="1" value="0"></label>
-                  <p class="physical-readout" id="weaveImageFit" aria-live="polite">Repeat rotation fits automatically to close around the form.</p>
                   <div class="image-transform-row">
                     <label class="image-inline-check"><input data-image-key="flip_x" type="checkbox"><span>Flip left / right</span></label>
                     <label class="image-inline-check"><input data-image-key="flip_y" type="checkbox"><span>Flip up / down</span></label>
@@ -740,11 +758,12 @@
                   </div>
                   <label class="switch-row" data-image-placement="repeat"><span><strong>Blend edges</strong><small>Preview a seamless blend; your original image stays intact.</small></span><input data-image-key="blend_edges" type="checkbox" role="switch"></label>
                   <div class="scope-subhead"><span>Wave depth</span><strong>follows the form's curves</strong></div>
-                  <label class="field"><span>Amplitude <output id="weaveImageAmplitudeOutput">0.0 mm</output></span><input data-image-key="amplitude" type="range" min="0" max="15" step="0.1" value="0"></label>
                   <div class="control-grid two-up">
                     <label class="field"><span>On the lobes <output data-image-output="follow_lobes">unchanged</output></span><input data-image-key="follow_lobes" data-image-offset="1" type="range" min="-1" max="2" step="0.05" value="0"></label>
                     <label class="field"><span>In the coves <output data-image-output="follow_coves">unchanged</output></span><input data-image-key="follow_coves" data-image-offset="1" type="range" min="-1" max="2" step="0.05" value="0"></label>
                   </div>
+                  <details class="effect-disclosure">
+                    <summary>Clay flow</summary>
                   <div class="scope-subhead"><span>Clay along the wall</span><strong>on lobes and in coves</strong></div>
                   <div class="control-grid two-up">
                     <label class="field"><span>Flow on lobes <output data-image-output="flow_lobes">unchanged</output></span><input data-image-key="flow_lobes" data-image-offset="1" type="range" min="-0.75" max="2" step="0.05" value="0"></label>
@@ -757,6 +776,9 @@
                     <label class="compact-field"><span>Phase</span><input data-image-key="extrusion_phase_offset" type="number" min="0" max="0.99" step="0.01" value="0"></label>
                   </div>
                   <p class="field-hint">Ridge boost follows raised tones; Trough boost follows recessed tones. Invert swaps them. Phase moves the clay boost while the relief stays put.</p>
+                  </details>
+                  <details class="effect-disclosure">
+                    <summary>Layer rhythm</summary>
                   <div class="weave-control-block layer-rhythm-block is-enabled">
                     <label class="switch-row"><span><strong>Skip layers</strong><small>Pause this Image while its placement keeps advancing.</small></span><input data-image-key="layer_skip_enabled" type="checkbox" role="switch"></label>
                     <div class="control-grid two-up image-rhythm-controls">
@@ -770,6 +792,7 @@
                       <label class="field"><span>Fade out</span><input data-image-key="fade_out_layers" type="number" min="0" step="1" value="0"><small>layers</small></label>
                     </div>
                   </div>
+                  </details>
                 </div>
               </div>
 
@@ -867,7 +890,7 @@
         </div>
       </aside>
 
-      <section class="preview-shell weave-preview-shell" aria-label="Weave toolpath preview">
+      <section class="preview-shell weave-preview-shell" aria-label="Mesh Mode toolpath preview">
         <div class="preview-toolbar weave-preview-toolbar">
           <div>
             <p class="eyebrow">Form preview</p>
@@ -875,6 +898,14 @@
           </div>
           <div class="preview-actions">
             <span class="nominal-chip weave-status-chip" id="weaveResponseState">Empty</span>
+            <details class="mesh-export-menu">
+              <summary class="secondary-button compact-button">Export mesh…</summary>
+              <div class="mesh-export-options">
+                <button type="button" class="secondary-button compact-button" id="weaveExportCoils">Printed coils (.obj)<small>With printed layer lines · slice first</small></button>
+                <button type="button" class="secondary-button compact-button" id="weaveExportSurface">Designed surface (.obj)<small>With designs, without layer lines</small></button>
+                <p id="weaveSurfaceStatus" class="field-hint" role="status" aria-live="polite"></p>
+              </div>
+            </details>
             <span class="nominal-chip weave-flow-legend" id="weaveFlowLegend" hidden>flow —</span>
             <button class="icon-button" id="weaveFlowColorButton" type="button" title="This path has no local flow variation to color." aria-label="Color by clay flow" aria-pressed="false" disabled>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5c3.2 4.1 6 7.2 6 10.6a6 6 0 1 1-12 0c0-3.4 2.8-6.5 6-10.6Z"/><path d="M9.5 14a2.6 2.6 0 0 0 2.4 2.7"/></svg>
@@ -883,7 +914,7 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H6.5A1.5 1.5 0 0 0 5 5.5v13A1.5 1.5 0 0 0 6.5 20H8m8-16h1.5A1.5 1.5 0 0 1 19 5.5v13a1.5 1.5 0 0 1-1.5 1.5H16M9.5 9l-2 3 2 3m5-6 2 3-2 3"/></svg>
             </button>
             <span class="nominal-chip weave-tool-readout" id="weavePreviewToolReadout" hidden aria-live="polite"></span>
-            <button class="icon-button" id="weaveFitButton" type="button" title="Reset 3D view" aria-label="Reset Weave 3D view" disabled>
+            <button class="icon-button" id="weaveFitButton" type="button" title="Reset 3D view" aria-label="Reset Mesh Mode 3D view" disabled>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5m13 5h5v-5"/></svg>
             </button>
           </div>
@@ -906,14 +937,14 @@
           </div>
           <div class="error-state" id="weaveErrorState" role="alert" hidden>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v5m0 3.5v.5M4.7 19h14.6L12 5 4.7 19Z"/></svg>
-            <h2>Weave couldn't finish</h2>
+            <h2>Mesh Mode couldn't finish</h2>
             <p id="weaveErrorMessage"></p>
             <p class="error-technical-line" id="weaveErrorTechnical" hidden></p>
             <button class="secondary-button compact-button" id="weaveErrorRecoveryButton" type="button" hidden></button>
             <button class="secondary-button compact-button" id="weaveRetryButton" type="button">Try again</button>
           </div>
           <div class="weave-active-state" id="weaveActiveState" hidden>
-            <div id="weaveToolpathHost" class="weave-toolpath-host" aria-label="Weave toolpath preview"></div>
+            <div id="weaveToolpathHost" class="weave-toolpath-host" aria-label="Mesh Mode toolpath preview"></div>
             <div class="transient-stamp" id="weaveTransientStamp" role="status" aria-live="polite" aria-atomic="true" aria-busy="false" hidden title="A quick sketch of the change while you drag — release to rebuild the exact final path.">
               <span>Rough preview</span>
               <span class="transient-working" id="weaveTransientWorking" hidden>
@@ -945,7 +976,7 @@
         </footer>
       </section>
 
-      <aside class="inspection-panel weave-inspection" aria-label="Weave warnings and job report">
+      <aside class="inspection-panel weave-inspection" aria-label="Mesh Mode warnings and job report">
         <div class="inspector-heading">
           <div><p class="eyebrow">Inspection</p><h2>Before you print</h2></div>
           <span class="count-badge" id="weaveWarningBadge">0</span>
@@ -1050,5 +1081,6 @@
     <script src="/static/draw.js" defer></script>
     <script src="/static/viewport3d.js" defer></script>
     <script src="/static/weave.js" defer></script>
+    <script src="/static/studio-controls.js" defer></script>
   </body>
 </html>

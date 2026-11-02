@@ -263,7 +263,9 @@ def test_browser_bridge_routes_open_export_and_finder_import_by_active_mode() ->
     # Load pattern opens a panel of saved patterns: without its own marker it
     # opened the Model box's panel, where a pattern file was greyed out.
     assert 'document.body.dataset.claylineFileRequest = "pattern"' in weave
-    assert weave.index('claylineFileRequest = "pattern"') < weave.index('$("#weavePatternFile").click()')
+    assert weave.index('claylineFileRequest = "pattern"') < weave.index(
+        '$("#weavePatternFile").click()'
+    )
     assert 'isPattern = requestToken == "pattern"' in file_types
     assert "static let patternTypes: [UTType] = [.json]" in file_types
     assert "request.isPattern" in web_view

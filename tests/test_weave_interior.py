@@ -354,6 +354,7 @@ def test_an_open_contour_skips_its_layer_and_its_walls_travel_between_islands() 
     opened = replace(
         hole,
         points=hole.points[:-1],
+        surface_height_mm=(None if hole.surface_height_mm is None else hole.surface_height_mm[:-1]),
         outward_normals=hole.outward_normals[:-1],
         u=np.linspace(0.0, 1.0, len(hole.points) - 1),
         closed=False,

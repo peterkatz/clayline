@@ -1688,10 +1688,16 @@
 
   function invalidateExact(message = "Inputs changed — rebuilding the final path.") {
     S.exactResult = null;
-    $("#weaveDownloadButton").disabled = true;
+    setExactExportsEnabled(false);
     $("#weaveExportIdentity").textContent = message;
     if (S.activeMode === "weave") window.claylineScrubber?.detach();
     syncSettleButton();
+  }
+
+  function setExactExportsEnabled(enabled) {
+    $("#weaveDownloadButton").disabled = !enabled;
+    const coils = $("#weaveExportCoils");
+    if (coils) coils.disabled = !enabled;
   }
 
   function busy(label) {
@@ -1705,7 +1711,16 @@
     syncSettleButton();
   }
 
-  async function uploadMesh({ fromHistory = S.landingFromHistory } = {}) {
+  let meshUploadPromise = null;
+  function uploadMesh(options) {
+    const pending = uploadMeshNow(options);
+    meshUploadPromise = pending;
+    return pending.finally(() => {
+      if (meshUploadPromise === pending) meshUploadPromise = null;
+    });
+  }
+
+  async function uploadMeshNow({ fromHistory = S.landingFromHistory } = {}) {
     if (!S.file) return;
     // A direct upload supersedes one still waiting out its debounce, so a fast
     // Undo after a move sends the model once, not twice.
@@ -1960,7 +1975,7 @@
       // trace in place when the exact pass lands. Only slicing (which
       // genuinely invalidates the geometry) still drops to the placeholder.
       S.busy = true;
-      $("#weaveDownloadButton").disabled = true;
+      setExactExportsEnabled(false);
       setStatus("Checking…", "exact");
       syncSettleButton();
       // If a rough trace is still on screen, show that its exact replacement
@@ -2063,7 +2078,7 @@
       renderReport(finalized.report, finalized);
     }
     const exportable = finalized.exportable === true && Boolean(finalized.result_id);
-    $("#weaveDownloadButton").disabled = !exportable;
+    setExactExportsEnabled(exportable);
     $("#weaveExportIdentity").textContent = exportable
       ? exportReadyText(finalized.gcode_sha256)
       : "Artifact audit did not produce an exportable exact result.";
@@ -2987,7 +3002,7 @@
     renderReport(payload.report, payload);
     if (quality === "settle") {
       const exportable = payload.exportable === true && Boolean(payload.result_id);
-      $("#weaveDownloadButton").disabled = !exportable;
+      setExactExportsEnabled(exportable);
       syncGcodeButton();
       if ((GPANEL.open || GPANEL.reopen) && exportable && GPANEL.resultId !== payload.result_id) {
         GPANEL.reopen = false;
@@ -4113,6 +4128,80 @@
     if (!quiet) scheduleModulation("settle");
   }
 
+  let waveTransformPending = false;
+
+  async function transformChosenWave(action) {
+    if (waveTransformPending || !["invert", "reverse"].includes(action)) return;
+    commitPendingWeaveEdit();
+    commitLiveWeave();
+    const index = S.selectedWeave;
+    // Use the exact stored knots, rather than the editor's rendered samples
+    // or its rounded controls. This includes fitted textures and seeded Noise.
+    const source = patternObject();
+    const sourceKey = sortedJson(source);
+    const next = cloneJson(source);
+    const entry = index === 0 ? next : next.extra_weaves[index - 1];
+    const boost = ["ridge-boost", "trough-boost"].includes(S.extrusionPreset)
+      ? S.extrusionPreset : null;
+    entry.wave = entry.wave.map((point) => ({
+      ...point,
+      u: action === "reverse" && point.u !== 0 ? 1 - point.u : point.u,
+      value: action === "invert" ? -point.value : point.value,
+    })).sort((left, right) => left.u - right.u);
+    // A named clay boost remains tied to the named wave feature after a
+    // transform and after saving/restoring. Its explicit phase stays untouched.
+    entry.name = boost || "custom";
+    try {
+      if (boost) {
+        waveTransformPending = true;
+        $$("[data-wave-action]").forEach((button) => { button.disabled = true; });
+        const response = await canonicalPatternRequest(next, {
+          extrusion_preset: boost,
+          ...(index > 0 ? { extrusion_preset_weave: index } : {}),
+        });
+        const fitted = JSON.parse(response.pattern.canonical_json);
+        entry.extrusion = (index === 0 ? fitted : fitted.extra_weaves[index - 1]).extrusion;
+      }
+      // An answer arriving after another edit or tab change cannot overwrite it.
+      if (S.selectedWeave !== index || sortedJson(patternObject()) !== sourceKey) return;
+      forgetWeaveView(index);
+      if (index === 0) {
+        setActiveTexture(null);
+        S.exactPattern = cloneJson(next);
+        delete S.exactPattern.extra_weaves;
+        S.wave = clonePoints(entry.wave.map((point) => [point.u, point.value]));
+        S.extrusion = clonePoints(entry.extrusion.map((point) => [point.u, point.value]));
+        S.wavePreset = "custom";
+        S.extrusionPreset = boost || S.extrusionPreset;
+      } else {
+        const record = chosenExtraWeave();
+        record.entry = weaveEntryInPageOrder(entry);
+        record.live = false;
+        record.texture = null;
+        record.wavePreset = "custom";
+        record.extrusionPreset = boost || S.extrusionPreset;
+        loadWeaveToControls(record);
+      }
+      S.selectedWavePoint = null;
+      S.selectedExtrusionPoint = null;
+      syncControls();
+      syncPresetChips();
+      syncTextureChips();
+      drawAllEditors();
+      beginMetric();
+      weaveStateWriter?.schedule();
+      invalidateExact(`${action === "invert" ? "Wave inverted" : "Wave reversed"} — rebuilding the final path.`);
+      scheduleModulation("settle");
+      commitPendingWeaveEdit();
+      setStatus(`${action === "invert" ? "Inverted" : "Reversed"} Weave ${index + 1}`);
+    } catch (error) {
+      showWeaveState("error", `Wave ${action} failed. ${error.message}`, error.status);
+    } finally {
+      waveTransformPending = false;
+      $$("[data-wave-action]").forEach((button) => { button.disabled = false; });
+    }
+  }
+
   function setExtrusionPreset(name, { quiet = false } = {}) {
     if (name === "ridge-boost" || name === "trough-boost") {
       applyEngineExtrusionPreset(name, { quiet });
@@ -4531,6 +4620,8 @@
   }
 
   function syncControls() {
+    if ($("#weaveExportCoils")) $("#weaveExportCoils").disabled = $("#weaveDownloadButton").disabled;
+    if ($("#weaveExportSurface")) $("#weaveExportSurface").disabled = !S.mesh;
     const amplitude = numberValue("#weaveAmplitude", 0);
     const followLobes = numberValue("#weaveFollowLobes", 0);
     const followCoves = numberValue("#weaveFollowCoves", 0);
@@ -6225,20 +6316,98 @@
 
   async function downloadMesh() {
     const result = S.exactResult;
-    if (!result?.exportable || !result.result_id) return;
-    const response = await fetch(result.obj_url || API.obj(result.result_id));
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      showWeaveState("error", errorMessage(payload, response), response.status);
-      return;
+    if (!result?.exportable || !result.result_id) {
+      meshExportStatus("Slice the form and wait for the final path before exporting Printed coils.", true);
+      return false;
     }
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = normalizedWeaveMeshName(result.filename || S.file?.name || "clayline-weave");
-    link.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    try {
+      meshExportStatus("Preparing the printed coils…");
+      const response = await fetch(result.obj_url || API.obj(result.result_id));
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(errorMessage(payload, response));
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = normalizedWeaveMeshName(result.filename || S.file?.name || "clayline-weave");
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      meshExportStatus("Printed coils exported. Dimensions are in millimetres.");
+      return true;
+    } catch (error) {
+      meshExportStatus(`Coil export: ${error.message}`, true);
+      return false;
+    }
+  }
+
+  let surfaceExportRunning = false;
+  function meshExportStatus(message, focus = false) {
+    const status = $("#weaveSurfaceStatus");
+    if (!status) return;
+    const menu = status.closest("details");
+    if (menu) menu.open = true;
+    status.textContent = message;
+    status.scrollIntoView({ block: "nearest" });
+    if (focus) {
+      status.tabIndex = -1;
+      status.focus({ preventScroll: true });
+    }
+  }
+  function designedSurfacePayload() {
+    // The entire current form, independent of the last slice and print band.
+    const payload = { ...slicePayload(), pattern: patternObject() };
+    delete payload.layer_range;
+    delete payload.island_stop;
+    delete payload.hollows;
+    delete payload.z_blend;
+    return payload;
+  }
+
+  async function downloadDesignedSurface() {
+    if (surfaceExportRunning) return false;
+    // File-menu exports use this same status. Reveal its menu so a refusal
+    // remains visible while the current preview and coil export stay usable.
+    meshExportStatus("Preparing the current form…");
+    surfaceExportRunning = true;
+    try {
+      // A placement edit is debounced; exporting immediately must upload
+      // that placement instead of using the previous mesh's cached id.
+      if (S.timers.mesh !== null) await uploadMesh();
+      else if (meshUploadPromise) await meshUploadPromise;
+      if (!S.mesh) throw new Error("Load a mesh before exporting its designed surface.");
+      const payload = JSON.stringify(designedSurfacePayload());
+      const filename = S.file?.name || "clayline-mesh";
+      meshExportStatus("Building and checking the designed surface…");
+      const response = await fetch("/api/weave/surface", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(errorMessage(payload, response));
+      }
+      if (S.timers.mesh !== null || meshUploadPromise
+        || payload !== JSON.stringify(designedSurfacePayload())) {
+        throw new Error("The design changed while exporting. Export again for the current design.");
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = normalizedWeaveMeshName(filename).replace(/-coils\.obj$/, "-surface.obj");
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      meshExportStatus("Designed surface exported. Dimensions are in millimetres.");
+      return true;
+    } catch (error) {
+      meshExportStatus(`Surface export: ${error.message}`, true);
+      // Keep the current preview and coil export available after a refusal.
+      return false;
+    } finally {
+      surfaceExportRunning = false;
+    }
   }
 
   const DESKTOP_MAX_MESH_BYTES = 1024 * 1024 * 1024;
@@ -6594,6 +6763,9 @@
   }
 
   function bindPatternControls() {
+    $$('[data-wave-action]').forEach((button) => button.addEventListener("click", () => {
+      transformChosenWave(button.dataset.waveAction);
+    }));
     $$('[data-wave-preset]').forEach((button) => button.addEventListener("click", () => {
       if (button.dataset.wavePreset === "noise") requestNoisePreset();
       else { beginMetric(); setWavePreset(button.dataset.wavePreset); }
@@ -7121,6 +7293,8 @@
       name: source?.name || "Image",
       enabled: true,
       placement: "repeat",
+      repeat_size_mode: "proportional",
+      pattern_size_mm: 40,
       repeats: 8,
       width_mm: 40,
       height_mm: 40,
@@ -7509,7 +7683,7 @@
     if (!image) return;
     $$("[data-image-key]").forEach((control) => {
       const key = control.dataset.imageKey;
-      const value = image[key] ?? newImage()[key];
+      const value = image[key] ?? (key === "repeat_size_mode" ? "manual" : newImage()[key]);
       if (control.type === "checkbox") control.checked = Boolean(value);
       else if (control.dataset.unit === "mm") setControlValue(`[data-image-key="${key}"]`, value);
       else control.value = Number.isFinite(Number(value)) && control.type !== "select-one"
@@ -7529,7 +7703,14 @@
     $$("[data-image-placement]").forEach((field) => {
       field.hidden = (field.dataset.imagePlacement === "repeat") !== repeat;
     });
-    $("#weaveImageRotationOutput").textContent = `${Number(image.rotation_deg || 0).toFixed(0)}°`;
+    const proportional = (image.repeat_size_mode || "manual") === "proportional";
+    $$("[data-image-sizing]").forEach((field) => {
+      field.hidden = !repeat || (field.dataset.imageSizing === "proportional") !== proportional;
+    });
+    $("#weaveImageHeightField").hidden = repeat && proportional;
+    $("#weaveImageHeightLabel").textContent = `${repeat ? "Repeat height along wall" : "Height"} (${window.claylineUnits.current})`;
+    $("#weaveImageHeightHint").hidden = !repeat;
+    $("#weaveImageRotationOutput").textContent = `${Number(image.rotation_deg || 0).toFixed(1)}°`;
     $("#weaveImageAmplitudeOutput").textContent = window.claylineUnits.fmt(Number(image.amplitude || 0), 1);
     $$("[data-image-output]").forEach((output) => {
       const key = output.dataset.imageOutput;
@@ -7563,12 +7744,42 @@
     const width = Number(fit?.applied_width_mm);
     const height = Number(fit?.applied_height_mm ?? fit?.height_mm);
     if (fit && Number.isFinite(angle)) {
+      const copies = Number(fit.applied_copies);
+      const count = Number.isFinite(copies) && Number(fit.n || 0) === 0 ? `${copies} copies · ` : "";
       const size = Number.isFinite(width) && Number.isFinite(height)
-        ? ` · ${width.toFixed(1)} × ${height.toFixed(1)} mm at the widest ring`
-        : "";
-      output.textContent = `Fitted to close · ${angle.toFixed(1)}°${size}. The repeat stays fixed as the form narrows.`;
+        ? `${window.claylineUnits.fmtBare(width, 2)} × ${window.claylineUnits.fmt(height, 2)}`
+        : "spacing closes around the form";
+      output.textContent = `${count}fitted ${size} · ${angle.toFixed(1)}° at the widest ring. Narrower parts compress the wrap.`;
     } else {
-      output.textContent = "Repeat rotation and spacing fit automatically to close. Slice the form to see the applied values.";
+      output.textContent = image.repeat_size_mode === "proportional"
+        ? "Pattern size is a target width. Whole copies keep the artwork's proportions; slice the form to measure the fit."
+        : "Copies around sets width; Repeat height stretches vertically. Slice the form to measure the seamless fit.";
+    }
+  }
+
+  function seedImageRepeatSizing(image, mode) {
+    const fit = S.imageFits[S.selectedImage];
+    const circumference = Number(fit?.reference_circumference_mm);
+    const width = Number(fit?.applied_width_mm);
+    const height = Number(fit?.applied_height_mm);
+    if (!(circumference > 0 && width > 0 && height > 0)) {
+      // There is no fitted reference ring yet; preserve the requested values.
+      return;
+    }
+    if (mode === "manual") {
+      // A rotated wide source can have a nominal width spanning more than
+      // one lap. Preserve that exact lattice until Copies around is edited.
+      image.repeats = Math.min(4096, Math.max(1, Math.round(circumference / width)));
+      image.repeat_reference_width_ratio = width / circumference;
+      image.height_mm = height;
+      image.rotation_deg = Number(fit.applied_angle_deg);
+      setControlValue('[data-image-key="height_mm"]', image.height_mm);
+      $('[data-image-key="repeats"]').value = image.repeats;
+      $('[data-image-key="rotation_deg"]').value = image.rotation_deg;
+    } else {
+      delete image.repeat_reference_width_ratio;
+      image.pattern_size_mm = width;
+      setControlValue('[data-image-key="pattern_size_mm"]', width);
     }
   }
 
@@ -7699,7 +7910,7 @@
         if (key === "repeats") value = Math.min(4096, Math.max(1, Math.trunc(value)));
         else if (["layer_skip_on", "layer_skip_off"].includes(key)) value = Math.max(1, Math.trunc(value));
         else if (key.startsWith("layer_skip_") || key.endsWith("_layers")) value = Math.max(0, Math.trunc(value));
-        else if (["height_mm", "width_mm"].includes(key)) value = Math.max(0.1, value);
+        else if (["height_mm", "width_mm", "pattern_size_mm"].includes(key)) value = Math.max(0.1, value);
         else if (key === "feather_mm") value = Math.max(0, value);
         return value;
       };
@@ -7713,7 +7924,11 @@
           image.offset_height_mm = Number(S.lastDims?.height) / 2 || image.height_mm / 2;
           setControlValue('[data-image-key="offset_height_mm"]', image.offset_height_mm);
         }
+        if (key === "repeat_size_mode" && value !== (image.repeat_size_mode || "manual")) {
+          seedImageRepeatSizing(image, value);
+        }
         image[key] = value;
+        if (key === "repeats") delete image.repeat_reference_width_ratio;
         if (["width_mm", "height_mm"].includes(key) && image.placement === "once" && $("#weaveImageAspectLock").checked && before > 0) {
           const other = key === "width_mm" ? "height_mm" : "width_mm";
           image[other] = Math.max(0.1, Number(image[other]) * value / before);
@@ -7794,6 +8009,8 @@
   }
 
   function initialise() {
+    $("#weaveExportCoils")?.addEventListener("click", downloadMesh);
+    $("#weaveExportSurface")?.addEventListener("click", downloadDesignedSurface);
     // Interface charter: these fields display the artist's chosen unit;
     // payloads stay mm through numberValue/setControlValue.
     [
@@ -7872,6 +8089,7 @@
     open: () => $("#weaveFileInput").click(),
     exportGcode: downloadGcode,
     exportMesh: downloadMesh,
+    exportDesignedSurface: downloadDesignedSurface,
     importMesh: desktopImportMesh,
     importPrintFile: desktopImportPrintFile,
     saveProject: saveWeaveProject,

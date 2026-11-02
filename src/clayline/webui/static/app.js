@@ -4022,7 +4022,7 @@ function bindEvents() {
   // reference photo's fade (never invalidates a slice — the photo never
   // prints) and Smooth (its commit marks dirty itself, and a drag that
   // settles back at zero changes nothing at all).
-  $$(`#tilesWorkspace input:not(#fileInput):not(#drawArrangeFade):not(#drawSmooth), #tilesWorkspace select`).forEach((control) => {
+  $$(`#tilesWorkspace input:not(#fileInput):not(#drawArrangeFade):not(#drawSmooth):not([data-scrub-navigation]), #tilesWorkspace select`).forEach((control) => {
     control.addEventListener("input", () => markDirty("Settings changed. Slice again before export."));
   });
   $$("#tilesWorkspace input[type='range']:not(#drawArrangeFade):not(#drawSmooth)").forEach((control) => {
@@ -4036,7 +4036,7 @@ function bindEvents() {
     control.addEventListener("pointercancel", release);
     control.addEventListener("change", release);
   });
-  $$("#tilesWorkspace input[type='number'], #tilesWorkspace input[type='text']")
+  $$("#tilesWorkspace input[type='number']:not([data-scrub-navigation]), #tilesWorkspace input[type='text']:not([data-scrub-navigation])")
     .forEach((control) => {
       control.addEventListener("focus", () => { drawHistoryGestureActive = true; });
       // Typing again after Enter is a new edit of the same field: it waits
@@ -4158,6 +4158,7 @@ window.claylineDesktop = Object.freeze({
     if (document.body.dataset.claylineMode === "weave") return window.claylineWeaveMode?.exportMesh();
     return downloadMesh();
   },
+  exportDesignedSurface: () => window.claylineWeaveMode?.exportDesignedSurface?.(),
   svgSaveResult: (payload) => window.claylineDraw?.svgSaveResult(payload),
   importFiles: (files) => {
     window.claylineWeaveMode?.activateTiles();

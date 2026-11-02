@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import pytest
+from golden_support import assert_historical_gcode
 
 from clayline.emit import EmissionError, EmissionSettings, e_per_mm, emit_gcode, write_gcode
 from clayline.models import Move, MoveKind, MoveStream
@@ -136,7 +137,7 @@ def test_reproducible_emission_matches_committed_golden() -> None:
     first = emit_gcode(_line_stream(), profile, settings=_settings())
     second = emit_gcode(_line_stream(), profile, settings=_settings())
     assert first == second
-    assert first == GOLDEN.read_text(encoding="utf-8")
+    assert_historical_gcode(first, GOLDEN.read_text(encoding="utf-8"), profile)
 
 
 @pytest.mark.parametrize("separator", ("\r", "\u0085", "\u2028", "\u2029"))

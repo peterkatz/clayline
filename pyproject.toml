@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clayline"
-version = "0.10.0"
+version = "0.11.0"
 description = "SVG centerlines to auditable paste-printer G-code"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -53,6 +53,7 @@ testpaths = ["tests"]
 addopts = "--strict-markers"
 markers = [
   "performance: exact wall-clock release budgets that need isolation from concurrent load",
+  "deferred_contract: intact acceptance contracts for explicitly deferred, unshipped features",
 ]
 
 [tool.ruff]

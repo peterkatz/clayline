@@ -106,7 +106,32 @@ final class WebActions: ObservableObject {
 
     func saveMesh() {
         guard isReady else { return }
-        webView?.evaluateJavaScript("window.claylineDesktop && window.claylineDesktop.exportMesh()")
+        webView?.evaluateJavaScript("document.body.dataset.claylineMode === 'weave'") { [weak self] value, _ in
+            guard let self else { return }
+            guard (value as? Bool) == true else {
+                self.webView?.evaluateJavaScript("window.claylineDesktop && window.claylineDesktop.exportMesh()")
+                return
+            }
+            let choice = NSAlert()
+            choice.messageText = "Export Mesh"
+            choice.informativeText = "Printed coils includes the printed layer lines from the finished slice. Designed surface keeps geometric Weaves and Images without layer lines, using the whole placed form."
+            choice.addButton(withTitle: "Printed coils…")
+            choice.addButton(withTitle: "Designed surface…")
+            choice.addButton(withTitle: "Cancel")
+            switch choice.runModal() {
+            case .alertFirstButtonReturn:
+                self.webView?.evaluateJavaScript("window.claylineDesktop && window.claylineDesktop.exportMesh()")
+            case .alertSecondButtonReturn:
+                self.saveDesignedSurface()
+            default:
+                break
+            }
+        }
+    }
+
+    func saveDesignedSurface() {
+        guard isReady else { return }
+        webView?.evaluateJavaScript("window.claylineDesktop && window.claylineDesktop.exportDesignedSurface()")
     }
 
     func openProject() {
@@ -462,9 +487,9 @@ final class WebActions: ObservableObject {
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = switch selection.kind {
-        case .mesh: "Weave opens one mesh at a time"
+        case .mesh: "Mesh Mode opens one mesh at a time"
         case .project: "Clayline opens one project at a time"
-        case .printFile: "Weave opens one print file at a time"
+        case .printFile: "Mesh Mode opens one print file at a time"
         case .svg: "Some files were not opened"
         }
         alert.informativeText = switch selection.kind {

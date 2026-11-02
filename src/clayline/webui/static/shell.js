@@ -17,9 +17,9 @@
 
   function roundDisplay(value) {
     if (!Number.isFinite(value)) return value;
-    return current === "in"
-      ? Math.round(value * 1000) / 1000
-      : Math.round(value * 100) / 100;
+    // Editable dimensions carry their precision through Undo, restored Images
+    // and mm/in switches. Read-only labels choose their own display rounding.
+    return Number(value.toPrecision(15));
   }
 
   const units = {
@@ -72,16 +72,19 @@
       const raw = Number(input.value);
       if (input.value !== "" && Number.isFinite(raw)) {
         const mm = previous === "in" ? raw * IN : raw;
-        input.value = String(roundDisplay(current === "in" ? mm / IN : mm));
+        input.value = String(Number((current === "in" ? mm / IN : mm).toPrecision(15)));
       }
       if (input.dataset.mmStep === undefined && input.step) input.dataset.mmStep = input.step;
       if (input.dataset.mmMin === undefined && input.min) input.dataset.mmMin = input.min;
+      if (input.dataset.mmMax === undefined && input.max) input.dataset.mmMax = input.max;
       if (current === "in") {
         input.step = "any";
         if (input.dataset.mmMin) input.min = String(Number(input.dataset.mmMin) / IN);
+        if (input.dataset.mmMax) input.max = String(Number(input.dataset.mmMax) / IN);
       } else {
         if (input.dataset.mmStep) input.step = input.dataset.mmStep;
         if (input.dataset.mmMin) input.min = input.dataset.mmMin;
+        if (input.dataset.mmMax) input.max = input.dataset.mmMax;
       }
     });
   }

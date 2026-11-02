@@ -413,6 +413,7 @@ def test_require_closed_rings_drops_or_refuses_the_same_open_contour() -> None:
     opened = replace(
         hole,
         points=hole.points[:-1],
+        surface_height_mm=(None if hole.surface_height_mm is None else hole.surface_height_mm[:-1]),
         outward_normals=hole.outward_normals[:-1],
         u=np.linspace(0.0, 1.0, len(hole.points) - 1),
         closed=False,

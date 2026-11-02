@@ -71,8 +71,14 @@ def test_scalar_16bit_is_preserved_and_middle_gray_is_exactly_neutral() -> None:
 @pytest.mark.parametrize("angle", [-179, -97, -46, -17, 0, 17, 46, 89, 170, 720])
 @pytest.mark.parametrize("circumference", [45, 140, 370])
 def test_rotated_field_closes_at_every_tapered_contour(angle: float, circumference: float) -> None:
-    effect = ImageEffect(source_id="51-hex-truchet", repeats=7, height_mm=28,
-                         rotation_deg=angle, offset_around_deg=29.17, offset_height_mm=15.2)
+    effect = ImageEffect(
+        source_id="51-hex-truchet",
+        repeats=7,
+        height_mm=28,
+        rotation_deg=angle,
+        offset_around_deg=29.17,
+        offset_height_mm=15.2,
+    )
     around = np.linspace(-0.1, 0.1, 41)
     heights = np.linspace(7, 51, 41)
     a, _ = evaluate_image(effect, around, heights, circumference, 370)
@@ -98,8 +104,13 @@ def test_rotation_is_one_field_rather_than_each_tile_rotated_separately() -> Non
 
 
 def test_single_stamp_crosses_wrap_as_one_surface_mm_stencil() -> None:
-    effect = uploaded(np.full((4, 4), 255, dtype=np.uint8), placement="once",
-                      width_mm=20, height_mm=30, offset_height_mm=40)
+    effect = uploaded(
+        np.full((4, 4), 255, dtype=np.uint8),
+        placement="once",
+        width_mm=20,
+        height_mm=30,
+        offset_height_mm=40,
+    )
     around = np.array([0.95, 0.99, 0.01, 0.05, 0.3])
     relief, footprint = evaluate_image(effect, around, 40, 100, 100)
     assert relief == pytest.approx([1, 1, 1, 1, 0])
@@ -111,7 +122,8 @@ def test_single_stamp_crosses_wrap_as_one_surface_mm_stencil() -> None:
     left = replace(effect, offset_around_deg=-0.01)
     right = replace(effect, offset_around_deg=359.99)
     assert evaluate_image(left, around, 40, 100, 100)[0] == pytest.approx(
-        evaluate_image(right, around, 40, 100, 100)[0])
+        evaluate_image(right, around, 40, 100, 100)[0]
+    )
 
 
 def test_color_alpha_and_inversion_do_not_displace_transparent_pixels() -> None:
@@ -150,8 +162,10 @@ def test_upload_portable_roundtrip_and_edge_blend_is_reversible() -> None:
 
 def test_preview_applies_flip_and_invert_without_changing_source() -> None:
     effect = uploaded(np.array([[0, 255], [128, 128]], dtype=np.uint8))
+
     def view(e: ImageEffect) -> np.ndarray:
         return np.asarray(Image.open(io.BytesIO(image_preview_png(e, repeat=1, size=2))))
+
     original = view(effect)
     assert np.array_equal(view(replace(effect, flip_x=True)), original[:, ::-1])
     assert np.array_equal(view(replace(effect, flip_y=True)), original[::-1])
@@ -164,12 +178,22 @@ def test_empty_or_disabled_image_has_no_coverage() -> None:
         assert not relief.any() and not footprint.any()
 
 
-@pytest.mark.parametrize("payload", [
-    {"repeats": True}, {"rotation_deg": float("nan")}, {"enabled": 1},
-    {"width_mm": 0}, {"height_mm": -1}, {"data_base64": "not base64"},
-    {"fade_in_layers": -1}, {"source_id": "unknown"}, {"extrusion": []},
-    {"extrusion": [{"u": False, "value": 1}]}, {"unexpected": True},
-])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"repeats": True},
+        {"rotation_deg": float("nan")},
+        {"enabled": 1},
+        {"width_mm": 0},
+        {"height_mm": -1},
+        {"data_base64": "not base64"},
+        {"fade_in_layers": -1},
+        {"source_id": "unknown"},
+        {"extrusion": []},
+        {"extrusion": [{"u": False, "value": 1}]},
+        {"unexpected": True},
+    ],
+)
 def test_invalid_image_payload_is_rejected(payload: dict) -> None:
     with pytest.raises(ValueError):
         image_from_payload(payload)

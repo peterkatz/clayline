@@ -1983,34 +1983,33 @@ def test_a_sparse_layer_welds_its_last_rib_to_its_wall_by_stepping_out_not_acros
     assert unsupported < 1.0
 
 
-def test_the_wall_starts_where_the_ribs_end_so_the_weld_is_a_step_not_a_lap() -> None:
-    """The seam is seated, and that is what keeps the ride short.
+def test_the_wall_starts_where_the_emitted_ribs_end_so_the_weld_is_short() -> None:
+    """Measure the selected route, including reversed fills in a clay thread.
 
-    A weld may ride the inset boundary, but the ride is deposition against the
-    wall's inner face, so a long one builds a second wall.  Chaining the seam
-    off the layer below leaves it wherever the last revolution closed; seating
-    it at the rib's end leaves the weld one step outward.  Both halves are
-    measured here, because either alone would pass while the feature was broken.
+    The thread planner can reverse a fill to reach it from the previous layer.
+    The builder's unselected seam anchor is not the endpoint that printed.
+    The actual final fill-to-wall segment must still be a short, welded step.
     """
 
     sliced = _slice("cone.obj")
     pattern = _pattern()
-    result = _build(sliced, pattern)
     stream = build_form_move_stream(sliced, pattern, load_profile(sliced.profile_name))
 
-    for layer_index in sorted(_by_layer(result)):
-        anchor = result.seam_anchor(layer_index, 0)
-        assert anchor is not None, layer_index
-        seam = next(
-            (move.x, move.y)
-            for move in stream.moves
+    for layer_index in range(len(sliced.layers)):
+        first_wall = next(
+            index
+            for index, move in enumerate(stream.moves)
             if move.layer_index == layer_index
             and move.kind is MoveKind.PRINT
             and str(move.comment) == "weave wall"
         )
-        # The wall starts within one bead of where the ribs finished, so the
-        # boundary between them is a step and not a journey.
-        assert math.dist(anchor, seam) <= sliced.bead_width, layer_index
+        assert first_wall > 0
+        wall = stream.moves[first_wall]
+        fill = stream.moves[first_wall - 1]
+        assert fill.kind is MoveKind.PRINT
+        assert fill.layer_index == layer_index and fill.stroke_id == wall.stroke_id
+        assert str(fill.comment).startswith("interior ")
+        assert math.dist((fill.x, fill.y), (wall.x, wall.y)) <= sliced.bead_width, layer_index
 
 
 def test_a_seam_the_artist_placed_elsewhere_is_left_alone_and_said_out_loud() -> None:
@@ -2042,7 +2041,7 @@ def test_a_seam_the_artist_placed_elsewhere_is_left_alone_and_said_out_loud() ->
     assert all(route is None for route in spoken_welds.values())
     said = _codes(spoken_said, FormWarningCode.INTERIOR_UNWELDED_SEAM)
     assert len(said) == 1
-    assert _spans(said) == [(0, 29)]
+    assert _spans(said) == [(0, len(sliced.layers) - 1)]
     assert "scattered" in said[0].message  # type: ignore[attr-defined]
     assert "Chain the seam" in said[0].message  # type: ignore[attr-defined]
 
@@ -2058,8 +2057,11 @@ def test_a_seam_the_artist_placed_elsewhere_is_left_alone_and_said_out_loud() ->
             if move.kind is MoveKind.TRAVEL_LIFT  # type: ignore[attr-defined]
         ),
     }
-    assert lifts["chained"] == 28
-    assert lifts["scattered"] == 57
+    # The supported chained route now carries one continuous clay thread.
+    # A scattered seam still refuses every fill-to-wall weld on this cone,
+    # preserving the artist's seam and paying the independently counted lifts.
+    assert lifts["chained"] == 0
+    assert lifts["scattered"] == 2 * len(sliced.layers) - 1
     # A SOLID interior is not affected either way: its weld crosses its own clay
     # from any seam, so it neither asks for a seam nor warns about one.
     solid = _build(sliced, _pattern(interior="solid", seam=SeamPolicy.SCATTER))
@@ -2518,6 +2520,7 @@ def test_an_open_contour_skips_its_sparse_layer_and_an_open_shell_refuses() -> N
     opened = replace(
         hole,
         points=hole.points[:-1],
+        surface_height_mm=(None if hole.surface_height_mm is None else hole.surface_height_mm[:-1]),
         outward_normals=hole.outward_normals[:-1],
         u=np.linspace(0.0, 1.0, len(hole.points) - 1),
         closed=False,

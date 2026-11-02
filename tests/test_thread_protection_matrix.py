@@ -8,6 +8,7 @@ import re
 from dataclasses import asdict
 
 import pytest
+from golden_support import assert_historical_gcode, historical_profile
 
 from clayline.lint import lint_gcode
 from clayline.profiles import load_profile
@@ -75,10 +76,29 @@ def _topology_from_gcode(name: str) -> dict[str, int]:
     }
 
 
-def test_frozen_matrix_rebuilds_byte_for_byte(generated: tuple[MatrixOutput, ...]) -> None:
-    assert manifest_bytes(generated) == (OUTPUT / "manifest.json").read_bytes()
+def test_frozen_matrix_preserves_every_motion_and_audit_across_release_metadata(
+    generated: tuple[MatrixOutput, ...],
+) -> None:
+    current_manifest = json.loads(manifest_bytes(generated))
+    frozen_manifest = json.loads((OUTPUT / "manifest.json").read_bytes())
+    assert {k: v for k, v in current_manifest.items() if k != "cases"} == {
+        k: v for k, v in frozen_manifest.items() if k != "cases"
+    }
     for output in generated:
-        assert output.gcode == (OUTPUT / f"{output.case.name}.gcode").read_bytes()
+        frozen = (OUTPUT / f"{output.case.name}.gcode").read_bytes()
+        # The earlier E100 profile was deliberately replaced with E3000 in
+        # August. Check both complete artifacts and their explicit profiles;
+        # the helper permits only those documented three metadata/prime lines.
+        assert_historical_gcode(
+            output.gcode.decode(), frozen.decode(), load_profile("potterbot-xl")
+        )
+        current_case = current_manifest["cases"][output.case.name]
+        frozen_case = frozen_manifest["cases"][output.case.name]
+        assert current_case["gcode_sha256"] == _sha256(output.gcode)
+        assert frozen_case["gcode_sha256"] == _sha256(frozen)
+        assert {k: v for k, v in current_case.items() if k != "gcode_sha256"} == {
+            k: v for k, v in frozen_case.items() if k != "gcode_sha256"
+        }
         if output.audit is not None:
             assert output.case.audit_filename is not None
             assert output.audit == (OUTPUT / output.case.audit_filename).read_bytes()
@@ -152,7 +172,7 @@ def test_manifest_hashes_and_artifact_inventory(manifest: dict[str, object]) -> 
 def test_six_corrected_sidecars_are_hash_bound_and_lint_independently(
     manifest: dict[str, object],
 ) -> None:
-    profile = load_profile("potterbot-xl")
+    profile = historical_profile()
     for case in matrix_cases():
         record = _case_manifest(manifest, case.name)
         gcode = (OUTPUT / str(record["gcode"])).read_text(encoding="utf-8")

@@ -89,6 +89,8 @@
     handleA: document.getElementById("scrubHandleA"),
     handleB: document.getElementById("scrubHandleB"),
     showAll: document.getElementById("scrubShowAll"),
+    exactFrom: document.getElementById("scrubExactFrom"),
+    exactTo: document.getElementById("scrubExactTo"),
   };
 
   const S = {
@@ -1125,6 +1127,11 @@
     dom.handleB.setAttribute("aria-valuenow", String(S.hi));
     dom.handleA.setAttribute("aria-valuetext", `from move ${S.lo + 1} of ${S.n}`);
     dom.handleB.setAttribute("aria-valuetext", `to move ${S.hi + 1} of ${S.n}`);
+    [[dom.exactFrom, S.lo + 1], [dom.exactTo, S.hi + 1]].forEach(([input, value]) => {
+      if (!input) return;
+      input.max = String(S.n);
+      if (document.activeElement !== input) input.value = String(value);
+    });
   }
 
   function buildChips() {
@@ -1614,6 +1621,26 @@
   // --- wiring ------------------------------------------------------------------
 
   if (dom.dock) {
+    [dom.exactFrom, dom.exactTo].forEach((input, index) => {
+      if (!input) return;
+      const restore = () => { input.value = String((index === 0 ? S.lo : S.hi) + 1); };
+      const commit = () => {
+        const move = Number(input.value);
+        if (!S.trace || !Number.isInteger(move) || move < 1 || move > S.n) { restore(); return; }
+        stopPlaying();
+        if (index === 0) { S.lo = move - 1; S.hi = Math.max(S.hi, S.lo); }
+        else { S.hi = move - 1; S.lo = Math.min(S.lo, S.hi); }
+        S.frac = 1;
+        S.fracMove = S.hi;
+        restore();
+        scheduleRender();
+      };
+      input.addEventListener("change", commit);
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") { event.preventDefault(); commit(); }
+        if (event.key === "Escape") { event.preventDefault(); restore(); input.blur(); }
+      });
+    });
     dom.play.addEventListener("click", () => {
       if (S.playing) stopPlaying();
       else startPlaying();
