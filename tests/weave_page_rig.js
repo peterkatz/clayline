@@ -63,6 +63,26 @@ class FakeText {
   remove() { if (this.parentNode) this.parentNode._removeChild(this); }
 }
 
+// Optional shared-controls tests load the real shell and numeric editor. The
+// observer delivers only mutations the production observer actually requests.
+const mutations = new Set();
+class FakeMutationObserver {
+  constructor(callback) { this.callback = callback; this.targets = []; }
+  observe(target, options) { this.targets.push({ target, options }); mutations.add(this); }
+  disconnect() { this.targets = []; mutations.delete(this); }
+}
+function changed(target, type, attributeName = null) {
+  for (const observer of mutations) {
+    if (!observer.targets.some(({ target: root, options }) =>
+      (root === target || (options.subtree && root.contains(target)))
+      && options[type]
+      && (type !== "attributes" || !options.attributeFilter || options.attributeFilter.includes(attributeName)))) continue;
+    if (observer.pending) continue;
+    observer.pending = true;
+    queueMicrotask(() => { observer.pending = false; observer.callback([]); });
+  }
+}
+
 const decimalsOf = (value) => {
   const text = String(value);
   if (/e-/i.test(text)) return Number(text.split(/e-/i)[1]) || 0;
@@ -136,9 +156,9 @@ class FakeElement {
 
   // --- attributes
   getAttribute(name) { return this.attrs.has(name) ? this.attrs.get(name) : null; }
-  setAttribute(name, value) { this.attrs.set(name, String(value)); }
+  setAttribute(name, value) { this.attrs.set(name, String(value)); changed(this, "attributes", name); }
   hasAttribute(name) { return this.attrs.has(name); }
-  removeAttribute(name) { this.attrs.delete(name); }
+  removeAttribute(name) { this.attrs.delete(name); changed(this, "attributes", name); }
   toggleAttribute(name, force) {
     const want = force === undefined ? !this.attrs.has(name) : Boolean(force);
     if (want) this.attrs.set(name, ""); else this.attrs.delete(name);
@@ -264,9 +284,10 @@ class FakeElement {
     node.parentNode = this;
     const at = before ? this.childNodes.indexOf(before) : -1;
     if (at >= 0) this.childNodes.splice(at, 0, node); else this.childNodes.push(node);
+    changed(this, "childList");
     return node;
   }
-  _removeChild(node) { const at = this.childNodes.indexOf(node); if (at >= 0) this.childNodes.splice(at, 1); node.parentNode = null; }
+  _removeChild(node) { const at = this.childNodes.indexOf(node); if (at >= 0) this.childNodes.splice(at, 1); node.parentNode = null; changed(this, "childList"); }
   append(...nodes) { nodes.forEach((node) => this._adopt(this._node(node))); }
   prepend(...nodes) { const first = this.childNodes[0] || null; nodes.forEach((node) => this._adopt(this._node(node), first)); }
   appendChild(node) { return this._adopt(node); }
@@ -274,6 +295,8 @@ class FakeElement {
   removeChild(node) { this._removeChild(node); return node; }
   replaceChildren(...nodes) { this.childNodes.slice().forEach((node) => this._removeChild(node)); this.append(...nodes); }
   remove() { if (this.parentNode) this.parentNode._removeChild(this); }
+  before(node) { this.parentNode?.insertBefore(node, this); }
+  select() { this.selectionStart = 0; this.selectionEnd = this.value.length; }
   contains(node) { while (node) { if (node === this) return true; node = node.parentNode; } return false; }
   cloneNode(deep = false) {
     const copy = new FakeElement(this.localName, Object.fromEntries(this.attrs));
@@ -287,8 +310,12 @@ class FakeElement {
     walk(this);
     return out;
   }
-  querySelectorAll(selector) { return this._descendants().filter((node) => matches(node, selector)); }
-  querySelector(selector) { return this._descendants().find((node) => matches(node, selector)) || null; }
+  querySelectorAll(selector) {
+    return selector.startsWith(":scope > ")
+      ? this.children.filter((node) => matches(node, selector.slice(9)))
+      : this._descendants().filter((node) => matches(node, selector));
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
   matches(selector) { return matches(this, selector); }
   closest(selector) { let node = this; while (node && node.nodeType === 1) { if (matches(node, selector)) return node; node = node.parentNode; } return null; }
 
@@ -538,6 +565,8 @@ const browserGlobals = {
   KeyboardEvent: FakeEvent,
   PointerEvent: FakeEvent,
   MouseEvent: FakeEvent,
+  MutationObserver: FakeMutationObserver,
+  Image: class { set src(value) { this._src = value; queueMicrotask(() => this.onload?.()); } },
   Element: FakeElement,
   HTMLElement: FakeElement,
   HTMLInputElement: FakeInputElement,
@@ -547,6 +576,7 @@ const browserGlobals = {
   getComputedStyle: () => ({ getPropertyValue: () => "" }),
   addEventListener: (type, fn) => windowListeners.add(type, fn),
   removeEventListener: (type, fn) => windowListeners.remove(type, fn),
+  dispatchEvent: (event) => { event.target = event.target || globalThis; windowListeners.run(globalThis, event); return true; },
   atob: (text) => Buffer.from(text, "base64").toString("binary"),
   btoa: (text) => Buffer.from(text, "binary").toString("base64"),
 };
@@ -555,8 +585,12 @@ Object.entries(browserGlobals).forEach(([key, value]) => {
   Object.defineProperty(globalThis, key, { value, writable: true, configurable: true, enumerable: true });
 });
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
+FakeElement.TEXT_NODE = 3;
 
 // The page's own modules, loaded as the page loads them.
+if (process.env.CLAYLINE_PAGE_CONTROLS === "1") {
+  vm.runInThisContext(fs.readFileSync(`${STATIC}/shell.js`, "utf8"), { filename: "shell.js" });
+}
 vm.runInThisContext(fs.readFileSync(`${STATIC}/studio-state.js`, "utf8"), { filename: "studio-state.js" });
 vm.runInThisContext(fs.readFileSync(`${STATIC}/project-file.js`, "utf8"), { filename: "project-file.js" });
 // weave.js itself, with one line added at its end that hands the test its
@@ -570,6 +604,10 @@ const exposed = WEAVE_SOURCE.replace(
   + marker,
 );
 vm.runInThisContext(exposed, { filename: "weave.js" });
+if (process.env.CLAYLINE_PAGE_CONTROLS === "1") {
+  vm.runInThisContext(fs.readFileSync(`${STATIC}/studio-controls.js`, "utf8"), { filename: "studio-controls.js" });
+  document.dispatchEvent(new FakeEvent("DOMContentLoaded"));
+}
 
 // ---------------------------------------------------------------- driving
 async function drain() {

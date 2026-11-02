@@ -40,7 +40,7 @@ It needs stacked passes. Add a second pass with **Repeat pass**.
 **Nothing changes in the preview when I edit.**
 The preview is showing **Sliced**, the checked path from the last slice. Slice again after an edit, or switch to **Draw** to see the editable drawing.
 
-## In Weave
+## In Mesh Mode {#in-weave}
 
 **The sliced rings look like a tangled contour map instead of stacked walls.**
 The model's up axis is wrong. Change **Up axis** under **Advanced** in 01 Form. Rhino exports are usually Y up.
@@ -55,7 +55,7 @@ Vase mode is on. Turn it off under 03 Wall first.
 It unlocks after the final path passes every check, and so does **File → Export G-code…**. Look at Warnings in Before you print for what's holding it.
 
 **I want the pattern off a print file I made last month.**
-Use **Restore pattern from G-code…** under 04 Pattern: only the pattern comes back, and the form on the table, its size, the layers and the range stay exactly as you have them. Drop the print file on the box under 01 Form instead and every setting of that job comes back, pattern and printer included; with no model loaded, the form is made from the print file's printed surface when Clayline can, and the button under the form's name swaps in the original model when you have it. A project you saved beside the print file still opens as one piece.
+Use **Restore pattern from G-code…** under 04 Weaves: only the pattern comes back, and the form on the table, its size, the layers and the range stay exactly as you have them. Drop the print file on the box under 01 Form instead and every setting of that job comes back, pattern and printer included; with no model loaded, the form is made from the print file's printed surface when Clayline can, and the button under the form's name swaps in the original model when you have it. A project you saved beside the print file still opens as one piece.
 
 **My weaves are off after I dropped a print file.**
 Clayline made the form from the print file's printed surface, so the pattern is already in it, and switched the weaves off so it isn't laid on twice. Choose the original model with the button under the form's name in 01 Form and they come back on. After a saved project is opened again the button is gone; drop the print file on the box under 01 Form once more and it comes back. Switching a weave on by hand lays it over the printed pattern.

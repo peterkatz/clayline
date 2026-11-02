@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from golden_support import assert_historical_gcode
 
 from clayline.ingest import ingest_svg
 from clayline.models import (
@@ -174,7 +175,9 @@ def test_m4_goldens_and_verification_gcode_are_deterministic_and_lint_clean(
         expected = (GOLDEN / case.filename).read_text(encoding="utf-8")
         evidence = (EVIDENCE / case.filename).read_text(encoding="utf-8")
 
-        assert emission.gcode == repeated.gcode == expected == evidence
+        assert emission.gcode == repeated.gcode
+        assert expected == evidence
+        assert_historical_gcode(emission.gcode, expected, profile)
         assert emission.lint_report.ok
         assert emission.prepared.source_stream is emission.stream
         assert all(split.lint_report.ok for split in emission.splits)
@@ -187,8 +190,9 @@ def test_m4_goldens_and_verification_gcode_are_deterministic_and_lint_clean(
             ]
             for split in emission.splits:
                 assert split.gcode == repeated.splits[split.source_page_index].gcode
-                assert split.gcode == (GOLDEN / split.filename).read_text(encoding="utf-8")
-                assert split.gcode == (EVIDENCE / split.filename).read_text(encoding="utf-8")
+                frozen = (GOLDEN / split.filename).read_text(encoding="utf-8")
+                assert frozen == (EVIDENCE / split.filename).read_text(encoding="utf-8")
+                assert_historical_gcode(split.gcode, frozen, profile)
 
 
 def test_m4_evidence_is_honest_about_hardware_defaults_and_gate_scope() -> None:

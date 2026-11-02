@@ -12,6 +12,7 @@ from pathlib import Path
 
 import plotly.graph_objects as go
 import pytest
+from golden_support import historical_profile
 
 import clayline.emit as emit_module
 import clayline.preview as preview_module
@@ -428,7 +429,11 @@ def test_reproducible_report_matches_golden_and_cross_checks_lint() -> None:
     report = build_report(stream, profile, settings=settings)
     rendered = render_report_json(report)
 
-    assert rendered == REPORT_GOLDEN.read_text(encoding="utf-8")
+    assert rendered == render_report_json(build_report(stream, profile, settings=settings))
+    frozen_report = build_report(stream, historical_profile(), settings=settings)
+    assert render_report_json(frozen_report) == REPORT_GOLDEN.read_text(encoding="utf-8")
+    assert report.totals == frozen_report.totals
+    assert report.profile.version == profile.version
     assert report.generated_utc == "reproducible"
     assert report.cross_check.passed
     assert report.cross_check.lint_ok

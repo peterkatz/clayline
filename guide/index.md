@@ -40,7 +40,7 @@ Draw directly on the bed, bring a line drawing from any vector app as an SVG, or
 
 ![Glazed vessels sliced from 3D models, with ribbed and spiral walls](images/prints/ribs-and-spirals.jpg)
 
-### Weave · mesh
+### Mesh Mode {#weave-mesh}
 
 Open a 3D model and shape its wall with up to three Weaves and three Images together. Draw a wave for ribs and spirals, wrap one of 80 relief tiles around the form, or place your own image as a single stamp. Adjust depth and clay flow independently, choose a hollow, solid or ribbed interior, and inspect the resulting nozzle path.
 
@@ -119,9 +119,9 @@ Middle gray preserves the wall, light pushes it out and dark pulls it in. Each I
 
 <figure class="cl-demo" markdown>
 
-![Clayline showing Hex Truchet relief on a tapered, lobed vase, with three Images and the fitted repeat controls](images/clayline-images-vase.png)
+![Clayline showing Hex Truchet relief on a tapered, lobed vase, with proportional Pattern size and editable Amplitude controls](images/clayline-images-vase.png)
 
-<figcaption>A toolpath preview on a tapered, lobed form. Here a requested 17° rotation fits to 18.3° so the repeating field closes around the wall.</figcaption>
+<figcaption>A toolpath preview on a tapered, lobed form. A requested 40 mm square fits to 39.58 × 39.58 mm, and 17° rotation fits to 15.9° so the repeating field closes around the wall.</figcaption>
 </figure>
 
 ## Start from a drawing
@@ -148,7 +148,7 @@ Middle gray preserves the wall, light pushes it out and dark pulls it in. Each I
 
 - [Install](install.md): get the app running and pick your printer.
 - [Draw in Clay](tiles.md): from a line drawing to a printed tile.
-- [Weave · mesh](weave.md): from a 3D model to wave patterns, image relief and a printable wall.
+- [Mesh Mode](weave.md): from a 3D model to wave patterns, image relief and a printable wall.
 - [Printing](printing.md): what the printer does with the file, and the three settings that decide how the first layer lands.
 - [Troubleshooting](troubleshooting.md): the first layer scraped, the start blob is huge, the model loads sideways.
 

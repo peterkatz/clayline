@@ -717,6 +717,50 @@ def create_app(
         except WeaveSessionError as exc:
             raise weave_session_http_error(exc) from exc
 
+    @app.post("/api/weave/surface", include_in_schema=False)
+    async def weave_designed_surface(request: Request) -> Any:
+        """Bake current designs into the whole placed source, before Slice."""
+        from clayline.surface_export import designed_surface, has_surface_design
+        from clayline.webui.weave_payload import resolve_pattern
+        from clayline.webui.weave_session import WeaveSessionError
+
+        try:
+            payload = await _read_json_request(request, required_origin=desktop_origin)
+            if not isinstance(payload, dict):
+                raise UiRequestError("request body must be a JSON object")
+            cache, token, created = _resolve_weave_session(request)
+            mesh = cache.get("mesh", _required_id(payload, "mesh_id"))
+            pattern = resolve_pattern(payload)
+            sliced = None
+            if has_surface_design(pattern):
+                # A source surface is always the complete placed form. Print
+                # range, automatic island stops and ignored hollows cannot
+                # remove source geometry from this export.
+                sliced, _ = await asyncio.to_thread(
+                    _slice_weave_mesh_payload,
+                    mesh,
+                    {**payload, "layer_range": None, "island_stop": False, "hollows": "keep"},
+                )
+            exported = await asyncio.to_thread(designed_surface, mesh, pattern, sliced=sliced)
+            stem = _artifact_stem(None, source_name=mesh.source_path.name)
+            response = Response(
+                content=exported.obj.encode("utf-8"),
+                media_type="model/obj; charset=utf-8",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{stem}-surface.obj"',
+                    "X-Clayline-Surface-Tolerance-MM": str(exported.tolerance_mm),
+                    "X-Clayline-Surface-Maximum-Error-MM": str(exported.maximum_error_mm),
+                },
+            )
+            _set_weave_cookie(response, token, created=created)
+            return response
+        except UiRequestError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        except WeaveSessionError as exc:
+            raise weave_session_http_error(exc) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @app.get("/api/weave/result/{result_id}/obj", include_in_schema=False)
     async def weave_obj(result_id: str, request: Request) -> Any:
         # Export Mesh: the printed coils of the same settled result the

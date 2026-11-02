@@ -167,8 +167,11 @@ def test_synthetic_example_is_canonical_runnable_and_honestly_labeled() -> None:
     gallery = (ROOT / "examples" / "README.md").read_text(encoding="utf-8")
     assert any("SYNTHETIC" in line and "not Pete's H2 TwistTumbler" in line for line in mesh_header)
     assert "not Pete's H2 TwistTumbler" in example_readme
-    assert "## Weave mode in 60 seconds" in root_readme
-    assert "Weave product exit (M15) | NOT RUN" in root_readme
+    assert "## Mesh Mode in 60 seconds" in root_readme
+    # b887f07 (2026-09-18) records Pete's physical acceptance. The July
+    # synthetic M15 bundle stays historical and cannot override that receipt.
+    assert "Weave product exit (M15) | ACCEPTED" in root_readme
+    assert "Weave forms printed and accepted by Pete, 2026-09-18" in root_readme
     assert "pete-job synthetic stand-in" in gallery
 
 

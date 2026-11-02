@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -13,6 +12,7 @@ from itertools import pairwise
 from pathlib import Path
 
 import pytest
+from golden_support import current_output_digest
 
 import clayline as cl
 from clayline.emit import EmissionSettings, emit_gcode
@@ -24,6 +24,7 @@ from clayline.wave import average_curve, extrusion_preset, modulate_ring, ring_w
 ROOT = Path(__file__).resolve().parents[1]
 MESH = ROOT / "tests" / "fixtures" / "mesh"
 GOLDEN = ROOT / "tests" / "golden" / "weave" / "m11-gcode.sha256.json"
+CURRENT = ROOT / "tests" / "golden" / "weave" / "current-output-contract.json"
 E_WORD = re.compile(r"\bE(-?(?:\d+(?:\.\d*)?|\.\d+))\b")
 
 
@@ -442,15 +443,23 @@ def test_open_ring_warning_adapter_keeps_code_and_layer_island_span_provenance()
 
 
 def test_reproducible_outputs_match_committed_weave_hash_goldens() -> None:
-    expected = json.loads(GOLDEN.read_text(encoding="utf-8"))
-    actual: dict[str, str] = {}
+    # The August M11 pins stay frozen in GOLDEN and are audited separately.
+    # Current jobs intentionally finish the whole form under the October top rule.
+    expected = json.loads(CURRENT.read_text(encoding="utf-8"))["m11"]
+    actual = {}
     for fixture in ("cylinder.obj", "cone.obj"):
         for label, twist in (("ribs", 0.0), ("weave", 0.5), ("spiral", 0.1)):
             result = _result(fixture, twist=twist)
             second = _result(fixture, twist=twist)
             assert result.emission.gcode == second.emission.gcode
             key = f"{Path(fixture).stem}-{label}.gcode"
-            actual[key] = hashlib.sha256(result.emission.gcode.encode()).hexdigest()
+            replay = lint_gcode(result.emission.gcode, load_profile("potterbot-xl"))
+            assert replay.ok, replay.format()
+            actual[key] = {
+                "sha256": current_output_digest(result.emission.gcode),
+                "warning_counts": result.report().totals.warning_counts_by_code,
+                "layer_count": len(result.sliced.layers),
+            }
     assert actual == expected
 
 

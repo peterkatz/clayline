@@ -261,9 +261,7 @@ def reassemble_parameter_value(
         raise ValueError(f"G-code header chunked {parameter!r} has a noncanonical part count")
     count = int(count_text)
     index_width = max(PARAMETER_CHUNK_INDEX_WIDTH, len(count_text))
-    expected_parts = [
-        f"{root}_part_{index:0{index_width}d}" for index in range(1, count + 1)
-    ]
+    expected_parts = [f"{root}_part_{index:0{index_width}d}" for index in range(1, count + 1)]
     expected_family = sorted([count_key, *expected_parts])
     if family_keys != expected_family:
         missing = sorted(set(expected_family) - set(family_keys))

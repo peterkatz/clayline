@@ -1192,6 +1192,37 @@ def build_form_move_stream(
                 )
             return strips[key]
 
+        def first_layer_link_failure(
+            layer_index: int,
+            island_index: int,
+            start: tuple[float, float],
+            end: tuple[float, float],
+        ) -> GateFailure | None:
+            """The bed supports a joining bead; the island must still contain it."""
+
+            proof = interior.proofs.get((layer_index, island_index))
+            if (
+                proof is not None
+                and contained_connector(proof.polygon, start, end, tolerance=proof.tolerance)
+                is not None
+            ):
+                return None
+            measured: float | None = None
+            if proof is not None:
+                from shapely.geometry import LineString
+
+                measured = float(
+                    LineString((start, end))
+                    .difference(proof.polygon.buffer(proof.tolerance or 0.0))
+                    .length
+                )
+            return GateFailure(
+                "current_material_containment",
+                measured,
+                0.0,
+                "the first-layer joining bead is not proved inside this island's material",
+            )
+
         def lay(plan: StretchPlan | None, exempt: GreedyRecord) -> _LaidThread | None:
             """Lay the stretch: greedily with no plan, or exactly as planned."""
 
@@ -1390,7 +1421,9 @@ def build_form_move_stream(
                             reach = None
                         elif lower_wall is None:
                             reach = (
-                                None
+                                first_layer_link_failure(
+                                    layer_index, island_index, position, target
+                                )
                                 if layer_index == 0
                                 else GateFailure(
                                     "lower_clay_support",
@@ -1509,12 +1542,16 @@ def build_form_move_stream(
                         if position is None or region is None or not prove_links:
                             reach = None
                         elif lower_wall is None:
-                            # Only the bed has no wall under it, and a link there lies
-                            # on the bed.  Anywhere else nothing below was found to
-                            # carry the bead, so the link is refused rather than laid
-                            # across the open fill.
+                            # The bed carries the bead, but does not turn a gap
+                            # outside this island into material. Keep contained
+                            # first-layer links; break before an unproved one.
                             reach = (
-                                None
+                                first_layer_link_failure(
+                                    layer_index,
+                                    island_index,
+                                    position,
+                                    (piece.points[0].x, piece.points[0].y),
+                                )
                                 if layer_index == 0
                                 else GateFailure(
                                     "lower_clay_support",

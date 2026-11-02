@@ -400,7 +400,7 @@ def test_settled_pinch_row_carries_an_explicit_offer_that_never_auto_applies() -
 
 
 @pytest.mark.performance
-def test_unsafe_119_layer_settle_meets_exact_release_budget() -> None:
+def test_unsafe_120_layer_settle_meets_exact_release_budget() -> None:
     sliced = cl.load_mesh(PETE_JOB).slice(
         layer_height=0.25,
         first_layer_height=0.25,
@@ -420,8 +420,10 @@ def test_unsafe_119_layer_settle_meets_exact_release_budget() -> None:
     prepared, payload = _modulate_weave_payload(sliced, request)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
 
-    assert len(sliced.layers) == 119
-    assert sliced.point_count == 25_109
+    # The nearest-top rule intentionally completes the full 30 mm form.
+    assert len(sliced.layers) == 120
+    assert sliced.layers[-1].z == pytest.approx(sliced.bounds.max_z)
+    assert sliced.point_count == 25_320
     assert prepared is not None
     assert payload["geometry_exact"] is True
     assert any(warning["code"] == "pinch" for warning in payload["warnings"])

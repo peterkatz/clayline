@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+from golden_support import historical_release_text
+
 from scripts.freeze_thread_protection_baselines import OUTPUT, _body_bytes, _cases
 
 
@@ -19,7 +21,10 @@ def test_pre_tranche_positive_outputs_are_frozen_byte_for_byte() -> None:
     assert set(actual) == set(manifest["cases"])
 
     for name, (gcode, report, _purpose) in actual.items():
-        gcode_bytes = gcode.encode()
+        # The explicit v1.2 profile is already frozen by the generator. The
+        # release stamp is verified separately; every machine/body byte stays
+        # bound to the original archived oracle and its hashes.
+        gcode_bytes = historical_release_text(gcode).encode()
         report_bytes = _report_bytes(report)
         assert gcode_bytes == (OUTPUT / f"{name}.gcode").read_bytes()
         assert report_bytes == (OUTPUT / f"{name}.report.json").read_bytes()

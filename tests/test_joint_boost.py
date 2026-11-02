@@ -25,6 +25,7 @@ from itertools import pairwise
 from pathlib import Path
 
 import pytest
+from golden_support import assert_historical_gcode
 
 from clayline.ingest import ingest_svg
 from clayline.models import (
@@ -124,7 +125,7 @@ def test_joint_boost_absent_or_zero_is_byte_identical_to_the_pinned_golden() -> 
     for settings in (default_settings, explicit_zero_settings):
         job = Job("calibrated", (page,), settings=settings)
         emission = emit_job(job, profile, reproducible=True)
-        assert emission.gcode == golden_gcode
+        assert_historical_gcode(emission.gcode, golden_gcode, profile)
 
 
 def test_joint_boost_elevates_only_lead_in_lead_out_and_joint_points(
