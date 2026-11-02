@@ -2,6 +2,13 @@
 
 What the printer does with a Clayline file, and the three settings that decide how the first layer lands. Written for the PotterBot 10 XL, the printer Clayline is verified on. Other printers run their own start and end routines from their profiles.
 
+<figure class="cl-photo cl-photo--tall" markdown>
+
+![A PotterBot 10 XL at the end of a print: the nozzle lifted high above a tall twisted piece standing on a board clamped to the bed](images/prints/potterbot-finished-print.jpg)
+
+<figcaption>A PotterBot 10 XL at the end of a print. The nozzle has lifted clear, and the board the piece printed on sits clamped to the bed.</figcaption>
+</figure>
+
 ## What happens when you run the file
 
 1. **Home.** The printer finds its zero on every axis.
