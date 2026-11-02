@@ -2,7 +2,7 @@
 
 Shape a vessel from a 3D model, with wave patterns and image relief in its wall. Switch to **Weave · mesh** at the top of the window. Up to three Weaves and three Images work together on the same exterior; each keeps its own depth, clay flow and layer settings.
 
-![Weave mode after slicing a small tumbler: the form on the bed, the layers colour-coded below it](images/weave-sliced.png)
+![Weave mode after slicing a vase with a sawtooth weave twisting up its wall: the form in the middle, Before you print on the right](images/tentacles-vase-sliced.png)
 
 ## What Mesh mode does
 
