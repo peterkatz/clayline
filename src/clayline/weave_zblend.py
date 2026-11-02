@@ -16,10 +16,12 @@ import numpy as np
 from clayline import emit_core
 from clayline.emit_core import coordinate_rounding_allowance
 from clayline.wave import (
+    effect_fade_scale,
     evaluate_curve,
     has_wall_clay,
     held_flow,
     held_phase_shift,
+    image_ring_fields,
     pattern_layer_is_active,
     printed_weaves,
     profile_amplitude_scale,
@@ -108,6 +110,11 @@ class ZBlendPoint:
     profile_z_offset: float = 0.0
     pattern_scale: float = 1.0
     extra_weaves: tuple[ZBlendExtraWeave, ...] = ()
+    image_displacement: float = 0.0
+    image_flow_delta: float = 0.0
+    unheld_extrusion_multiplier: float | None = None
+    weave_one_extrusion_multiplier: float | None = None
+    extra_flow_delta: float = 0.0
 
     def __post_init__(self) -> None:
         numeric = (
@@ -660,6 +667,7 @@ def _wall_revolutions(
             pattern_active=pattern_active,
             previous_pattern_active=previous_pattern_active,
             extra_laps=laps,
+            fade_layer_count=pattern_line_count,
         )
         if top_follow and compensate_thickness:
             points = _with_thickness_compensation(
@@ -715,6 +723,8 @@ class _ExtraLap:
     pattern_active: bool
     previous_pattern_active: bool
     tracked: bool
+    line_index: int
+    line_count: int
 
 
 def _extra_lap(
@@ -746,6 +756,8 @@ def _extra_lap(
         pattern_active=active,
         previous_pattern_active=previous_active,
         tracked=shapes_clay(weave),
+        line_index=line_index,
+        line_count=pattern_line_count,
     )
 
 
@@ -778,6 +790,11 @@ def _extra_lap_samples(
             _pattern_transition_scale(value, lap.previous_pattern_active, lap.pattern_active)
             for value in u.tolist()
         ]
+    if settings.fade_in_layers or settings.fade_out_layers:
+        pattern_scales = (
+            np.asarray(pattern_scales)
+            * effect_fade_scale(settings, lap.line_index + u, lap.line_count)
+        ).tolist()
     clay: list[float] | list[None] = (
         np.asarray(evaluate_curve(lap.weave.extrusion, extrusion_phases), dtype=np.float64).tolist()
         if lap.tracked
@@ -1013,6 +1030,7 @@ def build_zblend_path(
             pattern_active=rim_pattern_active,
             previous_pattern_active=previous_rim_pattern_active,
             extra_laps=rim_laps,
+            fade_layer_count=pattern_line_count,
         )
         if revolutions:
             _assert_continuous_boundary(revolutions[-1].points[-1], points[0])
@@ -1043,11 +1061,89 @@ def build_zblend_path(
         if follow_top and crown_layer_index is not None
         else None
     )
+    if pattern.images:
+        revolutions = _with_image_relief(revolutions, pattern, rings)
     return ZBlendPath(
         form_id=sliced.id,
         revolutions=tuple(revolutions),
         top_follow=top_follow_plan,
     )
+
+
+def _with_image_relief(
+    revolutions: list[ZBlendRevolution], pattern: Pattern, rings: tuple[Ring, ...]
+) -> list[ZBlendRevolution]:
+    """Drape artwork over the actual rising original surface, lap by lap."""
+
+    by_layer = {ring.provenance.layer_index: ring for ring in rings}
+    output: list[ZBlendRevolution] = []
+    for revolution in revolutions:
+        source = by_layer[revolution.source_layer_index]
+        target = by_layer[revolution.target_layer_index]
+        u = source.u
+        blend = np.zeros_like(u) if revolution.is_level_rim else u
+        source_height = (
+            source.surface_height_mm
+            if source.surface_height_mm is not None
+            else np.full(len(u), source.z)
+        )
+        target_height = (
+            target.surface_height_mm
+            if target.surface_height_mm is not None
+            else np.full(len(u), target.z)
+        )
+        displacement, flow = image_ring_fields(
+            source,
+            pattern,
+            around=u - ((1.0 - blend) * source.hold_u_offset + blend * target.hold_u_offset),
+            surface_height_mm=(1.0 - blend) * source_height + blend * target_height,
+            layer_position=source.provenance.layer_index + u,
+            circumference_mm=(1.0 - blend) * source.circumference + blend * target.circumference,
+            curvature_ring=target,
+            continuous=True,
+            layer_count=len(revolutions),
+        )
+        if revolution.is_level_rim:
+            displacement *= 1.0 - u
+            flow *= 1.0 - u
+        points: list[ZBlendPoint] = []
+        for index, point in enumerate(revolution.points):
+            normal = (1.0 - blend[index]) * source.outward_normals[index] + (
+                blend[index] * target.outward_normals[index]
+            )
+            normal /= np.linalg.norm(normal)
+            points.append(
+                replace(
+                    point,
+                    x=point.x + float(displacement[index] * normal[0]),
+                    y=point.y + float(displacement[index] * normal[1]),
+                    extrusion_multiplier=float(
+                        held_flow(
+                            point.weave_one_extrusion_multiplier
+                            if point.weave_one_extrusion_multiplier is not None
+                            else point.extrusion_multiplier / point.thickness_flow_scale,
+                            point.extra_flow_delta + flow[index],
+                        )
+                        * point.thickness_flow_scale
+                    ),
+                    image_displacement=float(displacement[index]),
+                    image_flow_delta=float(flow[index]),
+                )
+            )
+        if output:
+            # Both samples describe the same point on the source surface.
+            # Copying avoids a final-bit discrepancy after normal blending.
+            previous = output[-1].points[-1]
+            points[0] = replace(
+                points[0],
+                x=previous.x,
+                y=previous.y,
+                image_displacement=previous.image_displacement,
+                image_flow_delta=previous.image_flow_delta,
+                extrusion_multiplier=previous.extrusion_multiplier,
+            )
+        output.append(replace(revolution, points=tuple(points)))
+    return output
 
 
 def _blend_revolution(
@@ -1068,6 +1164,7 @@ def _blend_revolution(
     pattern_active: bool,
     previous_pattern_active: bool,
     extra_laps: tuple[_ExtraLap, ...] = (),
+    fade_layer_count: int = 0,
 ) -> tuple[ZBlendPoint, ...]:
     if source.sample_count != target.sample_count:
         raise ZBlendGeometryError(
@@ -1180,6 +1277,11 @@ def _blend_revolution(
                     u,
                     previous_pattern_active,
                     pattern_active,
+                )
+                * effect_fade_scale(
+                    pattern.settings,
+                    source.provenance.layer_index + u,
+                    fade_layer_count or source.layer_count,
                 ),
                 extras=extra_samples[index],
             )
@@ -1200,6 +1302,7 @@ def _level_rim_revolution(
     pattern_active: bool,
     previous_pattern_active: bool,
     extra_laps: tuple[_ExtraLap, ...] = (),
+    fade_layer_count: int = 0,
 ) -> tuple[ZBlendPoint, ...]:
     # Weave 1 as it prints, as on every lap below it.
     form_scale, form_flow_scale = ring_curvature_scales(top, pattern.settings)
@@ -1268,6 +1371,9 @@ def _level_rim_revolution(
                     u,
                     previous_pattern_active,
                     pattern_active,
+                )
+                * effect_fade_scale(
+                    pattern.settings, layer + u, fade_layer_count or top.layer_count
                 ),
                 extras=extra_samples[index],
             )
@@ -1293,6 +1399,9 @@ def _level_rim_revolution(
         profile_z_offset=0.0,
         pattern_scale=final.pattern_scale,
         extra_weaves=tuple(replace(extra, amplitude_scale=0.0) for extra in final.extra_weaves),
+        unheld_extrusion_multiplier=final.unheld_extrusion_multiplier,
+        weave_one_extrusion_multiplier=final.weave_one_extrusion_multiplier,
+        extra_flow_delta=final.extra_flow_delta,
     )
     return tuple(points)
 
@@ -1571,6 +1680,8 @@ def _pattern_point(
     extrusion_multiplier = 1.0 + pattern_scale * (
         float(evaluate_curve(pattern.extrusion, extrusion_phase)) * curvature_flow_scale - 1.0
     )
+    unheld_extrusion_multiplier = extrusion_multiplier + extra_flow
+    weave_one_extrusion_multiplier = extrusion_multiplier
     if tracked:
         extrusion_multiplier = held_flow(extrusion_multiplier, extra_flow)
     return ZBlendPoint(
@@ -1593,6 +1704,9 @@ def _pattern_point(
         profile_z_offset=profile_z_offset,
         pattern_scale=pattern_scale,
         extra_weaves=extra_weaves,
+        unheld_extrusion_multiplier=unheld_extrusion_multiplier if pattern.images else None,
+        weave_one_extrusion_multiplier=weave_one_extrusion_multiplier if pattern.images else None,
+        extra_flow_delta=extra_flow if pattern.images else 0.0,
     )
 
 

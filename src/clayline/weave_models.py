@@ -11,11 +11,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import NDArray
 
 from clayline.models import Bounds, Point, Severity
+
+if TYPE_CHECKING:
+    from clayline.image_relief import ImageEffect
 
 FloatArray = NDArray[np.float64]
 IntArray = NDArray[np.int64]
@@ -304,6 +308,10 @@ class Ring:
     centroid: Point
     hold_circumference: float | None = None
     hold_u_offset: float = 0.0
+    # Coordinates on the undisplaced exterior.  Print-start policies only
+    # reorder samples and never change this artwork registration.
+    surface_height_mm: FloatArray | None = field(default=None, repr=False, compare=False)
+    layer_count: int = 0
 
     def __post_init__(self) -> None:
         points = _readonly_float_array(self.points, columns=2, label="ring points")
@@ -350,6 +358,15 @@ class Ring:
         object.__setattr__(self, "points", points)
         object.__setattr__(self, "outward_normals", normals)
         object.__setattr__(self, "u", u)
+        if self.surface_height_mm is not None:
+            heights = _readonly_float_vector(self.surface_height_mm, label="surface height")
+            if len(heights) != len(points) or not np.isfinite(heights).all():
+                raise ValueError("every ring point needs a finite surface height")
+            object.__setattr__(self, "surface_height_mm", heights)
+        if isinstance(self.layer_count, bool) or not isinstance(self.layer_count, int):
+            raise ValueError("ring layer_count must be an integer")
+        if self.layer_count < 0:
+            raise ValueError("ring layer_count cannot be negative")
 
     @property
     def sample_count(self) -> int:
@@ -593,6 +610,8 @@ class WeaveSettings:
     layer_skip_on: int = 2
     layer_skip_off: int = 2
     layer_skip_end: int = 0
+    fade_in_layers: int = 0
+    fade_out_layers: int = 0
     # The artist chooses the interior explicitly; nothing switches on its own.
     # "hollow" is the frozen default and reproduces the historical behavior
     # byte for byte, so every existing golden and canonical pattern is safe.
@@ -678,6 +697,8 @@ class WeaveSettings:
             self.layer_skip_on,
             self.layer_skip_off,
             self.layer_skip_end,
+            self.fade_in_layers,
+            self.fade_out_layers,
         )
         if any(
             isinstance(value, bool) or not isinstance(value, int) for value in layer_skip_counts
@@ -702,6 +723,8 @@ class WeaveSettings:
             raise ValueError("bottom_layers cannot be negative")
         if self.layer_skip_start < 0 or self.layer_skip_end < 0:
             raise ValueError("plain start/end layer counts cannot be negative")
+        if self.fade_in_layers < 0 or self.fade_out_layers < 0:
+            raise ValueError("fade layer counts cannot be negative")
         if self.layer_skip_on < 1 or self.layer_skip_off < 1:
             raise ValueError("pattern on/off layer counts must be at least one")
         if not 0.0 <= self.overlap_fraction <= 1.0:
@@ -862,6 +885,7 @@ class Pattern:
     # only want to apply three weaves to any object").  Empty is every
     # pattern from before them, and writes nothing.
     extra_weaves: tuple[ExtraWeave, ...] = ()
+    images: tuple[ImageEffect, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.settings, WeaveSettings):
@@ -919,6 +943,13 @@ class Pattern:
         object.__setattr__(self, "wave", wave)
         object.__setattr__(self, "extrusion", extrusion)
         object.__setattr__(self, "extra_weaves", extra_weaves)
+        images = tuple(self.images)
+        if images:
+            from clayline.image_relief import ImageEffect
+
+            if len(images) > 3 or any(not isinstance(image, ImageEffect) for image in images):
+                raise ValueError("a pattern supports up to three Images")
+        object.__setattr__(self, "images", images)
         if self.name is not None:
             object.__setattr__(self, "name", self.name.strip())
 
@@ -967,6 +998,8 @@ class ExtraWeave:
     layer_skip_on: int = 2
     layer_skip_off: int = 2
     layer_skip_end: int = 0
+    fade_in_layers: int = 0
+    fade_out_layers: int = 0
     wavelength_follows_nozzle: bool = False
     wave_on: bool = True
     # Keep the same number of waves, this weave's own: Weave 1's switch never
@@ -1019,6 +1052,8 @@ class ExtraWeave:
                 layer_skip_on=self.layer_skip_on,
                 layer_skip_off=self.layer_skip_off,
                 layer_skip_end=self.layer_skip_end,
+                fade_in_layers=self.fade_in_layers,
+                fade_out_layers=self.fade_out_layers,
                 wave_on=self.wave_on,
                 hold_wave_count=self.hold_wave_count,
             ),

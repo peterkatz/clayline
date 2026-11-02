@@ -610,7 +610,7 @@ def _amplitude_field(
             unit_delta=np.empty((0, 2), dtype=np.float64),
             ring_indices=np.empty(0, dtype=np.int64),
         )
-    unit_pattern = replace(pattern, settings=replace(pattern.settings, amplitude=1.0))
+    unit_pattern = replace(pattern, settings=replace(pattern.settings, amplitude=1.0), images=())
     layer_pattern_scales = _layer_pattern_scales(
         sliced,
         pattern,
@@ -638,7 +638,13 @@ def _amplitude_field(
                 pattern.settings,
             ),
         ).points
-        bases.append(ring.points)
+        base = ring.points
+        if pattern.images:
+            from clayline.wave import image_ring_fields
+
+            displacement, _flow = image_ring_fields(ring, pattern)
+            base = base + displacement[:, np.newaxis] * ring.outward_normals
+        bases.append(base)
         deltas.append(unit_points - ring.points)
         indices.append(np.full(len(ring.points), index, dtype=np.int64))
     return _AmplitudeField(
@@ -689,7 +695,7 @@ def _swing_field(
             share.append(
                 modulate_ring(
                     ring,
-                    weave,
+                    replace(weave, images=()) if weave.images else weave,
                     layer_coordinate=layer_index + sliced.source_layer_start,
                     pattern_scale=scale,
                     profile_scale=profile_scale,
@@ -697,7 +703,13 @@ def _swing_field(
                 ).points
                 - ring.points
             )
-        bases.append(ring.points)
+        base = ring.points
+        if pattern.images:
+            from clayline.wave import image_ring_fields
+
+            displacement, _flow = image_ring_fields(ring, pattern)
+            base = base + displacement[:, np.newaxis] * ring.outward_normals
+        bases.append(base)
         indices.append(np.full(len(ring.points), index, dtype=np.int64))
     deltas = [np.concatenate(share, axis=0) for share in shares]
     # Weave 1's place is kept even while it is switched off, and each extra

@@ -49,7 +49,7 @@ _TOP_LEVEL_KEYS = {
 }
 # Weaves 2 and 3 ride in one optional top-level key, so a one-weave pattern
 # is the file 0.8.3 wrote and 0.8.3 refuses a file it cannot print whole.
-_OPTIONAL_TOP_LEVEL_KEYS = {"extra_weaves"}
+_OPTIONAL_TOP_LEVEL_KEYS = {"extra_weaves", "images"}
 _SETTINGS_KEYS_V1 = {
     "amplitude",
     "wavelength",
@@ -73,6 +73,8 @@ _SETTINGS_KEYS_V4 = _SETTINGS_KEYS_V3 | {
     "profile_custom_high",
 }
 _OPTIONAL_SETTINGS_KEYS = {
+    "fade_in_layers",
+    "fade_out_layers",
     "bottom_alternate",
     "wavelength_follows_nozzle",
     "follow_top_edge",
@@ -117,6 +119,8 @@ _EXTRA_WEAVE_SKIP_KEYS = {
     "layer_skip_end",
 }
 _OPTIONAL_EXTRA_WEAVE_SETTINGS_KEYS = _EXTRA_WEAVE_SKIP_KEYS | {
+    "fade_in_layers",
+    "fade_out_layers",
     "flow_lobes",
     "flow_coves",
     "wavelength_follows_nozzle",
@@ -176,6 +180,9 @@ class ModulatedRing:
     extra_curvature_flow_scales: tuple[FloatArray, ...] = ()
     clay_held: tuple[str, ...] = ()
     clay_held_by: tuple[tuple[str, tuple[tuple[int, bool, bool], ...]], ...] = ()
+    pattern_scale: float = 1.0
+    image_flow_delta: FloatArray | None = None
+    image_displacement: FloatArray | None = None
 
     def __post_init__(self) -> None:
         arrays = (
@@ -196,6 +203,13 @@ class ModulatedRing:
         object.__setattr__(self, "extrusion_multiplier", arrays[4])
         object.__setattr__(self, "amplitude_scale", arrays[5])
         object.__setattr__(self, "curvature_flow_scale", arrays[6])
+        for name in ("image_flow_delta", "image_displacement"):
+            vector = getattr(self, name)
+            if vector is not None:
+                vector = _readonly_vector(vector, label=name)
+                if len(vector) != len(arrays[0]):
+                    raise ValueError("image fields must match ring samples")
+                object.__setattr__(self, name, vector)
         if not self.extra_wave_phases and not self.extra_pattern_scales:
             return
         extras = len(self.extra_wave_phases)
@@ -517,6 +531,20 @@ def modulate_ring(
         raise ValueError("pattern_scale must be finite and in [0, 1]")
     weave_one, extras = printed_weaves(pattern)
     extra_scales = _extra_scales(extras, extra_pattern_scales)
+    if not pattern.settings.z_blend and (
+        pattern.settings.fade_in_layers or pattern.settings.fade_out_layers
+    ):
+        pattern_scale *= effect_fade_scale(
+            pattern.settings, ring.provenance.layer_index + 0.5, ring.layer_count
+        )
+    extra_scales = tuple(
+        scale
+        * effect_fade_scale(view.settings, ring.provenance.layer_index + 0.5, ring.layer_count)
+        if not pattern.settings.z_blend
+        and (view.settings.fade_in_layers or view.settings.fade_out_layers)
+        else scale
+        for view, scale in zip(extras, extra_scales, strict=True)
+    )
     phase = ring_phase(ring, pattern.settings, layer_coordinate=layer_coordinate, spiral=spiral)
     wave_values = np.asarray(evaluate_curve(weave_one.wave, phase), dtype=np.float64)
     # Weave 1's Wave depth and Clay along the wall as it prints: switched off,
@@ -574,6 +602,10 @@ def modulate_ring(
         extra_phases.append(extra_phase)
         extra_amplitude_scales.append(extra_amplitude_scale)
         extra_flow_scales.append(extra_flow_scale)
+    image_displacement = image_flow_delta = None
+    if pattern.images and not ring.is_hole:
+        image_displacement, image_flow_delta = image_ring_fields(ring, pattern)
+        points += image_displacement[:, np.newaxis] * ring.outward_normals
     if ring.closed:
         # A whole wave count makes the values mathematically periodic.  Copying
         # the first coordinate removes any last-bit arithmetic drift too.
@@ -594,6 +626,7 @@ def modulate_ring(
     clay_held: tuple[str, ...] = ()
     clay_held_by: tuple[tuple[str, tuple[tuple[int, bool, bool], ...]], ...] = ()
     tracked = tuple(index for index, view in enumerate(extras) if shapes_clay(view))
+    weave_one_flow = extrusion_multiplier
     if tracked:
         # A flat clay track with neutral Clay along the wall adds exactly
         # nothing, so only a weave that shapes the clay is summed, and only
@@ -631,6 +664,10 @@ def modulate_ring(
         clay_held_by = tuple(
             (name, _clay_pushed_by(terms, side, sign)) for name, side, sign in held_sides
         )
+    if image_flow_delta is not None:
+        extrusion_multiplier = held_flow(
+            weave_one_flow, (extra_flow if tracked else 0.0) + image_flow_delta
+        )
     if ring.closed:
         extrusion_multiplier[-1] = extrusion_multiplier[0]
     return ModulatedRing(
@@ -650,6 +687,9 @@ def modulate_ring(
         extra_curvature_flow_scales=tuple(extra_flow_scales),
         clay_held=clay_held,
         clay_held_by=clay_held_by,
+        pattern_scale=pattern_scale,
+        image_displacement=image_displacement,
+        image_flow_delta=image_flow_delta,
     )
 
 
@@ -817,6 +857,120 @@ def pattern_layer_is_active(
     return (
         middle_index % (settings.layer_skip_on + settings.layer_skip_off) < settings.layer_skip_on
     )
+
+
+def effect_fade_scale(settings: WeaveSettings, position: Any, layer_count: int) -> Any:
+    """Smooth an effect at each active band's edges without moving its phase.
+
+    Positions address layer boundaries; discrete layers use their centers and
+    a rising vase samples its actual fractional layer position.
+    """
+
+    if not settings.fade_in_layers and not settings.fade_out_layers:
+        return np.ones_like(position, dtype=np.float64) if np.ndim(position) else 1.0
+    p = np.asarray(position, dtype=np.float64)
+    count = max(1, layer_count)
+    if settings.layer_skip_enabled:
+        start = float(settings.layer_skip_start)
+        period = settings.layer_skip_on + settings.layer_skip_off
+        block = np.floor(np.maximum(0.0, p - start) / period)
+        starts = start + block * period
+        ends = np.minimum(starts + settings.layer_skip_on, count - settings.layer_skip_end)
+    else:
+        starts, ends = 0.0, float(count)
+    scale = np.ones_like(p)
+    for distance, duration in (
+        (p - starts, settings.fade_in_layers),
+        (ends - p, settings.fade_out_layers),
+    ):
+        if duration:
+            t = np.clip(distance / duration, 0.0, 1.0)
+            scale *= t * t * (3.0 - 2.0 * t)
+    return float(scale) if scale.ndim == 0 else scale
+
+
+def image_ring_fields(
+    ring: Ring,
+    pattern: Pattern,
+    *,
+    around: ArrayLike | None = None,
+    surface_height_mm: ArrayLike | None = None,
+    layer_position: ArrayLike | None = None,
+    circumference_mm: ArrayLike | None = None,
+    curvature_ring: Ring | None = None,
+    continuous: bool = False,
+    layer_count: int | None = None,
+) -> tuple[FloatArray, FloatArray]:
+    """Sum Images on original exterior coordinates, independent of print start."""
+
+    from clayline.image_relief import evaluate_image
+
+    u = np.asarray(ring.u - ring.hold_u_offset if around is None else around, dtype=np.float64)
+    height = (
+        ring.surface_height_mm
+        if surface_height_mm is None and ring.surface_height_mm is not None
+        else ring.z
+        if surface_height_mm is None
+        else surface_height_mm
+    )
+    position = ring.provenance.layer_index + 0.5 if layer_position is None else layer_position
+    displacement = np.zeros_like(u)
+    flow_delta = np.zeros_like(u)
+    if ring.is_hole:
+        return displacement, flow_delta
+    for image in pattern.images:
+        if not image.enabled:
+            continue
+        settings = image.settings
+        count = max(layer_count or ring.layer_count, ring.provenance.layer_index + 1)
+        active = np.asarray(position, dtype=np.float64)
+        if settings.layer_skip_enabled:
+            if continuous:
+                index = min(ring.provenance.layer_index, count - 1)
+                current = pattern_layer_is_active(settings, index, count)
+                previous = pattern_layer_is_active(settings, max(0, index - 1), count)
+                t = np.clip((active - index) / 0.05, 0.0, 1.0)
+                t = t * t * (3.0 - 2.0 * t)
+                rhythm = float(previous) + (float(current) - float(previous)) * t
+            else:
+                indices = np.clip(np.floor(active).astype(int), 0, count - 1)
+                rhythm = np.asarray(
+                    [pattern_layer_is_active(settings, int(index), count) for index in indices.flat]
+                ).reshape(indices.shape)
+        else:
+            rhythm = 1.0
+        scale = rhythm * effect_fade_scale(settings, active, count)
+        relief, footprint = evaluate_image(
+            image,
+            u,
+            height,
+            ring.circumference if circumference_mm is None else circumference_mm,
+            ring.hold_circumference or ring.circumference,
+        )
+        depth, clay = ring_curvature_scales(ring, settings)
+        if curvature_ring is not None:
+            target_depth, target_clay = ring_curvature_scales(curvature_ring, settings)
+            blend = np.asarray(layer_position) - ring.provenance.layer_index
+            depth = (1.0 - blend) * depth + blend * target_depth
+            clay = (1.0 - blend) * clay + blend * target_clay
+        displacement += image.amplitude * scale * relief * footprint * depth
+        flow_relief = relief
+        if image.extrusion_phase_offset:
+            flow_relief, _flow_footprint = evaluate_image(
+                image,
+                u,
+                height,
+                ring.circumference if circumference_mm is None else circumference_mm,
+                ring.hold_circumference or ring.circumference,
+                phase_offset=image.extrusion_phase_offset,
+            )
+        phase = (1.0 - flow_relief) * 0.25
+        track = np.asarray(evaluate_curve(image.extrusion, phase), dtype=np.float64)
+        flow_delta += scale * footprint * (track * clay - 1.0)
+    if ring.closed and len(u) > 1 and around is None:
+        displacement[-1] = displacement[0]
+        flow_delta[-1] = flow_delta[0]
+    return displacement, flow_delta
 
 
 def profile_amplitude_scale(
@@ -1182,6 +1336,13 @@ def pattern_to_json(pattern: Pattern) -> str:
     # One weave writes no key at all, so its file is the one 0.8.3 wrote.
     if pattern.extra_weaves:
         payload["extra_weaves"] = [_extra_weave_payload(extra) for extra in pattern.extra_weaves]
+    for key in ("fade_in_layers", "fade_out_layers"):
+        if getattr(pattern.settings, key):
+            payload["settings"][key] = getattr(pattern.settings, key)
+    if pattern.images:
+        from clayline.image_relief import image_to_payload
+
+        payload["images"] = [image_to_payload(image) for image in pattern.images]
     return json.dumps(
         payload,
         sort_keys=True,
@@ -1416,6 +1577,8 @@ def pattern_from_json(text: str) -> Pattern:
             if "hold_wave_count" not in settings_payload
             else _strict_bool(settings_payload["hold_wave_count"], "settings.hold_wave_count")
         ),
+        fade_in_layers=_strict_int(settings_payload.get("fade_in_layers", 0), "fade_in_layers"),
+        fade_out_layers=_strict_int(settings_payload.get("fade_out_layers", 0), "fade_out_layers"),
     )
     return Pattern(
         wave=_curve_from_payload(payload["wave"], "wave"),
@@ -1438,7 +1601,16 @@ def pattern_from_json(text: str) -> Pattern:
             if "extra_weaves" not in payload
             else _extra_weaves_from_payload(payload["extra_weaves"])
         ),
+        images=_images_from_payload(payload.get("images", [])),
     )
+
+
+def _images_from_payload(value: Any) -> tuple:
+    from clayline.image_relief import image_from_payload
+
+    if not isinstance(value, list) or len(value) > 3:
+        raise ValueError("Images must be an array with up to three images")
+    return tuple(image_from_payload(item) for item in value)
 
 
 def load_pattern(value: Pattern | str | Path) -> Pattern:
@@ -1610,6 +1782,9 @@ def _extra_weave_payload(extra: ExtraWeave) -> dict[str, Any]:
         settings["wave_on"] = False
     if extra.hold_wave_count:
         settings["hold_wave_count"] = True
+    for key in ("fade_in_layers", "fade_out_layers"):
+        if getattr(extra, key):
+            settings[key] = getattr(extra, key)
     return {
         "name": extra.name,
         "seed": extra.seed,
@@ -1688,6 +1863,8 @@ def _extra_weave_from_payload(value: Any, label: str) -> ExtraWeave:
         layer_skip_on=skip_count("layer_skip_on", 2),
         layer_skip_off=skip_count("layer_skip_off", 2),
         layer_skip_end=skip_count("layer_skip_end", 0),
+        fade_in_layers=_strict_int(settings.get("fade_in_layers", 0), "fade_in_layers"),
+        fade_out_layers=_strict_int(settings.get("fade_out_layers", 0), "fade_out_layers"),
         wavelength_follows_nozzle=(
             False
             if "wavelength_follows_nozzle" not in settings

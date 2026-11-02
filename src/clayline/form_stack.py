@@ -30,6 +30,7 @@ from clayline.wave import (
     ModulatedRing,
     average_curve,
     average_curve_spans,
+    effect_fade_scale,
     evaluate_curve,
     has_wall_clay,
     held_flow,
@@ -112,6 +113,7 @@ class _PathPoint:
     # in ``printed_weaves`` order.  Empty with one weave and on every fill.
     extra_extrusion_phases: tuple[float, ...] = ()
     extra_pattern_scales: tuple[float, ...] = ()
+    image_flow_delta: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,8 +349,17 @@ def build_form_move_stream(
                         )
                         - 1.0
                     )
+                    added = 0.0
                     if extra_tracks and point.extra_extrusion_phases:
-                        flow = held_flow(flow, extra_join_flow(previous_path_end, point))
+                        added = extra_join_flow(previous_path_end, point)
+                        if not pattern.images:
+                            flow = held_flow(flow, added)
+                    if pattern.images:
+                        flow = held_flow(
+                            flow,
+                            added
+                            + 0.5 * (previous_path_end.image_flow_delta + point.image_flow_delta),
+                        )
                 moves.append(
                     Move(
                         MoveKind.PRINT,
@@ -708,6 +719,7 @@ def build_form_move_stream(
         previous_phase: float | None = None
         previous_curvature_flow = 1.0
         previous_thickness_flow = 1.0
+        previous_image_flow = 0.0
         revolution_paths: list[_RingPath] = []
         if bottom_layers == 0:
             point_groups = ((blended.revolutions[0].source_layer_index, blended.points),)
@@ -785,11 +797,19 @@ def build_form_move_stream(
                         * (previous_curvature_flow + point.curvature_flow_scale)
                         - 1.0
                     )
+                    added = 0.0
                     if extra_tracks:
                         # Each extra weave's exact segment average is added
                         # after Weave 1's, and only then held.
-                        pattern_flow = held_flow(pattern_flow, extra_spiral_flows[spiral_step])
+                        added = extra_spiral_flows[spiral_step]
+                        if not pattern.images:
+                            pattern_flow = held_flow(pattern_flow, added)
                         spiral_step += 1
+                    if pattern.images:
+                        pattern_flow = held_flow(
+                            pattern_flow,
+                            added + 0.5 * (previous_image_flow + point.image_flow_delta),
+                        )
                     # Layer rhythm neutralizes the decorative pattern only.
                     # Top-follow thickness compensation is structural and must
                     # remain active on a deliberately plain revolution.
@@ -808,6 +828,7 @@ def build_form_move_stream(
                         z=point.z,
                         layer=layer,
                         flow=float(flow),
+                        image_flow_delta=point.image_flow_delta,
                         extrusion_phase=point.extrusion_phase,
                         comment=(
                             "weave level rim"
@@ -846,6 +867,7 @@ def build_form_move_stream(
                 previous_phase = point.extrusion_phase
                 previous_curvature_flow = point.curvature_flow_scale
                 previous_thickness_flow = point.thickness_flow_scale
+                previous_image_flow = point.image_flow_delta
             seed_layer = min(source_layer_index, len(sliced.layers) - 1)
             revolution_paths.append(
                 _RingPath(sliced.layers[seed_layer].rings[0], tuple(path_points))
@@ -2831,6 +2853,12 @@ def _ring_path(
     pattern_scale: float = 1.0,
 ) -> _RingPath:
     weave_one, extras = printed_weaves(pattern)
+    # The modulator owns the fade envelope; emission reuses its exact weight
+    # when integrating the established weave tracks over each segment.
+    if pattern.settings.fade_in_layers or pattern.settings.fade_out_layers:
+        pattern_scale *= effect_fade_scale(
+            pattern.settings, ring.provenance.layer_index + 0.5, ring.layer_count
+        )
     if len(modulated.extra_wave_phases) != len(extras):
         raise FormStackError("a wall ring was modulated without every weave of its pattern")
     if ring.closed:
@@ -2874,6 +2902,8 @@ def _ring_path(
             )
         )
     point_extras: tuple[tuple[float, ...], ...] = ((),) * len(indices)
+    weave_one_flows = np.asarray(flows[1:], dtype=np.float64)
+    image_extra_flow: float | np.ndarray = 0.0
     if extras:
         # Each extra weave's phase unwrapped across the seam with its own whole
         # count, so its clay track runs on round the seam like Weave 1's.
@@ -2908,7 +2938,20 @@ def _ring_path(
                     lobes = modulated.extra_curvature_flow_scales[index][list(indices)]
                     clay = clay * 0.5 * (lobes[:-1] + lobes[1:])
                 extra_flow += modulated.extra_pattern_scales[index] * (clay - 1.0)
-            flows[1:] = held_flow(np.asarray(flows[1:], dtype=np.float64), extra_flow).tolist()
+            plain_flow = np.asarray(flows[1:], dtype=np.float64)
+            if modulated.image_flow_delta is not None:
+                image_extra_flow = extra_flow
+            else:
+                flows[1:] = held_flow(plain_flow, extra_flow).tolist()
+    image_flows = (
+        np.zeros(len(indices))
+        if modulated.image_flow_delta is None
+        else modulated.image_flow_delta[list(indices)]
+    )
+    if modulated.image_flow_delta is not None:
+        flows[1:] = held_flow(
+            weave_one_flows, image_extra_flow + 0.5 * (image_flows[:-1] + image_flows[1:])
+        ).tolist()
     points = tuple(
         _PathPoint(
             x=float(modulated.points[index, 0]),
@@ -2925,9 +2968,10 @@ def _ring_path(
             pattern_scale=pattern_scale,
             extra_extrusion_phases=extra_phase_here,
             extra_pattern_scales=modulated.extra_pattern_scales,
+            image_flow_delta=float(image_flows[position]),
         )
-        for index, flow, phase, extra_phase_here in zip(
-            indices, flows, phases, point_extras, strict=True
+        for position, (index, flow, phase, extra_phase_here) in enumerate(
+            zip(indices, flows, phases, point_extras, strict=True)
         )
     )
     if ring.closed and (points[0].x, points[0].y) != (points[-1].x, points[-1].y):

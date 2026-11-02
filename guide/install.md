@@ -15,11 +15,11 @@ Clayline does not need an internet connection, an account, or anything else inst
 3. Drag **Clayline** into your Applications folder.
 4. Open it. It starts in a moment and opens the studio in its own window.
 
-To update, download the new version and drag it over the old one. Your settings stay.
+To update, save any job you want to continue as a **Clayline project**, quit the app, then download the new version and drag it over the old one. Your saved projects and source files stay where you saved them. Open a project to bring back its design and settings. Images and effect fades are available in Clayline 0.10.0 and later.
 
 ## The studio at a glance
 
-The top bar has two buttons that switch modes: **Draw in Clay** for line drawings and tiles, and **Weave · mesh** for 3D models. Next to them, **mm / in** chooses how sizes are shown to you. Files always stay in millimetres inside.
+The top bar has two buttons that switch modes: **Draw in Clay** for line drawings, filled areas and layered tiles, and **Weave · mesh** for 3D models shaped with Weaves and image relief. Next to them, **mm / in** chooses how sizes are shown to you. Files always stay in millimetres inside.
 
 Each mode is laid out the same way:
 
@@ -35,9 +35,19 @@ The **Slice** button at the bottom of the workflow builds the toolpath. Nothing 
 
 Clayline comes with a gallery of 98 example drawings. In **Draw in Clay**, press **Browse the gallery** under 01 Design, open a folder, and choose a drawing. Press **Slice job** and look around: the plan, the 3D toolpath, and Before you print. Nothing reaches a printer until you save a file and take it there yourself.
 
+## Try Images on a model
+
+1. Switch to **Weave · mesh**, load an STL, OBJ, PLY or 3MF, check its size, then press **Slice form**.
+2. In **05 Images**, press **Add image**. Choose a depth map from the 80-image catalogue, or **Upload image…** for your own grayscale or color artwork.
+3. Use **Repeat around** to cover the wall, or **Place once** for a single stamp. Move, resize or rotate it; the preview and fitted-repeat readout show the result.
+4. Adjust **Amplitude**, clay flow and active layers. Add **Fade in** or **Fade out** to ease the effect in and out. You can also add Weaves in **04 Pattern**, with independent settings.
+5. Inspect the final path and save a project before exporting the print file. The project includes your model and uploaded artwork.
+
+The catalogue includes soft fields, Truchet patterns, botanical motifs and 20 paisley designs. See [Images](weave.md#05-images) for placement, seamless repeats, edge blending and the shared flow controls.
+
 ## Choose your printer
 
-Open **Printer**, the last section of the workflow in either mode, and pick your machine from the list.
+In **Draw in Clay**, open **06 Printer**; in **Weave · mesh**, open **02 Printer and coil**. Pick your machine from the list.
 
 **PotterBot 10 XL · verified** means every fact in that profile, from the size of the bed to the commands that start and end a print, was checked against a real print on that machine.
 

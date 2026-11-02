@@ -31,7 +31,9 @@ _DEMO_FIXTURE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 _MAX_FILES = 32
 _MAX_SVG_BYTES = 8 * 1024 * 1024
 _MAX_TOTAL_BYTES = 24 * 1024 * 1024
-_MAX_REQUEST_BYTES = 32 * 1024 * 1024
+# A portable pattern can contain three original raster uploads (16 MiB each),
+# expanded to base64 alongside the mesh controls.
+_MAX_REQUEST_BYTES = 72 * 1024 * 1024
 # The server is localhost-only, so these bounds exist to catch nonsense —
 # never to refuse an artist's real file. Scanned meshes routinely run
 # hundreds of MB as ASCII OBJ/PLY (Pete's 892k-triangle scans).
@@ -280,6 +282,98 @@ def create_app(
                 }
             )
         return {"schema": "clayline.ui.weave-textures.v1", "presets": rows}
+
+    @app.get("/api/images/catalogue", include_in_schema=False)
+    async def images_catalogue() -> dict[str, Any]:
+        from clayline.image_relief import image_catalogue
+
+        return {
+            "images": [
+                {**item, "preview_url": f"/api/images/catalogue/{item['id']}/preview"}
+                for item in image_catalogue()
+            ]
+        }
+
+    @app.get("/api/images/catalogue/{source_id}/preview", include_in_schema=False)
+    async def images_catalogue_preview(source_id: str) -> Any:
+        from clayline.image_relief import ImageEffect, image_preview_png
+
+        try:
+            content = await asyncio.to_thread(
+                image_preview_png, ImageEffect(source_id=source_id), repeat=1
+            )
+            return Response(content=content, media_type="image/png")
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail="Image is not in the catalogue") from exc
+
+    @app.post("/api/images/upload", include_in_schema=False)
+    async def images_upload(request: Request) -> Any:
+        from clayline.image_relief import (
+            image_bytes,
+            image_edge_mismatch,
+            image_from_payload,
+            image_info,
+            image_to_payload,
+        )
+
+        try:
+            payload = await _read_json_request(request, required_origin=desktop_origin)
+            if not isinstance(payload, dict):
+                raise ValueError("Choose an image to upload")
+            image = image_from_payload(
+                {
+                    "name": payload.get("name", "Uploaded image"),
+                    "data_base64": payload.get("data_base64"),
+                    "placement": "once",
+                }
+            )
+            await asyncio.to_thread(image_bytes, image)
+            mismatch = await asyncio.to_thread(image_edge_mismatch, image)
+            return {
+                "image": image_to_payload(image),
+                "edge_mismatch": mismatch,
+                "info": await asyncio.to_thread(image_info, image),
+            }
+        except UiRequestError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        except (OSError, ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/images/preview", include_in_schema=False)
+    async def images_preview(request: Request) -> Any:
+        from clayline.image_relief import image_from_payload, image_preview_png
+
+        try:
+            payload = await _read_json_request(request, required_origin=desktop_origin)
+            if not isinstance(payload, dict):
+                raise ValueError("Choose an image to preview")
+            image = image_from_payload(payload.get("image"))
+            content = await asyncio.to_thread(image_preview_png, image, repeat=1)
+            return Response(content=content, media_type="image/png")
+        except UiRequestError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        except (OSError, ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/images/extrusion-preset", include_in_schema=False)
+    async def images_extrusion_preset(request: Request) -> Any:
+        from clayline.wave import extrusion_preset
+        from clayline.weave_models import CurvePoint, Pattern
+
+        try:
+            payload = await _read_json_request(request, required_origin=desktop_origin)
+            if not isinstance(payload, dict) or not isinstance(payload.get("name"), str):
+                raise ValueError("Choose Flat, Ridge boost, or Trough boost")
+            # Images use a tonal track whose outward crest is phase zero.
+            reference = Pattern(wave=(CurvePoint(0.0, 1.0), CurvePoint(0.5, -1.0)))
+            pattern = extrusion_preset(payload["name"], base=reference)
+            return {
+                "extrusion": [{"u": point.u, "value": point.value} for point in pattern.extrusion]
+            }
+        except UiRequestError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        except (OSError, ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # Localhost-only demo/verification hook (the server never binds anything
     # but 127.0.0.1): GET /api/demo-slice?fixture=<name> runs the NORMAL slice

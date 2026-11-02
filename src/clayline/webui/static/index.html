@@ -664,10 +664,16 @@
                   </div>
                   <p class="physical-readout" id="weaveLayerRhythmSummary">2 patterned, then 2 plain · repeats to the top.</p>
                 </div>
+                <div class="control-grid two-up effect-fade-controls">
+                  <label class="field"><span>Fade in</span><input id="weaveFadeIn" type="number" value="0" min="0" step="1"><small>layers</small></label>
+                  <label class="field"><span>Fade out</span><input id="weaveFadeOut" type="number" value="0" min="0" step="1"><small>layers</small></label>
+                </div>
+                <p class="field-hint">Ease this weave's relief and clay changes in and out together. Zero keeps a sharp switch.</p>
               </div>
 
+
               <div class="pattern-file-row">
-                <button class="secondary-button compact-button" id="weavePatternSave" type="button" title="Write every weave, its wave, its extrusion curve and every setting in this section except Pattern smoothness to a small file you can load onto another form.">Save pattern</button>
+                <button class="secondary-button compact-button" id="weavePatternSave" type="button" title="Save every weave and every Image, including uploaded artwork, for another form.">Save pattern</button>
                 <button class="secondary-button compact-button" id="weavePatternLoad" type="button" title="Load a pattern file saved by Clayline, every weave in it. The form, its size and its settings stay as they are.">Load pattern</button>
                 <button class="secondary-button compact-button" id="weaveRestoreButton" type="button" title="Pull the pattern, every weave of it, out of a print file Clayline saved. Only the pattern comes across: not the model, the size, the layers, or the range.">Restore pattern from G-code…</button>
                 <input id="weavePatternFile" type="file" accept="application/json,.json" hidden>
@@ -683,8 +689,88 @@
             </div>
           </section>
 
-          <section class="rail-section weave-section" data-weave-section="inside">
+          <section class="rail-section weave-section" data-weave-section="images">
             <div class="section-index">05</div>
+            <div class="section-body">
+              <div class="images-panel" id="weaveImagesPanel">
+                <h2>Images</h2>
+                <p class="field-hint">Wrap a repeating depth map around the form, or lay a single image against the clay. Images and Weaves add together.</p>
+                <div class="preset-row weave-strip" id="weaveImageStrip" role="group" aria-label="Images">
+                  <button type="button" id="weaveAddImage">Add image</button>
+                </div>
+                <p class="field-hint" id="weaveImagesEmpty">Add up to three Images. Middle gray keeps the wall, light pushes out and dark pulls in.</p>
+                <div id="weaveImageControls" hidden>
+                  <div class="weave-use-row">
+                    <label class="switch-row"><span><strong>Use this Image</strong></span><input type="checkbox" role="switch" data-image-key="enabled" checked></label>
+                    <button type="button" class="secondary-button compact-button" id="weaveRemoveImage">Remove</button>
+                  </div>
+                  <label class="field"><span>Catalogue</span><select id="weaveImageSource" aria-label="Image from catalogue"><option value="">Loading depth maps…</option></select></label>
+                  <div class="pattern-file-row">
+                    <button type="button" class="secondary-button compact-button" id="weaveImageUpload">Upload image…</button>
+                    <input type="file" id="weaveImageFile" accept="image/png,image/jpeg,image/webp,image/tiff,image/bmp" hidden>
+                  </div>
+                  <p class="field-hint" id="weaveImageSourceHint" aria-live="polite"></p>
+                  <div class="image-source-preview"><canvas id="weaveImagePreview" width="480" height="480" aria-label="Grayscale image repeated twice in each direction"></canvas></div>
+                  <label class="image-inline-check"><input id="weaveImageShowJoin" type="checkbox" checked><span>Show the joins in the middle</span></label>
+                  <label class="field"><span>Placement</span><select data-image-key="placement"><option value="repeat">Repeat around</option><option value="once">Place once</option></select></label>
+                  <div class="control-grid two-up">
+                    <label class="field" data-image-placement="repeat"><span>Repeats around</span><input data-image-key="repeats" type="number" min="1" max="4096" step="1" value="8"></label>
+                    <label class="field" data-image-placement="once"><span>Width (mm)</span><input data-image-key="width_mm" type="number" min="0.1" step="1" value="40" data-unit="mm"></label>
+                    <label class="field"><span>Height (mm)</span><input data-image-key="height_mm" type="number" min="0.1" step="1" value="40" data-unit="mm"></label>
+                  </div>
+                  <label class="image-inline-check" data-image-placement="once"><input id="weaveImageAspectLock" type="checkbox" checked><span>Keep image proportions when resizing</span></label>
+                  <label class="field" data-image-placement="once"><span>Edge feather (mm)</span><input data-image-key="feather_mm" type="number" min="0" step="0.5" value="0" data-unit="mm"><small>Ease the stamp's perimeter back to the wall.</small></label>
+                  <div class="control-grid two-up">
+                    <label class="field"><span>Position around (°)</span><input data-image-key="offset_around_deg" type="number" step="1" value="0"></label>
+                    <label class="field"><span>Position up (mm)</span><input data-image-key="offset_height_mm" type="number" step="1" value="0" data-unit="mm"></label>
+                  </div>
+                  <label class="field"><span>Rotate <output id="weaveImageRotationOutput">0°</output></span><input data-image-key="rotation_deg" type="range" min="-180" max="180" step="1" value="0"></label>
+                  <p class="physical-readout" id="weaveImageFit" aria-live="polite">Repeat rotation fits automatically to close around the form.</p>
+                  <div class="image-transform-row">
+                    <label class="image-inline-check"><input data-image-key="flip_x" type="checkbox"><span>Flip left / right</span></label>
+                    <label class="image-inline-check"><input data-image-key="flip_y" type="checkbox"><span>Flip up / down</span></label>
+                    <label class="image-inline-check"><input data-image-key="invert" type="checkbox"><span>Invert</span></label>
+                  </div>
+                  <label class="switch-row" data-image-placement="repeat"><span><strong>Blend edges</strong><small>Preview a seamless blend; your original image stays intact.</small></span><input data-image-key="blend_edges" type="checkbox" role="switch"></label>
+                  <div class="scope-subhead"><span>Wave depth</span><strong>follows the form's curves</strong></div>
+                  <label class="field"><span>Amplitude <output id="weaveImageAmplitudeOutput">0.0 mm</output></span><input data-image-key="amplitude" type="range" min="0" max="15" step="0.1" value="0"></label>
+                  <div class="control-grid two-up">
+                    <label class="field"><span>On the lobes <output data-image-output="follow_lobes">unchanged</output></span><input data-image-key="follow_lobes" data-image-offset="1" type="range" min="-1" max="2" step="0.05" value="0"></label>
+                    <label class="field"><span>In the coves <output data-image-output="follow_coves">unchanged</output></span><input data-image-key="follow_coves" data-image-offset="1" type="range" min="-1" max="2" step="0.05" value="0"></label>
+                  </div>
+                  <div class="scope-subhead"><span>Clay along the wall</span><strong>on lobes and in coves</strong></div>
+                  <div class="control-grid two-up">
+                    <label class="field"><span>Flow on lobes <output data-image-output="flow_lobes">unchanged</output></span><input data-image-key="flow_lobes" data-image-offset="1" type="range" min="-0.75" max="2" step="0.05" value="0"></label>
+                    <label class="field"><span>Flow in coves <output data-image-output="flow_coves">unchanged</output></span><input data-image-key="flow_coves" data-image-offset="1" type="range" min="-0.75" max="2" step="0.05" value="0"></label>
+                  </div>
+                  <div class="scope-subhead"><span>Extrusion track</span><strong>Flat is even clay</strong></div>
+                  <div class="scope-frame extrusion-frame"><canvas id="weaveImageExtrusion" width="640" height="150" tabindex="0" aria-label="Editable Image extrusion curve from ridge to trough and back" title="Drag points, click to add, right-click to remove."></canvas></div>
+                  <div class="preset-row" id="weaveImageExtrusionPresets" role="group" aria-label="Image extrusion presets">
+                    <button type="button" data-image-extrusion="flat">Flat</button><button type="button" data-image-extrusion="ridge-boost">Ridge boost</button><button type="button" data-image-extrusion="trough-boost">Trough boost</button>
+                    <label class="compact-field"><span>Phase</span><input data-image-key="extrusion_phase_offset" type="number" min="0" max="0.99" step="0.01" value="0"></label>
+                  </div>
+                  <p class="field-hint">Ridge boost follows raised tones; Trough boost follows recessed tones. Invert swaps them. Phase moves the clay boost while the relief stays put.</p>
+                  <div class="weave-control-block layer-rhythm-block is-enabled">
+                    <label class="switch-row"><span><strong>Skip layers</strong><small>Pause this Image while its placement keeps advancing.</small></span><input data-image-key="layer_skip_enabled" type="checkbox" role="switch"></label>
+                    <div class="control-grid two-up image-rhythm-controls">
+                      <label class="field"><span>Start plain</span><input data-image-key="layer_skip_start" type="number" min="0" step="1" value="0"><small>layers</small></label>
+                      <label class="field"><span>Pattern on</span><input data-image-key="layer_skip_on" type="number" min="1" step="1" value="2"><small>layers</small></label>
+                      <label class="field"><span>Pattern off</span><input data-image-key="layer_skip_off" type="number" min="1" step="1" value="2"><small>layers</small></label>
+                      <label class="field"><span>End plain</span><input data-image-key="layer_skip_end" type="number" min="0" step="1" value="0"><small>layers</small></label>
+                    </div>
+                    <div class="control-grid two-up effect-fade-controls">
+                      <label class="field"><span>Fade in</span><input data-image-key="fade_in_layers" type="number" min="0" step="1" value="0"><small>layers</small></label>
+                      <label class="field"><span>Fade out</span><input data-image-key="fade_out_layers" type="number" min="0" step="1" value="0"><small>layers</small></label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </section>
+
+          <section class="rail-section weave-section" data-weave-section="inside">
+            <div class="section-index">06</div>
             <div class="section-body">
               <h2>Inside and floor</h2>
               <p class="section-copy">What the nozzle lays inside the wall, and under it.</p>
@@ -740,7 +826,7 @@
           </section>
 
           <section class="rail-section weave-section" data-weave-section="print">
-            <div class="section-index">06</div>
+            <div class="section-index">07</div>
             <div class="section-body">
               <h2>Print</h2>
               <p class="section-copy">Which layers print, and how separate pieces take turns.</p>

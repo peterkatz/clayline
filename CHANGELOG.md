@@ -2,6 +2,39 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.10.0 — 2026-11-01
+
+### New
+- **Images on Mesh walls.** Add up to three Images alongside the three Weaves.
+  Choose from 80 original 16-bit relief maps, including the corrected 1970s
+  paisleys numbered 61–80, or upload grayscale, color, or transparent artwork.
+  Middle gray preserves the wall, lighter tones push outward, and darker tones
+  pull inward. Transparent areas leave the wall and clay flow unchanged.
+- **Repeat around or Place once.** Repeat a whole field around the vessel, with
+  rotation and spacing fitted automatically to close the artwork join. Place
+  a single stencil in millimeters along the original surface, including across
+  that join. Resize, reposition, rotate, flip, invert, or feather the Image.
+  Blend edges previews a reversible repeat for uploads with mismatched edges.
+- **Each Image has the familiar Weave controls.** Wave depth, Clay along the
+  wall, an editable Extrusion track with Ridge boost and Trough boost, Phase,
+  and Skip layers all belong to the selected Image. Images and Weaves combine
+  on the original exterior; Scatter and Pinned print starts leave artwork in
+  place. Vase mode samples the continuously rising surface.
+- **Fade in and Fade out for Images and Weaves.** Ease an effect's relief and
+  extrusion together over a chosen number of layers, at each active run or
+  at the beginning and end of the wall. Zero preserves the existing switch.
+- **Portable artwork.** Saved patterns, projects, and restorable Clayline print
+  files retain uploaded artwork and every Image's settings.
+- **Print-file surfaces keep their relief once.** When a print file becomes
+  the loaded model, its Images are parked alongside its Weaves. Choosing the
+  original model restores the original effects and their enable switches.
+
+### Changed
+- Patterns and projects using Images or nonzero fades need Clayline 0.10.0 or
+  later. Existing Weave-only jobs with zero fades retain their toolpaths.
+- The website and help now explain drawing, Mesh patterns, Images, portable
+  projects, and the preview-to-print workflow.
+
 ## 0.9.0 — 2026-10-21
 
 ### New

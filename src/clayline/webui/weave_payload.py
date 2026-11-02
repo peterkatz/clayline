@@ -40,6 +40,8 @@ if TYPE_CHECKING:
     from clayline.weave_zblend import ZBlendPath, ZBlendPoint, ZBlendRevolution
 
 _SETTING_KEYS = (
+    "fade_in_layers",
+    "fade_out_layers",
     "amplitude",
     "wavelength",
     "twist",
@@ -154,6 +156,8 @@ def resolve_pattern(payload: dict[str, Any]) -> Pattern:
             if not isinstance(value, bool):
                 raise ValueError(f"{key} must be a boolean")
         elif key in {
+            "fade_in_layers",
+            "fade_out_layers",
             "bottom_layers",
             "layer_skip_start",
             "layer_skip_on",
@@ -193,6 +197,10 @@ def resolve_pattern(payload: dict[str, Any]) -> Pattern:
         # replace() keeps every other field, so the extra weaves and each
         # weave's Use this weave ride through whatever version this lands on.
         pattern = replace(pattern, version=version, settings=settings)
+    if "images" in payload:
+        from clayline.wave import _images_from_payload
+
+        pattern = replace(pattern, images=_images_from_payload(payload["images"]))
     return pattern
 
 
@@ -265,6 +273,11 @@ def pattern_payload(
         # Weave 1's Keep the same number of waves, said only when on, so one
         # weave rounding its own counts answers in the bytes 0.8.3 sent.
         payload["settings"]["hold_wave_count"] = True
+    for key in ("fade_in_layers", "fade_out_layers"):
+        if getattr(pattern.settings, key):
+            payload["settings"][key] = getattr(pattern.settings, key)
+    if pattern.images:
+        payload["images"] = images_payload(pattern, sliced)
     if sliced is not None:
         if pattern.settings.z_blend and zblend_path is None:
             from clayline.weave_zblend import build_zblend_path
@@ -299,6 +312,40 @@ def pattern_payload(
             )
         )
     return payload
+
+
+def images_payload(pattern: Pattern, sliced: SlicedForm | None = None) -> list[dict[str, Any]]:
+    """Portable image settings and the closure fit actually used on this form."""
+
+    from clayline.image_relief import fit_repeat, image_to_payload
+
+    circumference = (
+        max(
+            (
+                ring.hold_circumference or ring.circumference
+                for layer in sliced.layers
+                for ring in layer.rings
+                if ring.closed and not ring.is_hole
+            ),
+            default=0.0,
+        )
+        if sliced is not None
+        else 0.0
+    )
+    result = []
+    for image in pattern.images:
+        row = image_to_payload(image)
+        if circumference > 0 and image.placement == "repeat":
+            fit = fit_repeat(image, circumference)
+            row.update(
+                applied_angle_deg=fit.rotation_deg,
+                applied_width_mm=fit.width_mm,
+                applied_height_mm=fit.height_mm,
+                m=fit.m,
+                n=fit.n,
+            )
+        result.append(row)
+    return result
 
 
 def weaves_payload(
@@ -372,6 +419,9 @@ def weaves_payload(
             # Said only when on, so a wall whose weaves all round their own
             # counts answers in the bytes it always has.
             entries[-1]["settings"]["hold_wave_count"] = True
+        for key in ("fade_in_layers", "fade_out_layers"):
+            if getattr(settings, key):
+                entries[-1]["settings"][key] = getattr(settings, key)
     result: dict[str, Any] = {"weaves": entries}
     if sum(printing) >= 2:
         result["combined_amplitude_readout"] = (
@@ -1234,11 +1284,77 @@ def unrolled_pattern_payload(
             )
         keep = max(0, max(1, layer_count) - len(crown_rows))
         rows = rows[:keep] + crown_rows[-max(1, layer_count) :]
+    if pattern.images or any(
+        view.settings.fade_in_layers or view.settings.fade_out_layers
+        for view in pattern.weave_views()
+    ):
+        _refresh_surface_effect_rows(sliced, pattern, rows, rings_by_layer, zblend_path)
     return {
         "center_layer": widest_layer,
         "twist_cycles_per_layer": pattern.settings.twist,
         "layers": rows,
     }
+
+
+def _refresh_surface_effect_rows(
+    sliced: SlicedForm,
+    pattern: Pattern,
+    rows: list[dict[str, Any]],
+    rings_by_layer: dict[int, Ring],
+    zblend_path: ZBlendPath | None,
+) -> None:
+    """Draw Images and fades from the same samples that drive the print path."""
+
+    from clayline.weave_analysis import weave_rhythm
+
+    rhythm = weave_rhythm(sliced, pattern, zblend_path=zblend_path)
+    amplitudes = tuple(view.settings.amplitude for view in printed_weaves(pattern)[1])
+    for row in rows:
+        kind = row.get("kind")
+        index = (
+            int(row["layer"])
+            if kind == "level_rim"
+            else int(row["layer"]) - sliced.source_layer_start - 1
+        )
+        ring = rings_by_layer.get(index)
+        if ring is None:
+            continue
+        if zblend_path is not None:
+            candidates = [
+                lap
+                for lap in zblend_path.revolutions
+                if lap.source_layer_index == index and lap.is_level_rim == (kind == "level_rim")
+            ]
+            if not candidates:
+                continue
+            lap = candidates[-1] if kind else candidates[0]
+            values = [_summed_point(pattern, amplitudes, point) for point in lap.points]
+            circumference = float(row["circumference_mm"])
+            row.update(
+                x_mm=[_rounded(point.revolution_u * circumference) for point in lap.points],
+                displacement_mm=[_rounded(value[0]) for value in values],
+                amplitude_mm=[_rounded(value[1]) for value in values],
+                amplitude_scale=[_rounded(point.amplitude_scale) for point in lap.points],
+                extrusion_multiplier=[_rounded(point.extrusion_multiplier) for point in lap.points],
+            )
+            continue
+        modulated = modulate_ring(
+            ring,
+            pattern,
+            layer_coordinate=index + sliced.source_layer_start,
+            pattern_scale=(1.0 if rhythm.weave_one is None else rhythm.weave_one.get(index, 0.0)),
+            extra_pattern_scales=rhythm.extra_scales(index),
+            profile_scale=profile_amplitude_scale(
+                ring.z, sliced.layers[0].z, sliced.layers[-1].z, pattern.settings
+            ),
+        )
+        u = np.asarray(row["x_mm"], dtype=np.float64) / ring.circumference
+        push = np.einsum("ij,ij->i", modulated.points - ring.points, ring.outward_normals)
+        row["displacement_mm"] = [_rounded(value) for value in np.interp(u, ring.u, push)]
+        row["extrusion_multiplier"] = [
+            _rounded(value) for value in np.interp(u, ring.u, modulated.extrusion_multiplier)
+        ]
+        row["amplitude_mm"] = [abs(value) for value in row["displacement_mm"]]
 
 
 def _summed_unrolled_row(
@@ -1399,6 +1515,9 @@ def _summed_point(
     for amplitude, extra in zip(amplitudes, point.extra_weaves, strict=True):
         push += amplitude * extra.amplitude_scale * extra.wave_value
         reach += amplitude * extra.amplitude_scale
+    if pattern.images:
+        push += point.image_displacement
+        reach += abs(point.image_displacement)
     return push, reach
 
 

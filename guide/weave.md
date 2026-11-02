@@ -1,14 +1,18 @@
-# Weave
+# Weave · mesh
 
-From a 3D model of a vessel to one continuous thread of clay with a wave pattern in its wall. Switch to it with **Weave · mesh** at the top of the window.
+Shape a vessel from a 3D model, with wave patterns and image relief in its wall. Switch to **Weave · mesh** at the top of the window. Up to three Weaves and three Images work together on the same exterior; each keeps its own depth, clay flow and layer settings.
 
 ![Weave mode after slicing a small tumbler: the form on the bed, the layers colour-coded below it](images/weave-sliced.png)
 
-## What Weave does
+## What Mesh mode does
 
-Clayline cuts the model into horizontal rings, one per layer. Then it prints the wall as a single thread that climbs from ring to ring, moving in and out of the original surface according to a wave you shape. Stack the wave's crests and you get vertical ribs. Offset them by half a wave each layer and the wall weaves. Turn them a little each layer and the pattern spirals up the pot.
+Clayline cuts the model into horizontal rings, one per layer, then builds a nozzle path along them. A Weave moves that path in and out of the original surface according to a wave you shape. Stack the wave's crests and you get vertical ribs. Offset them by half a wave each layer and the wall weaves. Turn them a little each layer and the pattern spirals up the pot. An Image uses the lightness of a depth map or picture to raise and recess the wall instead.
 
-The pattern is applied live: once the form is sliced, every change to the wave redraws the final path in front of you.
+Once the form is sliced, changing a Weave or Image rebuilds the final path in front of you. Choose discrete layers or a continuously rising Vase path, then a hollow, solid or ribbed interior as the form allows.
+
+![The Images controls and fitted relief on a tapered, lobed vase](images/clayline-images-vase.png)
+
+This is a toolpath preview: seven repeats of Hex Truchet fit around a tapered, lobed form. The requested 17° rotation fits to 18.3°; the inline readout gives the angle and size the path actually uses.
 
 ## The workflow, top to bottom
 
@@ -45,7 +49,7 @@ The Form box also takes print files. One Clayline saved brings back every settin
 
 ### 04 Pattern
 
-**Weave 1**, at the top of the section, is the pattern you shape below. **Add weave** lays another weave over it with its own shape, amplitude, wavelength, twist, extrusion track, wave depth, Clay along the wall and skip layers, so a long slow wave can carry a fine one; a wall takes up to three. Click a weave's name and the controls below show that weave. **Use this weave** leaves a weave out of the print but keeps its settings, so you can compare the wall with it and without it. Weaves 2 and 3 have **Remove**; Weave 1 can only be switched off. The Pattern preview shows every weave together. Each ring holds a whole number of every weave's waves, so on a taper a long weave's count steps where the form narrows, and with more than one weave the line under Wavelength names those layers. Each weave has its own **Keep the same number of waves**, off until you switch it on: it stacks that weave's ridges up a taper instead of stepping, and its waves sit closer together where the form narrows.
+**Weave 1**, at the top of the section, is the pattern you shape below. **Add weave** lays another weave over it with its own shape, amplitude, wavelength, twist, extrusion track, wave depth, Clay along the wall, skip layers and fades, so a long slow wave can carry a fine one; a wall takes up to three. Click a weave's name and the controls below show that weave. **Use this weave** leaves a weave out of the print but keeps its settings, so you can compare the wall with it and without it. Weaves 2 and 3 have **Remove**; Weave 1 can only be switched off. The Pattern preview shows every weave together. Each ring holds a whole number of every weave's waves, so on a taper a long weave's count steps where the form narrows, and with more than one weave the line under Wavelength names those layers. Each weave has its own **Keep the same number of waves**, off until you switch it on: it stacks that weave's ridges up a taper instead of stepping, and its waves sit closer together where the form narrows.
 
 The wave editor shows one wave, with a faded repeat either side so you can see how its ends meet round the wall. Drag a point to reshape the wave, click empty space to add a point, right-click a point to remove it.
 
@@ -66,13 +70,57 @@ The wave editor shows one wave, with a faded repeat either side so you can see h
 
 **Extrusion track** varies how much clay flows around each wave. Flat keeps it even. **Ridge boost** swells the crests; **Trough boost** swells the valleys so they round into soft beads instead of creases. **Phase** shifts where the swell lands.
 
-**Skip layers** leaves the weave you are on off some layers without restarting it, the other weaves carrying on: a number of plain layers to start, then how many layers the pattern is on and off, then plain layers to end.
+**Skip layers** leaves the weave you are on off some layers without restarting it, the other effects carrying on: a number of plain layers to start, then how many layers the pattern is on and off, then plain layers to end. **Fade in** and **Fade out**, just below those controls, soften the relief and clay changes at each active run's ends. With Skip layers off, they fade the start and end of the wall. Zero gives an immediate switch.
 
-Three buttons sit near the end of the section. **Save pattern** writes every weave to a small file, each with its wave, extrusion curve and settings, along with the rest of this section except Pattern smoothness. **Load pattern** brings one back onto whatever form is on the table, its weaves in place of the ones you had; Undo brings yours back. The form, its size and its settings stay as they are. **Restore pattern from G-code…** pulls the pattern, with every weave, out of a print file Clayline saved: only the pattern comes across, not the model, the size, the layers, or the range. Dropping a print file Clayline saved on the box under 01 Form instead brings back every setting of that job, and with no model loaded, the form too when Clayline can make it.
+Three buttons sit near the end of the section. **Save pattern** writes every Weave and Image to a file, including uploaded artwork, extrusion curves, skips and fades, along with this section's other settings except Pattern smoothness. **Load pattern** brings one back onto whatever form is on the table, replacing the Weaves and Images you had; Undo brings yours back. The form, its size and its settings stay as they are. **Restore pattern from G-code…** pulls the saved pattern out of a print file Clayline wrote: only the pattern comes across, not the model, the size, the layers, or the range. Dropping a print file Clayline saved on the box under 01 Form instead brings back every setting of that job, and with no model loaded, the form too when Clayline can make it.
 
 **Pattern smoothness**, under **Advanced**, sets how finely the line follows the wave. Auto keeps it at half the coil width. Finer means smoother waves and heavier files. Changing it means slicing the form again.
 
-### 05 Inside and floor
+### 05 Images
+
+**Images** adds up to three independent relief maps alongside the three Weaves.
+Choose from **80 catalogue tiles**: soft relief fields, Truchet ribbons, botanical
+forms, drawn motifs and 20 paisley designs numbered 61–80. You can also upload
+a grayscale or color image. Middle gray preserves the original wall, lighter tones push outward, and darker tones pull
+inward. Transparent areas leave both the wall and clay flow unchanged. Catalogue
+relief uses the original 16-bit maps; the small previews are for browsing.
+
+Click **Add image** to create an Image, then select its source from **Catalogue**
+or **Upload image…**. Click an Image tab to edit it. **Use this Image** switches
+its contribution off while keeping its settings; **Remove** takes it out, and
+Undo brings it back. Three Images can sit alongside the three Weaves.
+
+**Repeat around** holds the same repeat count as the piece narrows or widens.
+Choose the number around and the tile height, then move or rotate the whole
+design. Clayline fits rotation and spacing to a combination that closes after
+one lap and shows the applied angle and size beside the controls. The artwork
+stays attached to the original exterior when you change the print start to
+Scatter or Pinned.
+
+**Place once** lays a single stencil against the wall. Width and height are in
+millimeters measured along the surface; the aspect lock keeps their proportions
+as you resize. Move its center around the piece or up the profile, including
+across the wrap. Flip either axis, invert the relief, or add an edge feather to
+bring a stamp gently back to the wall. Very wide stamps follow the nearest side
+of the wall, so inspect their footprint on narrow necks.
+
+Uploads open as Place once. To repeat artwork with different opposite edges,
+choose **Blend edges** and inspect the repeated preview. This changes only the
+sampled repeat; your original upload is kept in saved patterns and projects.
+
+Each Image has its own **Wave depth**, **Clay along the wall**, **Extrusion track**,
+and **Skip layers**, with the same depth, lobe/cove and clay controls as a Weave.
+Ridge boost follows the raised tones; Trough boost follows the recessed tones. Invert swaps them. Phase moves the clay track along the wall while
+the relief stays in place. Images and Weaves add their effects on the original
+exterior, so adjusting one does not stretch another. Vase mode reads the image
+at the nozzle's continuously rising position.
+
+**Fade in** and **Fade out**, beside Skip layers on both Images and Weaves, are
+measured in layers. They ease that effect's relief and clay changes together at
+the ends of each active run. With Skip layers off, they fade the beginning and
+end of the printed wall. A zero fade keeps a sharp switch. The design keeps its position while skipped or faded, so it resumes in register.
+
+### 06 Inside and floor
 
 What the nozzle lays inside the wall. **Hollow** prints the wall and nothing inside it. **Solid** fills the inside, either **Crossing**, where the middle layers alternate direction and bond stronger, or **Spiral**, which rings every layer and reads as thrown pottery. **Infill** lays a lighter structure: **Lines** run straight across at one angle, turning on the wall so each rib welds to it, and stay in one line from layer to layer so they stack; **Concentric** follows the wall inward in rings, but it stops and starts on every layer and its rings shift wherever the form widens or narrows, so for a roof or a closed top use Lines. Rib spacing is counted in coil widths so it survives a nozzle change. **Ignore hollows**, right under the Hollow, Solid and Infill choice, gives each layer a wall around its outside only, so a hollow inside the model, or a place where its surface passes through itself, gets no wall of its own and a Solid or Infill interior runs straight across it. Use it for a model that was hollowed out; leave it off for cups, vases and anything meant to be open inside. Changing it slices the form again by itself. When a model is hollow inside and the switch is off, the section says so.
 
@@ -82,7 +130,7 @@ The three skin controls decide where an infill is dense instead of ribbed. **Roo
 
 Vase mode has to be off before Solid or Infill can be chosen, and choosing one clears settings a filled interior can't print beside; each says so where it lives.
 
-### 06 Print
+### 07 Print
 
 After slicing, the counts of layers, rings, and samples appear at the top of this section.
 
@@ -96,7 +144,7 @@ Cuts the model into rings. After that, the pattern controls play against the rea
 
 ### Saving your project
 
-**Save project…** under 01 Form, or **File → Save Project…** (Command-S), writes the whole job to one file: the model itself and every setting, from the nozzle and the layer height to the wave you shaped. **Open project…**, or **File → Open Project…** (Shift-Command-O), brings it all back as you left it, on this Mac or another. If the form was sliced when you saved it, Clayline slices it again, so the pattern is live in front of you straight away. **File → Open Recent** lists the last ten projects you opened or saved, and models, drawings and print files you opened, newest first; choose one to open it again. The box under 01 Form takes a saved project too. A project with more than one weave, with Weave 1 switched off, or with Keep the same number of waves on, needs Clayline 0.9.0 or later to open.
+**Save project…** under 01 Form, or **File → Save Project…** (Command-S), writes the whole job to one file: the model itself, every Weave and Image, original uploaded artwork and every setting, from the nozzle and layer height to each effect's depth, clay flow, skips and fades. **Open project…**, or **File → Open Project…** (Shift-Command-O), brings it all back as you left it, on this Mac or another. If the form was sliced when you saved it, Clayline slices it again, so the pattern is live in front of you straight away. **File → Open Recent** lists the last ten projects you opened or saved, and models, drawings and print files you opened, newest first; choose one to open it again. The box under 01 Form takes a saved project too. A project with more than one weave, with Weave 1 switched off, or with Keep the same number of waves on, needs Clayline 0.9.0 or later to open. Images and effect fades need Clayline 0.10.0 or later.
 
 A print file is not a project. It holds the finished path for the machine; Clayline can make a form from its printed surface, but that form is only what printed, pattern and all, so keep the project beside it to go on from the original model. **File → Export G-code…** (Shift-Command-E) is the one that writes a print file. **File → Export Mesh…** writes the sliced coils themselves as an OBJ, the same object the slice window shows, for a render or another program; it is not a print file either.
 

@@ -32,7 +32,7 @@
 
 ### Draw in Clay
 
-Draw a pattern as lines, either in Clayline itself or in any vector drawing app saved as an SVG, or start from the gallery of 98 example drawings that comes with the app. Clayline turns every line into a coil of clay, joins lines where they meet, and repeats the design pass after pass to build height. Print it flat as a tile, or let the coil drape from a raised nozzle for open lacework.
+Draw directly on the bed, bring a line drawing from any vector app as an SVG, or start from the 98 drawings in the gallery. Shape curves, mirror and repeat a motif, fill closed areas with coil, or trace over a reference photo. Repeat the design in ordered passes to build a tile, or let the coil drape from a raised nozzle for open lacework.
 
 </div>
 
@@ -40,15 +40,39 @@ Draw a pattern as lines, either in Clayline itself or in any vector drawing app 
 
 ![A vessel sliced into rings of woven wall](images/weave-sliced.png)
 
-### Weave
+### Weave · mesh
 
-Open a 3D model of a tumbler or vessel. Clayline slices it into rings and prints the wall as one continuous thread of clay, with a wave pattern you shape yourself: ribs, spirals, crisp edges, or a texture traced from a real print.
-
-</div>
+Open a 3D model and shape its wall with up to three Weaves and three Images together. Draw a wave for ribs and spirals, wrap one of 80 relief tiles around the form, or place your own image as a single stamp. Adjust depth and clay flow independently, choose a hollow, solid or ribbed interior, and inspect the resulting nozzle path.
 
 </div>
 
-Both modes show you the exact path the printer will follow, in 2D and 3D, and a **Before you print** panel that lists everything worth a look before you commit clay.
+</div>
+
+Both modes show the nozzle path in 2D and 3D, with a move-by-move scrubber and a **Before you print** panel for print time, clay use, travels and warnings. The preview comes from the same trace as the exported G-code.
+
+## What you can make
+
+| You want to… | What Clayline gives you |
+|---|---|
+| Draw a tile, ornament or open lacework | A drawing surface with editable lines and curves, shapes, mirroring, repeats, photo references and 98 gallery drawings. [Draw in Clay](tiles.md) |
+| Build height from a drawing | Ordered, repeatable passes, filled areas, conventional layer heights or raised-nozzle drape settings. [Passes and layers](tiles.md#02-passes) |
+| Shape the surface of a vessel | Three independent Weaves: editable waveforms, ribs, spirals, Noise and textures traced from real prints. [Pattern controls](weave.md#04-pattern) |
+| Put a motif or an all-over relief on a form | Three Images with 80 catalogue depth maps, including 20 paisleys, plus grayscale and color uploads. Repeat around the wall or place a single stamp, then move, resize, rotate, flip or invert it. [Images](weave.md#05-images) |
+| Control the wall and its interior | Depth and clay flow, skips and fades for each effect; spiral Vase mode; hollow walls, solid fill or sparse ribs, with floors and roof skins where needed. [Mesh workflow](weave.md#the-workflow-top-to-bottom) |
+| Keep working on a design later | Portable projects include the drawings or model, settings and uploaded artwork. Save a surface pattern separately to use it on another form, or export G-code and the sliced coils as an OBJ. [Saving your work](weave.md#saving-your-project) |
+
+## Images that follow the wall
+
+A repeating Image keeps its repeat count as the form narrows or widens. Turn the whole design and Clayline fits an angle and spacing that close around the wall, showing the applied values beside the controls. A single stamp follows the surface in millimeters and can move across the wrap in one piece. Both stay attached to the original form when the nozzle's print start changes.
+
+Middle gray preserves the wall, light pushes it out and dark pulls it in. Each Image has the same depth, clay-flow and skip-layer controls as a Weave. **Fade in** and **Fade out** ease both its relief and its clay changes together. Use them on Weaves too.
+
+<figure class="cl-demo" markdown>
+
+![Clayline showing Hex Truchet relief on a tapered, lobed vase, with three Images and the fitted repeat controls](images/clayline-images-vase.png)
+
+<figcaption>A toolpath preview on a tapered, lobed form. Here a requested 17° rotation fits to 18.3° so the repeating field closes around the wall.</figcaption>
+</figure>
 
 ## Start from a drawing
 
@@ -74,7 +98,7 @@ Both modes show you the exact path the printer will follow, in 2D and 3D, and a 
 
 - [Install](install.md): get the app running and pick your printer.
 - [Draw in Clay](tiles.md): from a line drawing to a printed tile.
-- [Weave](weave.md): from a 3D model to a woven vessel.
+- [Weave · mesh](weave.md): from a 3D model to wave patterns, image relief and a printable wall.
 - [Printing](printing.md): what the printer does with the file, and the three settings that decide how the first layer lands.
 - [Troubleshooting](troubleshooting.md): the first layer scraped, the start blob is huge, the model loads sideways.
 

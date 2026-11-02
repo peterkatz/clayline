@@ -243,16 +243,18 @@ def as_printed_name(print_file: str) -> str:
 
 
 def weaves_off(pattern: Any) -> Any:
-    """The same pattern with every weave switched off, Weave 1 included.
+    """Park every surface effect already present in the printed wall.
 
-    Every other setting stays as it is, each weave's own among them, so
-    choosing the original model can switch them back on unchanged.
+    Every other setting stays as it is, each effect's own among them, so
+    choosing the original model can switch them back on unchanged. Images
+    also live in the reconstructed surface and must not be applied twice.
     """
 
     return replace(
         pattern,
         settings=replace(pattern.settings, wave_on=False),
         extra_weaves=tuple(replace(extra, wave_on=False) for extra in pattern.extra_weaves),
+        images=tuple(replace(image, enabled=False) for image in pattern.images),
     )
 
 

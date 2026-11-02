@@ -1120,6 +1120,7 @@ def _resample_bands(
                     2, max(math.ceil(ring.length / spacing) + 1 for ring in track_raw)
                 )
             previous_seam: np.ndarray | None = None
+            previous_surface: Ring | None = None
             addresses: list[RingProvenance] = []
             below = carried_on[band_index].get(track_index)
             for layer_index, raw in zip(
@@ -1146,6 +1147,33 @@ def _resample_bands(
                     previous_seam = points[0].copy()
                 normals = _outward_normals(points, closed=raw.closed)
                 provenance = RingProvenance(layer_index, track_index)
+                if previous_surface is None and below is not None:
+                    previous_surface = sampled_by_layer[ranges[band_index - 1].end][below]
+                if previous_surface is None:
+                    surface_height = np.zeros(len(points), dtype=np.float64)
+                else:
+                    prior = previous_surface
+                    # Read the preceding original contour at the same carried
+                    # arc coordinate, including across a resampling band.
+                    prior_u = u - band_offsets[track_index] + prior.hold_u_offset
+                    if raw.closed and prior.closed:
+                        prior_u = prior_u % 1.0
+                    prior_xy = np.column_stack(
+                        [np.interp(prior_u, prior.u, prior.points[:, axis]) for axis in (0, 1)]
+                    )
+                    prior_height = np.interp(
+                        prior_u,
+                        prior.u,
+                        prior.surface_height_mm
+                        if prior.surface_height_mm is not None
+                        else np.zeros(len(prior.u)),
+                    )
+                    dz = raw_layers[layer_index].z - prior.z
+                    surface_height = prior_height + np.sqrt(
+                        np.sum((points - prior_xy) ** 2, axis=1) + dz * dz
+                    )
+                    if raw.closed:
+                        surface_height[-1] = surface_height[0]
                 addresses.append(provenance)
                 sampled_by_layer[layer_index][track_index] = Ring(
                     provenance=provenance,
@@ -1160,7 +1188,10 @@ def _resample_bands(
                     centroid=Point(float(raw.centroid[0]), float(raw.centroid[1])),
                     hold_circumference=hold_circumferences[band_index][track_index],
                     hold_u_offset=band_offsets[track_index],
+                    surface_height_mm=surface_height,
+                    layer_count=len(raw_layers),
                 )
+                previous_surface = sampled_by_layer[layer_index][track_index]
             wall_tracks.append(
                 WallTrack(
                     id=f"band-{band_index:03d}-track-{track_index:03d}",

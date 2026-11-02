@@ -142,6 +142,7 @@ def select_layer_range(
                 ring,
                 provenance=RingProvenance(local_index, ring.provenance.island_index),
                 z=z,
+                layer_count=len(source_layers),
             )
             for ring in layer.rings
         )

@@ -38,11 +38,11 @@ RESTORE_CAPSULE_PARAMETER = "restore_capsule_v1_b64"
 PATTERN_PARAMETER = "pattern"
 PARAMETER_CHUNK_SIZE = 128
 PARAMETER_CHUNK_INDEX_WIDTH = 4
-PARAMETER_CHUNK_LIMIT = 10**PARAMETER_CHUNK_INDEX_WIDTH - 1
+PARAMETER_CHUNK_LIMIT = 999999
 PARAMETER_COMMENT_LINE_LIMIT = 200
 _SCHEMA = "clayline.weave-restore"
 _VERSION = 1
-_COUNT = re.compile(r"[1-9][0-9]{0,3}")
+_COUNT = re.compile(r"[1-9][0-9]{0,5}")
 
 _TOP_KEYS = {
     "schema",
@@ -214,10 +214,13 @@ def chunk_parameter_value(parameter: str, value: str) -> dict[str, str]:
     ]
     if len(parts) > PARAMETER_CHUNK_LIMIT:
         raise ValueError(f"chunked parameter {parameter!r} has too many parts")
+    # Uploaded Images ride in the lossless pattern. Retain four-digit legacy
+    # framing byte for byte, widening only for a larger portable artwork.
+    index_width = max(PARAMETER_CHUNK_INDEX_WIDTH, len(str(len(parts))))
     framed = {f"{parameter}_part_count": str(len(parts))}
     framed.update(
         {
-            f"{parameter}_part_{index:0{PARAMETER_CHUNK_INDEX_WIDTH}d}": part
+            f"{parameter}_part_{index:0{index_width}d}": part
             for index, part in enumerate(parts, start=1)
         }
     )
@@ -257,8 +260,9 @@ def reassemble_parameter_value(
     if _COUNT.fullmatch(count_text) is None:
         raise ValueError(f"G-code header chunked {parameter!r} has a noncanonical part count")
     count = int(count_text)
+    index_width = max(PARAMETER_CHUNK_INDEX_WIDTH, len(count_text))
     expected_parts = [
-        f"{root}_part_{index:0{PARAMETER_CHUNK_INDEX_WIDTH}d}" for index in range(1, count + 1)
+        f"{root}_part_{index:0{index_width}d}" for index in range(1, count + 1)
     ]
     expected_family = sorted([count_key, *expected_parts])
     if family_keys != expected_family:

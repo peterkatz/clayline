@@ -3778,3 +3778,20 @@ input[type="range"] {
   color: var(--warning);
   font-weight: 600;
 }
+
+
+/* Images share Mesh mode's existing rail and effect controls. */
+.images-panel { min-width: 0; }
+.images-panel > .scope-subhead { margin-top: 0; }
+.images-panel .field select { width: 100%; min-width: 0; }
+.image-source-preview { margin: 12px 0 7px; overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: #808080; }
+.image-source-preview canvas { display: block; width: 100%; height: auto; }
+.image-inline-check { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.image-inline-check input { width: 13px; height: 13px; margin: 0; accent-color: var(--clay); }
+.image-transform-row { display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 10px 0; }
+.effect-fade-controls, .image-rhythm-controls { margin-top: 12px; }
+.effect-fade-controls small, .image-rhythm-controls small { color: var(--muted); font-size: 9px; }
+.images-panel .weave-use-row { margin-bottom: 10px; }
+.images-panel .weave-use-row .switch-row { margin-top: 0; }
+#weaveImageFit { min-height: 2.5em; }
+#weaveImageSourceHint:empty { display: none; }

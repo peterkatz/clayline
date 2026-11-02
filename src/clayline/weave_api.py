@@ -73,6 +73,8 @@ class SlicedFormFacade(SlicedForm):
         layer_skip_on: int | None = None,
         layer_skip_off: int | None = None,
         layer_skip_end: int | None = None,
+        fade_in_layers: int | None = None,
+        fade_out_layers: int | None = None,
         stack_pieces: bool | None = None,
         nozzle_clearance_mm: float | None = None,
         profile: str | Path | Profile | None = None,
@@ -151,6 +153,8 @@ class SlicedFormFacade(SlicedForm):
             ("layer_skip_on", layer_skip_on),
             ("layer_skip_off", layer_skip_off),
             ("layer_skip_end", layer_skip_end),
+            ("fade_in_layers", fade_in_layers),
+            ("fade_out_layers", fade_out_layers),
             ("stack_pieces", stack_pieces),
             ("nozzle_clearance_mm", nozzle_clearance_mm),
         ):

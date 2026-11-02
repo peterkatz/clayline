@@ -223,7 +223,7 @@ def test_write_and_read_round_trip_both_modes_in_the_page() -> None:
         "draw": "clayline.draw-settings.v2",
         "weave": "clayline.weave-settings.v1",
     }
-    assert result["caps"] == [1024 * 1024 * 1024, 32 * 1024 * 1024, 64 * 1024 * 1024]
+    assert result["caps"] == [1024 * 1024 * 1024, 72 * 1024 * 1024, 64 * 1024 * 1024]
     # The reopened job knows its own last layer, and that the artist typed it.
     assert result["weave_slice"] == {
         "range_enabled": True,
@@ -485,9 +485,10 @@ def test_damaged_and_foreign_files_refuse_with_exactly_three_messages(tmp_path: 
         )
 
     over_the_manifest_cap = _manifest("weave")
-    # 33 MiB of padding: past the cap project.json is held to, and a few tens
+    # 73 MiB of padding: past the cap project.json is held to, and a few tens
     # of kilobytes on disk once it is packed.
-    over_the_manifest_cap["padding"] = "a" * (33 * 1024 * 1024)
+    # The manifest now holds three portable raster Images as well as controls.
+    over_the_manifest_cap["padding"] = "a" * (73 * 1024 * 1024)
     big_manifest = _write_archive(tmp_path / "big-manifest.clayline", over_the_manifest_cap)
 
     big_photos = _write_long_entry_archive(

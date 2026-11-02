@@ -17,6 +17,10 @@
     slice: "/api/weave/slice",
     modulate: "/api/weave/modulate",
     finalize: "/api/weave/finalize",
+    imageCatalogue: "/api/images/catalogue",
+    imageUpload: "/api/images/upload",
+    imagePreview: "/api/images/preview",
+    imageExtrusionPreset: "/api/images/extrusion-preset",
     pattern: "/api/weave/pattern",
     restore: "/api/weave/restore",
     restoreForm: "/api/weave/restore/form",
@@ -160,6 +164,10 @@
     // its tab (then the controls hold its truth until the tab is left). Never
     // inside exactPattern or texturePattern, which stay Weave 1's.
     extraWeaves: [],
+    images: [],
+    imageCatalogue: [],
+    selectedImage: 0,
+    imageFits: [],
     // Which weave the Pattern controls show, counted from 0 (Weave 1). Never
     // saved and never an Undo step.
     selectedWeave: 0,
@@ -501,6 +509,8 @@
     setControlValue("#weaveLayerSkipOn", root.layer_skip_on ?? 2);
     setControlValue("#weaveLayerSkipOff", root.layer_skip_off ?? 2);
     setControlValue("#weaveLayerSkipEnd", root.layer_skip_end ?? 0);
+    setControlValue("#weaveFadeIn", root.fade_in_layers ?? 0);
+    setControlValue("#weaveFadeOut", root.fade_out_layers ?? 0);
     setControlValue("#weaveTopFollowSlope", root.top_follow_slope_multiplier ?? 1);
     setControlValue("#weavePinnedAngle", root.pinned_seam_angle);
     S.patternVersion = 1;
@@ -785,6 +795,8 @@
       on: Math.max(1, Math.trunc(read("#weaveLayerSkipOn", 2))),
       off: Math.max(1, Math.trunc(read("#weaveLayerSkipOff", 2))),
       end: Math.max(0, Math.trunc(read("#weaveLayerSkipEnd", 0))),
+      fadeIn: Math.max(0, Math.trunc(read("#weaveFadeIn", 0))),
+      fadeOut: Math.max(0, Math.trunc(read("#weaveFadeOut", 0))),
     };
   }
 
@@ -797,7 +809,11 @@
       "layer_skip_on",
       "layer_skip_off",
       "layer_skip_end",
+      "fade_in_layers",
+      "fade_out_layers",
     ].forEach((key) => delete settings[key]);
+    if (rhythm.fadeIn) settings.fade_in_layers = rhythm.fadeIn;
+    if (rhythm.fadeOut) settings.fade_out_layers = rhythm.fadeOut;
     if (!rhythm.enabled) return;
     settings.layer_skip_enabled = true;
     settings.layer_skip_start = rhythm.start;
@@ -3003,6 +3019,7 @@
   }
 
   function renderPatternVisuals(pattern) {
+    if (Array.isArray(pattern?.images)) { S.imageFits = pattern.images; renderImageFit(); }
     if (!pattern || typeof pattern !== "object") {
       drawAllEditors();
       return;
@@ -3214,12 +3231,14 @@
     "#weaveAmplitude", "#weaveWavelength", "#weaveTwist", "#weaveExtrusionPhase",
     "#weaveFollowLobes", "#weaveFollowCoves", "#weaveFlowLobes", "#weaveFlowCoves",
     "#weaveLayerSkipStart", "#weaveLayerSkipOn", "#weaveLayerSkipOff", "#weaveLayerSkipEnd",
+    "#weaveFadeIn", "#weaveFadeOut",
   ]);
   const WEAVE_OWN_SWITCHES = Object.freeze([
     "#weaveLayerSkipEnabled", "#weaveUseWeave", "#weaveHoldWaveCount",
   ]);
   const WEAVE_RHYTHM_KEYS = Object.freeze([
     "layer_skip_enabled", "layer_skip_start", "layer_skip_on", "layer_skip_off", "layer_skip_end",
+    "fade_in_layers", "fade_out_layers",
   ]);
   const MAX_WEAVES_FALLBACK = 3;
   const TEXTURE_HINT_ONE_WEAVE = "A texture replaces the whole pattern with a wave traced from a real print — shapes the basic presets can't draw. Your flow, speed, and nozzle stay yours.";
@@ -3410,6 +3429,8 @@
       1 + numberValue("#weaveFlowLobes", 0),
       1 + numberValue("#weaveFlowCoves", 0),
     );
+    if (rhythm.fadeIn) settings.fade_in_layers = rhythm.fadeIn;
+    if (rhythm.fadeOut) settings.fade_out_layers = rhythm.fadeOut;
     if (rhythm.enabled) {
       settings.layer_skip_enabled = true;
       settings.layer_skip_start = rhythm.start;
@@ -3454,6 +3475,8 @@
   function withExtraWeaves(pattern) {
     delete pattern.extra_weaves;
     if (S.extraWeaves.length) pattern.extra_weaves = extraWeaveEntries();
+    delete pattern.images;
+    if (S.images.length) pattern.images = cloneJson(S.images);
     return pattern;
   }
 
@@ -3480,6 +3503,8 @@
     setControlValue("#weaveLayerSkipOn", settings.layer_skip_on ?? 2);
     setControlValue("#weaveLayerSkipOff", settings.layer_skip_off ?? 2);
     setControlValue("#weaveLayerSkipEnd", settings.layer_skip_end ?? 0);
+    setControlValue("#weaveFadeIn", settings.fade_in_layers ?? 0);
+    setControlValue("#weaveFadeOut", settings.fade_out_layers ?? 0);
     $("#weaveUseWeave").checked = settings.wave_on !== false;
     $("#weaveHoldWaveCount").checked = settings.hold_wave_count === true;
   }
@@ -3623,6 +3648,8 @@
     const settings = record.entry.settings;
     const rhythm = layerRhythmValues();
     WEAVE_RHYTHM_KEYS.forEach((key) => delete settings[key]);
+    if (rhythm.fadeIn) settings.fade_in_layers = rhythm.fadeIn;
+    if (rhythm.fadeOut) settings.fade_out_layers = rhythm.fadeOut;
     if (rhythm.enabled) {
       settings.layer_skip_enabled = true;
       settings.layer_skip_start = rhythm.start;
@@ -3748,6 +3775,10 @@
   // A whole new pattern with no extra weaves of its own, from another
   // slicer's print file or Reset: Weave 1 on screen, Weaves 2 and 3 gone.
   function dropExtraWeaves() {
+    S.images = [];
+    S.imageFits = [];
+    S.selectedImage = 0;
+    syncImages();
     const had = S.extraWeaves.length;
     if (S.selectedWeave !== 0) showWeave(0);
     S.weaveOneParked = null;
@@ -3772,6 +3803,10 @@
   // exact copy keeps nothing of them, and the weave an Undo or Redo changed,
   // or else the one that was chosen, is put back on screen.
   function finishWholePattern(pattern, previous) {
+    S.images = cloneJson(Array.isArray(pattern.images) ? pattern.images : []);
+    S.selectedImage = Math.max(0, Math.min(S.selectedImage, S.images.length - 1));
+    syncImages();
+    refreshImagePreview();
     const entries = Array.isArray(pattern.extra_weaves) ? pattern.extra_weaves : [];
     const before = S.extraWeaves;
     // A weave that comes back unchanged keeps its lit texture chip.
@@ -4273,6 +4308,11 @@
       ))
       || topFollowShapesFlow()
       || otherWeavesShapeClay()
+      || S.images.some((image) => image.enabled !== false && (
+        Math.abs((image.flow_lobes ?? 1) - 1) > 1e-9
+        || Math.abs((image.flow_coves ?? 1) - 1) > 1e-9
+        || !curveIsFlat(image.extrusion || [{ value: 1 }, { value: 1 }])
+      ))
     );
   }
 
@@ -5288,6 +5328,8 @@
     setControlValue("#weaveLayerSkipOn", settings.layer_skip_on ?? 2);
     setControlValue("#weaveLayerSkipOff", settings.layer_skip_off ?? 2);
     setControlValue("#weaveLayerSkipEnd", settings.layer_skip_end ?? 0);
+    setControlValue("#weaveFadeIn", settings.fade_in_layers ?? 0);
+    setControlValue("#weaveFadeOut", settings.fade_out_layers ?? 0);
     $("#weaveUseWeave").checked = settings.wave_on !== false;
     $("#weaveHoldWaveCount").checked = settings.hold_wave_count === true;
     setControlValue(
@@ -5703,11 +5745,16 @@
     hint.hidden = !(
       printedSurfaceOf()
       && switches.every((on) => !on)
-      && (!record || record.weavesOn.some(Boolean))
+      && S.images.every((image) => image.enabled === false)
+      && (!record || record.weavesOn.some(Boolean) || record.imagesOn?.some(Boolean))
     );
+    const effects = S.images.length ? "Weaves and Images" : "Weaves";
     hint.textContent = record?.swap
-      ? `Weaves are off: this form already carries the pattern. Choose ${record.modelName || "the model"} under 01 Form and they come back on.`
-      : "Weaves are off: this form already carries the pattern.";
+      ? `${effects} are off: this form already carries the pattern. Choose ${record.modelName || "the model"} under 01 Form and they come back on.`
+      : `${effects} are off: this form already carries the pattern.`;
+    hint.title = S.images.length
+      ? "Switching a Weave or Image on here lays it over the pattern already in the surface."
+      : "Switching a weave on here lays it over the pattern already in the surface.";
   }
 
   // A model chosen in place of a form from a print file is held against the
@@ -5733,6 +5780,22 @@
     }
   }
 
+  function imageSwitchesOf(patternJson) {
+    try {
+      const pattern = typeof patternJson === "string" ? JSON.parse(patternJson) : patternJson;
+      return Array.isArray(pattern?.images)
+        ? pattern.images.map((image) => image.enabled !== false)
+        : [];
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function writeImageSwitches(on) {
+    S.images.forEach((image, index) => { image.enabled = on(index); });
+    syncImages();
+  }
+
   // Use this weave, set for every weave where its switch is: Weave 1's on
   // screen or as it was left, Weaves 2 and 3 in their records, and the one on
   // screen in the control too.
@@ -5754,7 +5817,7 @@
   // written the way a project lands: there is no slice yet, so the range is
   // parked for the slice that knows the layer count. Run under the settled
   // writer's suspend, so none of it is a step of its own.
-  function writeFormSettings({ placement, range, topLayer, islandStopDeclined, weaveOn }) {
+  function writeFormSettings({ placement, range, topLayer, islandStopDeclined, weaveOn, imageOn }) {
     setControlValue("#weaveUpAxis", placement.up_axis);
     setControlValue("#weaveScale", placement.scale);
     setControlValue("#weaveFitHeight", placement.fit_height ?? null);
@@ -5783,6 +5846,7 @@
     $("#weaveRangeEnabled").checked = false;
     $("#weaveRangeEnabled").disabled = true;
     writeWeaveSwitches(weaveOn);
+    if (imageOn) writeImageSwitches(imageOn);
     syncControls();
   }
 
@@ -5798,6 +5862,7 @@
     if (!record.swap) {
       weaveStateWriter?.suspend(() => {
         writeWeaveSwitches((index) => record.weavesOn[index] !== false);
+        if (record.imagesOn) writeImageSwitches((index) => record.imagesOn[index] !== false);
         syncControls();
       });
       return null;
@@ -5808,6 +5873,7 @@
       topLayer: record.topLayer,
       islandStopDeclined: record.islandStopDeclined,
       weaveOn: (index) => record.weavesOn[index] !== false,
+      imageOn: record.imagesOn ? (index) => record.imagesOn[index] !== false : null,
     }));
     // Loaded like the model a print file's settings wait for: it keeps the
     // file's top rule and island stop.
@@ -5855,6 +5921,7 @@
         topLayer: slice.top_layer === "below" ? "below" : "nearest",
         islandStopDeclined: slice.island_stop_declined === true,
         weavesOn: weaveSwitchesOf(snapshot.pattern_json),
+        imagesOn: imageSwitchesOf(snapshot.pattern_json),
       },
       restored: weaveHistory
         ? { state: weaveHistory.state(), entry: JSON.stringify(weaveHistory.current()) }
@@ -5922,6 +5989,7 @@
       // The form holds the printed layers only, so no stop is proposed on it.
       islandStopDeclined: true,
       weaveOn: () => false,
+      imageOn: () => false,
     }));
     const record = {
       ...waiting.record,
@@ -6649,6 +6717,8 @@
       "#weaveLayerSkipOn",
       "#weaveLayerSkipOff",
       "#weaveLayerSkipEnd",
+      "#weaveFadeIn",
+      "#weaveFadeOut",
       "#weaveInfillSpacing",
       "#weaveInfillAngle",
       "#weaveInfillBaseLayers",
@@ -7033,6 +7103,398 @@
     }, true);
   }
 
+  // Images keep their own settings alongside the weave controls. The same
+  // pattern object feeds previews, final paths, Undo, projects and pattern files.
+  let imagePreviewSequence = 0;
+  let imagePreviewBitmap = null;
+  let imageCurvePoint = null;
+
+  function chosenImage() {
+    return S.images[S.selectedImage] || null;
+  }
+
+  function newImage(source = S.imageCatalogue[0]) {
+    return {
+      source_id: source?.id || null,
+      data_base64: null,
+      name: source?.name || "Image",
+      enabled: true,
+      placement: "repeat",
+      repeats: 8,
+      width_mm: 40,
+      height_mm: 40,
+      rotation_deg: 0,
+      offset_around_deg: 0,
+      offset_height_mm: 0,
+      flip_x: false,
+      flip_y: false,
+      invert: false,
+      blend_edges: false,
+      amplitude: Number(S.defaults?.new_weave?.amplitude ?? 1),
+      feather_mm: 0,
+      follow_lobes: 1,
+      follow_coves: 1,
+      flow_lobes: 1,
+      flow_coves: 1,
+      extrusion: [{ u: 0, value: 1 }, { u: 0.5, value: 1 }],
+      extrusion_phase_offset: 0,
+      layer_skip_enabled: false,
+      layer_skip_start: 0,
+      layer_skip_on: 2,
+      layer_skip_off: 2,
+      layer_skip_end: 0,
+      fade_in_layers: 0,
+      fade_out_layers: 0,
+    };
+  }
+
+  async function loadImageCatalogue() {
+    try {
+      const result = await jsonResponse(await fetch(API.imageCatalogue));
+      S.imageCatalogue = Array.isArray(result.images) ? result.images : [];
+      syncImages();
+    } catch (_error) {
+      $("#weaveImageSourceHint").textContent = "The catalogue is unavailable. You can still upload an image.";
+      syncImages();
+    }
+  }
+
+  function imageChanged(quality = "settle") {
+    S.imageFits = [];
+    beginMetric();
+    invalidateExact("Image changed — rebuilding the final path.");
+    renderImageLabels();
+    drawImageExtrusion();
+    armFlowColorForCurrentPattern();
+    weaveStateWriter?.schedule();
+    scheduleModulation(quality);
+  }
+
+  function syncImages() {
+    const strip = $("#weaveImageStrip");
+    if (!strip) return;
+    strip.querySelectorAll("[data-image-tab]").forEach((button) => button.remove());
+    const add = $("#weaveAddImage");
+    S.images.forEach((image, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.imageTab = index;
+      button.textContent = `Image ${index + 1}`;
+      button.title = image.name || button.textContent;
+      button.classList.toggle("is-active", index === S.selectedImage);
+      button.classList.toggle("is-off", image.enabled === false);
+      button.setAttribute("aria-pressed", String(index === S.selectedImage));
+      button.addEventListener("click", () => {
+        S.selectedImage = index;
+        syncImages();
+        refreshImagePreview();
+      });
+      strip.insertBefore(button, add);
+    });
+    add.disabled = S.images.length >= 3;
+    add.textContent = S.images.length >= 3 ? "Three Images added" : "Add image";
+    const image = chosenImage();
+    $("#weaveImageControls").hidden = !image;
+    $("#weaveImagesEmpty").hidden = Boolean(image);
+    const source = $("#weaveImageSource");
+    source.replaceChildren();
+    const prompt = document.createElement("option");
+    prompt.value = "";
+    prompt.textContent = image?.data_base64 ? `Uploaded · ${image.name || "Image"}` : "Choose a depth map";
+    source.append(prompt);
+    S.imageCatalogue.forEach((entry) => {
+      const option = document.createElement("option");
+      option.value = entry.id;
+      option.textContent = entry.name;
+      source.append(option);
+    });
+    source.value = image?.source_id || "";
+    if (!image) return;
+    $$("[data-image-key]").forEach((control) => {
+      const key = control.dataset.imageKey;
+      const value = image[key] ?? newImage()[key];
+      if (control.type === "checkbox") control.checked = Boolean(value);
+      else if (control.dataset.unit === "mm") setControlValue(`[data-image-key="${key}"]`, value);
+      else control.value = Number.isFinite(Number(value)) && control.type !== "select-one"
+        ? Number(value) - Number(control.dataset.imageOffset || 0)
+        : value;
+    });
+    renderImageLabels();
+    drawImageExtrusion();
+  }
+
+  function renderImageLabels() {
+    const image = chosenImage();
+    if (!image) return;
+    const repeat = image.placement !== "once";
+    const tab = $(`[data-image-tab="${S.selectedImage}"]`);
+    if (tab) tab.classList.toggle("is-off", image.enabled === false);
+    $$("[data-image-placement]").forEach((field) => {
+      field.hidden = (field.dataset.imagePlacement === "repeat") !== repeat;
+    });
+    $("#weaveImageRotationOutput").textContent = `${Number(image.rotation_deg || 0).toFixed(0)}°`;
+    $("#weaveImageAmplitudeOutput").textContent = window.claylineUnits.fmt(Number(image.amplitude || 0), 1);
+    $$("[data-image-output]").forEach((output) => {
+      const key = output.dataset.imageOutput;
+      output.textContent = curvatureOffsetLabel((image[key] ?? 1) - 1, key.startsWith("flow") ? "flow" : "wave");
+    });
+    $$(".image-rhythm-controls input").forEach((control) => { control.disabled = !image.layer_skip_enabled; });
+    const hint = $("#weaveImageSourceHint");
+    hint.textContent = image.data_base64
+      ? (repeat && !image.blend_edges
+        ? "Your original artwork is preserved. If its edges differ, Blend edges previews a seamless repeat."
+        : "Uploaded artwork travels with saved patterns and projects. Transparency leaves the wall unchanged.")
+      : "16-bit depth map · repeats on both axes. Light pushes out; dark pulls in.";
+    $$('[data-image-extrusion]').forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.imageExtrusion === "flat" && curveIsFlat(image.extrusion));
+    });
+    renderImageFit();
+  }
+
+  function renderImageFit() {
+    const image = chosenImage();
+    const output = $("#weaveImageFit");
+    if (!image || !output) return;
+    if (image.placement === "once") {
+      output.textContent = "Size is measured along the original wall. The Image can cross the wrap in one piece.";
+      return;
+    }
+    const fit = S.imageFits[S.selectedImage];
+    const angle = Number(fit?.applied_angle_deg);
+    const width = Number(fit?.applied_width_mm);
+    const height = Number(fit?.applied_height_mm ?? fit?.height_mm);
+    if (fit && Number.isFinite(angle)) {
+      const size = Number.isFinite(width) && Number.isFinite(height)
+        ? ` · ${width.toFixed(1)} × ${height.toFixed(1)} mm at the widest ring`
+        : "";
+      output.textContent = `Fitted to close · ${angle.toFixed(1)}°${size}. The repeat stays fixed as the form narrows.`;
+    } else {
+      output.textContent = "Repeat rotation and spacing fit automatically to close. Slice the form to see the applied values.";
+    }
+  }
+
+  function drawImagePreview() {
+    const canvas = $("#weaveImagePreview");
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#808080";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    if (!imagePreviewBitmap) return;
+    const size = canvas.height / 2;
+    const shift = $("#weaveImageShowJoin").checked ? 0 : size / 2;
+    for (let y = -size; y < canvas.height + size; y += size) {
+      for (let x = -size; x < canvas.width + size; x += size) {
+        context.drawImage(imagePreviewBitmap, x + shift, y + shift, size, size);
+      }
+    }
+  }
+
+  async function refreshImagePreview() {
+    const image = chosenImage();
+    const sequence = ++imagePreviewSequence;
+    imagePreviewBitmap = null;
+    drawImagePreview();
+    if (!image) return;
+    try {
+      const response = await fetch(API.imagePreview, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image }),
+      });
+      if (!response.ok) throw new Error("Preview unavailable");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const bitmap = new Image();
+      try {
+        await new Promise((resolve, reject) => { bitmap.onload = resolve; bitmap.onerror = reject; bitmap.src = url; });
+      } finally { URL.revokeObjectURL(url); }
+      if (sequence !== imagePreviewSequence) return;
+      imagePreviewBitmap = bitmap;
+      drawImagePreview();
+    } catch (_error) {
+      if (sequence !== imagePreviewSequence) return;
+      const catalogue = S.imageCatalogue.find((entry) => entry.id === image.source_id);
+      const url = catalogue?.preview_url || (image.data_base64 ? `data:image/png;base64,${image.data_base64}` : null);
+      if (!url) return;
+      const bitmap = new Image();
+      bitmap.onload = () => { if (sequence === imagePreviewSequence) { imagePreviewBitmap = bitmap; drawImagePreview(); } };
+      bitmap.src = url;
+    }
+  }
+
+  function drawImageExtrusion() {
+    const image = chosenImage();
+    const canvas = $("#weaveImageExtrusion");
+    if (!canvas || !image) return;
+    const context = canvas.getContext("2d");
+    const mapY = (value) => 12 + (Number(value) - 0.25) / 2.75 * (canvas.height - 24);
+    drawGrid(context, canvas.width, canvas.height, mapY(1));
+    const points = [...(image.extrusion || newImage().extrusion)].sort((a, b) => a.u - b.u);
+    drawPeriodicLine(context, editorSamples(points), canvas.width, mapY, "#a94f32");
+    points.forEach((point) => {
+      context.beginPath(); context.arc(point.u * canvas.width, mapY(point.value), 5, 0, Math.PI * 2);
+      context.fillStyle = "#fbfaf6"; context.fill(); context.strokeStyle = "#a94f32"; context.lineWidth = 2; context.stroke();
+    });
+  }
+
+  function bindImageControls() {
+    $("#weaveAddImage").addEventListener("click", () => {
+      if (S.images.length >= 3) return;
+      S.images.push(newImage());
+      S.selectedImage = S.images.length - 1;
+      syncImages(); refreshImagePreview(); imageChanged();
+    });
+    $("#weaveRemoveImage").addEventListener("click", () => {
+      S.images.splice(S.selectedImage, 1);
+      S.selectedImage = Math.max(0, Math.min(S.selectedImage, S.images.length - 1));
+      syncImages(); refreshImagePreview(); imageChanged();
+    });
+    $("#weaveImageSource").addEventListener("change", (event) => {
+      const image = chosenImage();
+      const source = S.imageCatalogue.find((entry) => entry.id === event.target.value);
+      if (!image || !source) return;
+      image.source_id = source.id; image.data_base64 = null; image.name = source.name;
+      image.placement = "repeat"; image.blend_edges = false;
+      syncImages(); refreshImagePreview(); imageChanged();
+    });
+    $("#weaveImageUpload").addEventListener("click", () => $("#weaveImageFile").click());
+    $("#weaveImageFile").addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      const target = chosenImage();
+      event.target.value = "";
+      if (!file || !target) return;
+      const hint = $("#weaveImageSourceHint");
+      hint.textContent = "Opening image…";
+      try {
+        const dataUrl = await new Promise((resolve, reject) => {
+          const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file);
+        });
+        const result = await jsonResponse(await fetch(API.imageUpload, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: file.name, data_base64: String(dataUrl).split(",")[1] }),
+        }));
+        if (!S.images.includes(target)) return;
+        const uploaded = result.image;
+        const initialStamp = target.placement !== "once" && Number(target.offset_height_mm) === 0;
+        Object.assign(target, {
+          source_id: uploaded.source_id || null, data_base64: uploaded.data_base64,
+          name: uploaded.name || file.name, placement: uploaded.placement || "once", blend_edges: false,
+        });
+        if (result.info?.width > 0 && result.info?.height > 0 && $("#weaveImageAspectLock").checked) {
+          target.height_mm = target.width_mm * result.info.height / result.info.width;
+        }
+        if (initialStamp) target.offset_height_mm = Number(S.lastDims?.height) / 2 || target.height_mm / 2;
+        syncImages(); refreshImagePreview(); imageChanged();
+        commitWeaveStep();
+      } catch (error) {
+        hint.textContent = `This image could not be opened. ${error.message}`;
+      }
+    });
+    $("#weaveImageShowJoin").addEventListener("change", drawImagePreview);
+    $$("[data-image-key]").forEach((control) => {
+      const read = () => {
+        if (control.type === "checkbox") return control.checked;
+        if (control.tagName === "SELECT") return control.value;
+        const key = control.dataset.imageKey;
+        let value = control.dataset.unit === "mm"
+          ? numberValue(`[data-image-key="${key}"]`, 0)
+          : Number(control.value) + Number(control.dataset.imageOffset || 0);
+        if (!Number.isFinite(value)) value = newImage()[key];
+        if (key === "repeats") value = Math.min(4096, Math.max(1, Math.trunc(value)));
+        else if (["layer_skip_on", "layer_skip_off"].includes(key)) value = Math.max(1, Math.trunc(value));
+        else if (key.startsWith("layer_skip_") || key.endsWith("_layers")) value = Math.max(0, Math.trunc(value));
+        else if (["height_mm", "width_mm"].includes(key)) value = Math.max(0.1, value);
+        else if (key === "feather_mm") value = Math.max(0, value);
+        return value;
+      };
+      const update = (quality) => {
+        const image = chosenImage();
+        if (!image) return;
+        const key = control.dataset.imageKey;
+        const before = Number(image[key]);
+        const value = read();
+        if (key === "placement" && value === "once" && image.placement !== "once" && Number(image.offset_height_mm) === 0) {
+          image.offset_height_mm = Number(S.lastDims?.height) / 2 || image.height_mm / 2;
+          setControlValue('[data-image-key="offset_height_mm"]', image.offset_height_mm);
+        }
+        image[key] = value;
+        if (["width_mm", "height_mm"].includes(key) && image.placement === "once" && $("#weaveImageAspectLock").checked && before > 0) {
+          const other = key === "width_mm" ? "height_mm" : "width_mm";
+          image[other] = Math.max(0.1, Number(image[other]) * value / before);
+          setControlValue(`[data-image-key="${other}"]`, image[other]);
+        }
+        if (["flip_x", "flip_y", "invert", "blend_edges"].includes(key)) refreshImagePreview();
+        imageChanged(quality);
+      };
+      if (control.type === "range") {
+        control.addEventListener("pointerdown", () => { weaveHistoryGestureActive = true; });
+        control.addEventListener("input", () => update("drag"));
+        control.addEventListener("change", () => { weaveHistoryGestureActive = false; update("settle"); });
+        control.addEventListener("pointercancel", () => { weaveHistoryGestureActive = false; scheduleReleaseSettle(); });
+      } else control.addEventListener(control.type === "number" ? "input" : "change", () => update("settle"));
+    });
+    $$('[data-image-extrusion]').forEach((button) => button.addEventListener("click", async () => {
+      const image = chosenImage();
+      if (!image) return;
+      try {
+        const result = await jsonResponse(await fetch(API.imageExtrusionPreset, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: button.dataset.imageExtrusion }),
+        }));
+        if (!S.images.includes(image)) return;
+        image.extrusion = result.extrusion;
+        imageChanged();
+        commitWeaveStep();
+      } catch (_error) {
+        $("#weaveImageSourceHint").textContent = "The extrusion preset could not be loaded. Your current curve is kept.";
+      }
+    }));
+    const canvas = $("#weaveImageExtrusion");
+    const locate = (event) => {
+      const point = pointerPosition(event, canvas);
+      return { u: Math.min(0.995, Math.max(0, point.x / canvas.width)), value: Math.min(3, Math.max(0.25, 0.25 + (point.y - 12) * 2.75 / (canvas.height - 24))) };
+    };
+    const nearest = (event) => {
+      const position = pointerPosition(event, canvas);
+      return (chosenImage()?.extrusion || []).map((point) => ({ point, distance: Math.hypot(point.u * canvas.width - position.x, 12 + (point.value - 0.25) / 2.75 * (canvas.height - 24) - position.y) }))
+        .sort((a, b) => a.distance - b.distance)[0];
+    };
+    canvas.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || !chosenImage()) return;
+      const closest = nearest(event);
+      imageCurvePoint = closest && closest.distance < 18 ? closest.point : locate(event);
+      if (!(closest && closest.distance < 18)) {
+        const phaseMatch = chosenImage().extrusion.find((point) => Math.abs(point.u - imageCurvePoint.u) < 0.002);
+        if (phaseMatch) imageCurvePoint = phaseMatch;
+        else chosenImage().extrusion.push(imageCurvePoint);
+      }
+      weaveHistoryGestureActive = true;
+      canvas.setPointerCapture(event.pointerId); event.preventDefault(); drawImageExtrusion();
+    });
+    canvas.addEventListener("pointermove", (event) => {
+      if (!imageCurvePoint) return;
+      const next = locate(event);
+      // Control phases are unique, as required by the periodic curve engine.
+      const occupied = chosenImage().extrusion.some((point) => point !== imageCurvePoint && Math.abs(point.u - next.u) < 0.002);
+      if (!occupied) imageCurvePoint.u = next.u;
+      imageCurvePoint.value = next.value;
+      chosenImage().extrusion.sort((a, b) => a.u - b.u);
+      imageChanged("drag");
+    });
+    const release = (event) => {
+      if (!imageCurvePoint) return;
+      imageCurvePoint = null; weaveHistoryGestureActive = false;
+      if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+      imageChanged();
+    };
+    canvas.addEventListener("pointerup", release); canvas.addEventListener("pointercancel", release);
+    canvas.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      const image = chosenImage(); const closest = nearest(event);
+      if (!image || image.extrusion.length <= 2 || !closest || closest.distance >= 18) return;
+      image.extrusion.splice(image.extrusion.indexOf(closest.point), 1); imageChanged();
+    });
+    syncImages();
+  }
+
   function initialise() {
     // Interface charter: these fields display the artist's chosen unit;
     // payloads stay mm through numberValue/setControlValue.
@@ -7055,6 +7517,7 @@
       }
       renderMeshPreviewTitle();
       syncControls();
+      renderImageLabels();
       syncProfileFacts();
       if (S.result) renderReport(S.result.report, S.result);
       if (S.lastTrace) renderTrace(S.lastTrace);
@@ -7085,6 +7548,7 @@
     bindMeshControls();
     bindSliceControls();
     bindPatternControls();
+    bindImageControls();
     bindActions();
     bindHistoryFieldCommits();
     bindHistoryCommitPoints();
@@ -7094,7 +7558,7 @@
     syncProfileFacts();
     syncSettleButton();
     drawAllEditors();
-    Promise.all([loadDefaults(), loadProfiles(), loadTextures()]).then(() => {
+    Promise.all([loadDefaults(), loadProfiles(), loadTextures(), loadImageCatalogue()]).then(() => {
       if (!S.settingsRestored) restoreWeaveSettings();
       syncControls();
       syncProfileFacts();

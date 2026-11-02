@@ -1,9 +1,11 @@
 # Clayline
 
-Clayline turns stroked SVG centerlines into layered, auditable paste-printer
-toolpaths. Its primary target is Pete's PotterBot 10 XL and raised-nozzle
-**drape printing**: the nozzle stays above the canvas while a soft clay coil falls
-into place. Calibrated layer-by-layer Z is available for more conventional work.
+Clayline turns line drawings and 3D models into inspectable G-code for clay
+paste printers. Draw a tile or open lacework, shape a vessel with wave patterns
+and image relief, then inspect the nozzle path before exporting it. Its primary
+target is Pete's PotterBot 10 XL. Conventional layer heights and raised-nozzle
+**drape printing** are available: in Drape, the nozzle stays above the canvas
+while a soft clay coil falls into place.
 
 ![Clayline's real local UI, drape controls, and generated 3D toolpath](docs/assets/clayline-demo.gif)
 
@@ -17,7 +19,7 @@ plain language; this README is the developer's view.
 won't slice or a print that went wrong belongs under [Issues](https://github.com/peterkatz/clayline/issues), with the
 drawing or model and the settings you used.
 
-This is release `0.9.0`; [CHANGELOG.md](CHANGELOG.md) lists what each release
+This is release `0.10.0`; [CHANGELOG.md](CHANGELOG.md) lists what each release
 changed. The software pipeline has substantial local verification, and full
 tiles and Weave forms have been printed and accepted on the PotterBot. It is not
 on PyPI.
@@ -27,6 +29,25 @@ on PyPI.
 > your actual printer, loaded clay, nozzle, cartridge, canvas, clearances, or
 > emergency-stop setup is safe. Read the complete G-code, verify every machine
 > fact, keep the emergency stop reachable, and stay with the printer.
+
+## What you can do
+
+- **Draw in Clay:** sketch editable lines and curves on the bed, import stroked SVGs, or start from 98 gallery drawings. Mirror and repeat shapes, trace over a reference photo, and fill closed areas with concentric coils or straight rows. Arrange and repeat passes to build height, with calibrated layers or raised-nozzle drape settings.
+- **Shape a 3D model:** open STL, OBJ, PLY or 3MF, place and resize it, then slice it into wall rings. Combine up to three independent Weaves for ribs, spirals, custom waveforms, Noise or textures traced from real prints.
+- **Add image relief:** combine up to three Images with those Weaves. Choose from 80 catalogue depth maps, including 20 paisley designs, or upload grayscale or color artwork. Repeat a tile around the exterior or place a single stamp; move, resize, rotate, flip and invert it. Repeating fields fit to a combination of angle and spacing that closes around the wall, with the applied result shown beside the controls.
+- **Control clay and structure:** every Weave and Image has independent depth, lobe/cove response, clay flow, extrusion track, skip layers and fades. Use hollow walls, solid fill or sparse ribs, floors and roof skins, or a continuously rising Vase path where the form permits.
+- **Inspect and keep your work:** use the 2D and 3D previews, move-by-move scrubber, flow coloring, reports and warnings. Portable projects include source drawings or the model, settings and uploaded artwork. Reusable pattern files carry every Weave and Image; export G-code for the printer or sliced coils as an OBJ for another program.
+
+![Images shaping a tapered, lobed vase in the real local studio](guide/images/clayline-images-vase.png)
+
+The 80 catalogue tiles use their original 16-bit grayscale depth maps. Middle
+gray preserves the wall, light pushes outward, dark pulls inward and transparent
+areas leave the effect neutral. **Fade in** and **Fade out** ease an effect's
+relief and clay changes together while its pattern stays registered to the form.
+
+The [user guide](https://peterkatz.github.io/clayline/) covers both workflows and
+[Images](https://peterkatz.github.io/clayline/weave/#05-images) in detail. The
+screenshot shows a generated toolpath, not a physical print of the new relief.
 
 ## Current status
 
@@ -91,19 +112,20 @@ adding a drawing starts there too. The folders are built at packaging time from
 [examples/gallery-manifest.json](examples/gallery-manifest.json) by
 `tools/build_gallery.py`; the source files stay flat under `examples/`.
 
-Open **Clayline**, choose one or more centerline SVGs, arrange the ordered Pages
-list, set the shared size and drape parameters, then select **Slice job**. Use the
-export buttons or **Shift-Command-E** to save G-code through the native macOS
-save panel. **Command-S** saves the whole job instead — the drawings or the
+Open **Clayline** and choose **Draw in Clay** for SVGs or an on-bed drawing, or
+**Weave · mesh** for a 3D model. In Draw, arrange the ordered Passes and select
+**Slice job**. In Mesh, place the form, select **Slice form**, then adjust its
+Weaves and Images live. Use the export buttons or **Shift-Command-E** to save
+G-code through the native macOS save panel. **Command-S** saves the whole job instead — the drawings or the
 model, and every setting — as one Clayline project file, and **Shift-Command-O**
 opens one again with everything as you left it. **Command-O** imports more SVGs,
 and SVGs or `.clayline` projects opened from Finder are handed to the running
 app.
 
-With two or more pages, the Pages section enables **Bed / Stack**. Bed is the
-default and lays pages out across the build surface. Stack holds them on one XY
-origin and starts each page above the accumulated relief below it. For a one-page
-job the choice stays on Bed and is disabled with an explanation.
+In Draw, each row in **Passes** prints once and builds above the previous row.
+**Repeat pass** adds another tier; drag rows to change their order. Each keeps its
+own size and placement, and the **Bed map** shows whether the drawings fit before
+you slice.
 
 The bundled engine listens on a random localhost port for the life of the app. A
 new private session cookie is required on every launch, and the helper exits when
@@ -467,8 +489,7 @@ the declared dependencies are already cached.
 - M7 software acceptance is green after Pete approved the 152.4 mm photo
   tracings as the canonical fixtures. At the unchanged default 1 mm fuse
   tolerance, rings-grid is **1 stroke / 0 travels**, rosette is **1 / 0**, and
-  petal-flower is **2 / 1**. This does not satisfy the separate physical product
-  exit gate; Pete has not yet printed and accepted a full drape-mode tile.
+  petal-flower is **2 / 1**.
 - Current examples contain substantial, intentionally visible planner warnings.
   They are test and inspiration assets, not cleared production files.
 - SVG input is stroked centerline geometry. Filled-only artwork is reported and
