@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 import re
 from pathlib import Path
 
 import pytest
+from golden_support import assert_historical_hash
 
 import clayline.stack as stack_module
 from clayline.lint import lint_gcode
@@ -200,8 +200,8 @@ def test_dense_zellige_converges_to_frozen_safe_one_pass(
 
     assert calls[0] > 1
     assert result.emission.lint_report.ok, result.emission.lint_report.format()
-    assert (
-        hashlib.sha256(result.emission.gcode.encode("utf-8")).hexdigest() == ONE_PASS_GCODE_SHA256
+    assert_historical_hash(
+        result.emission.gcode, ONE_PASS_GCODE_SHA256, load_profile("potterbot-xl")
     )
 
 
@@ -290,7 +290,7 @@ def test_settle_off_dense_output_remains_byte_frozen(
     result = build_pipeline(_request(*rotations, settle=False))
 
     assert result.emission.lint_report.ok, result.emission.lint_report.format()
-    assert hashlib.sha256(result.emission.gcode.encode("utf-8")).hexdigest() == expected_sha256
+    assert_historical_hash(result.emission.gcode, expected_sha256, load_profile("potterbot-xl"))
     assert "parameter.settle_valleys" not in result.emission.gcode
     if len(rotations) == 4:
         assert MAX_PROPAGATION_STEPS_PER_PASS in completed

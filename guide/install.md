@@ -19,7 +19,7 @@ To update, save any job you want to continue as a **Clayline project**, quit the
 
 ## The studio at a glance
 
-The top bar has two buttons that switch modes: **Draw in Clay** for line drawings, filled areas and layered tiles, and **Weave · mesh** for 3D models shaped with Weaves and image relief. Next to them, **mm / in** chooses how sizes are shown to you. Files always stay in millimetres inside.
+The top bar has two buttons that switch modes: **Draw in Clay** for line drawings, filled areas and layered tiles, and **Mesh Mode** for 3D models shaped with Weaves and image relief. Next to them, **mm / in** chooses how sizes are shown to you. Files always stay in millimetres inside.
 
 Each mode is laid out the same way:
 
@@ -37,17 +37,17 @@ Clayline comes with a gallery of 98 example drawings. In **Draw in Clay**, press
 
 ## Try Images on a model
 
-1. Switch to **Weave · mesh**, load an STL, OBJ, PLY or 3MF, check its size, then press **Slice form**.
+1. Switch to **Mesh Mode**, load an STL, OBJ, PLY or 3MF, check its size, then press **Slice form**.
 2. In **05 Images**, press **Add image**. Choose a depth map from the 80-image catalogue, or **Upload image…** for your own grayscale or color artwork.
 3. Use **Repeat around** to cover the wall, or **Place once** for a single stamp. Move, resize or rotate it; the preview and fitted-repeat readout show the result.
-4. Adjust **Amplitude**, clay flow and active layers. Add **Fade in** or **Fade out** to ease the effect in and out. You can also add Weaves in **04 Pattern**, with independent settings.
+4. Adjust **Amplitude**, clay flow and active layers. Add **Fade in** or **Fade out** to ease the effect in and out. You can also add Weaves in **04 Weaves**, with independent settings.
 5. Inspect the final path and save a project before exporting the print file. The project includes your model and uploaded artwork.
 
 The catalogue includes soft fields, Truchet patterns, botanical motifs and 20 paisley designs. See [Images](weave.md#05-images) for placement, seamless repeats, edge blending and the shared flow controls.
 
 ## Choose your printer
 
-In **Draw in Clay**, open **06 Printer**; in **Weave · mesh**, open **02 Printer and coil**. Pick your machine from the list.
+In **Draw in Clay**, open **06 Printer**; in **Mesh Mode**, open **02 Printer and coil**. Pick your machine from the list.
 
 **PotterBot 10 XL · verified** means every fact in that profile, from the size of the bed to the commands that start and end a print, was checked against a real print on that machine.
 
@@ -57,6 +57,6 @@ The printer choice sets the bed size you see in the preview, the print speeds, t
 
 ## Getting a file to the printer
 
-After you slice, **Download G-code** in the right-hand panel saves the print file through the normal Mac save window. **File → Export G-code…** (Shift-Command-E) does the same, **File → Export Mesh…** saves the sliced coils as an OBJ for other programs, and **File → Open…** (Command-O) loads drawings or models. Command-S is the whole job, not the print file: see Saving your project in [Draw in Clay](tiles.md) and [Weave](weave.md). The file is named after your design, and the save window is where you can change that.
+After you slice, **Download G-code** in the right-hand panel saves the print file through the normal Mac save window. **File → Export G-code…** (Shift-Command-E) does the same, **File → Export Mesh…** offers Printed coils with layer lines after slicing, or a Designed surface with geometric effects and no layer lines, and **File → Open…** (Command-O) loads drawings or models. Command-S is the whole job, not the print file: see Saving your project in [Draw in Clay](tiles.md) and [Mesh Mode](weave.md). The file is named after your design, and the save window is where you can change that.
 
 Copy the file to your printer the way you already do for any print. Clayline never sends anything to the machine itself.

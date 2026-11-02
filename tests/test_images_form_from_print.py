@@ -88,7 +88,8 @@ def test_cli_recovered_surface_parks_images_and_preserves_their_artwork(tmp_path
 
 def test_page_parks_images_on_printed_form_and_restores_original_switches_on_model_swap() -> None:
     result = _run(
-        _BROWSER_IMAGE + r"""
+        _BROWSER_IMAGE
+        + r"""
   const images = () => JSON.parse(JSON.stringify(page.patternObject().images));
   await drop("images.gcode", FILE);
   out.form = view();
@@ -125,7 +126,8 @@ def test_page_parks_images_on_printed_form_and_restores_original_switches_on_mod
 
 def test_restore_pattern_button_keeps_original_image_switches_on_the_printed_form() -> None:
     result = _run(
-        _BROWSER_IMAGE + r"""
+        _BROWSER_IMAGE
+        + r"""
   await drop("images.gcode", FILE);
   out.parked = page.patternObject().images.map((image) => image.enabled);
   const input = $("#weaveRestoreFile");

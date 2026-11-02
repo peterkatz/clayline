@@ -181,8 +181,13 @@ def test_the_gallery_row_cannot_overflow_a_narrow_rail() -> None:
     # Shares the row evenly, and takes all of it when its neighbour is hidden.
     assert "flex: 1 1" in buttons
     assert "min-width: 0;" in buttons
-    # Existing classes only: the feature adds no selector and no colour.
-    assert "gallery" not in re.sub(r"/\*.*?\*/", "", CSS, flags=re.S).lower()
+    # The drawing chooser reuses shared button classes. The separate Mesh
+    # Image browser has gallery styles of its own; those do not style this row.
+    stylesheet = re.sub(r"/\*.*?\*/", "", CSS, flags=re.S)
+    assert not re.search(
+        r"(?<![\w-])\.(?:draw-)?gallery\b|#(?:emptyGalleryButton|galleryButton)\b",
+        stylesheet,
+    )
 
 
 _HARNESS = """

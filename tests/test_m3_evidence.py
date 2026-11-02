@@ -3,9 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
-from clayline.lint import lint_file
-from clayline.profiles import load_profile
+from golden_support import lint_historical_gcode
 
 ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE = ROOT / "docs" / "verification" / "M3"
@@ -29,7 +27,7 @@ def test_every_tile_has_a_real_plan_view_png_and_svg() -> None:
 
 def test_committed_rings_grid_gcode_is_from_the_real_plan_and_lints() -> None:
     gcode = EVIDENCE / "rings-grid.gcode"
-    report = lint_file(gcode, load_profile("potterbot-xl"))
+    report = lint_historical_gcode(gcode.read_text(encoding="utf-8"))
 
     assert report.ok, report.format()
     assert report.header["job_id"] == "m3-rings-grid"

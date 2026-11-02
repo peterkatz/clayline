@@ -65,7 +65,7 @@ INFILL_INTERIOR: dict[str, Any] = {
     "infill_ramp_layers": 2,
 }
 
-_INTERIOR_MOVE = re.compile(r"^G1 .* kind=print page=\d+ layer=(\d+) stroke=(\S+) note=interior ")
+_MOVE_TAG = re.compile(r"\b([a-z_]+)=(\S+)")
 
 
 def _api_gcode(mesh_path: Path, **interior: Any) -> cl.WeaveResult:
@@ -174,21 +174,26 @@ def _web_gcode(mesh_path: Path, settings: dict[str, Any]) -> bytes:
     return asyncio.run(session())
 
 
-def _interior_moves(gcode: str) -> Iterator[re.Match[str]]:
-    """Every deposited move the emitter labelled as interior fill."""
+def _interior_moves(gcode: str) -> Iterator[dict[str, str]]:
+    """Interior deposition, with identity tags allowed between kind and note."""
 
     for line in gcode.splitlines():
-        match = _INTERIOR_MOVE.match(line)
-        if match is not None:
-            yield match
+        if not line.startswith("G1 "):
+            continue
+        metadata, separator, label = line.partition(" note=")
+        if not separator or not label.startswith("interior "):
+            continue
+        tags = dict(_MOVE_TAG.findall(metadata))
+        if tags.get("kind") == "print":
+            yield tags
 
 
 def _fill_layers(gcode: str) -> set[int]:
-    return {int(match.group(1)) for match in _interior_moves(gcode)}
+    return {int(move["layer"]) for move in _interior_moves(gcode)}
 
 
 def _fill_strokes(gcode: str) -> set[str]:
-    return {match.group(2) for match in _interior_moves(gcode)}
+    return {move["stroke"] for move in _interior_moves(gcode)}
 
 
 def _header_parameter(gcode: str, key: str) -> str:
@@ -214,7 +219,8 @@ def test_a_filled_piece_reprints_from_its_own_gcode_byte_for_byte(
     # every layer of the form.  Byte-identity between two empty interiors would
     # be a true statement about nothing.
     assert _fill_layers(gcode) == set(range(len(original.sliced.layers)))
-    assert len(_fill_strokes(gcode)) >= len(original.sliced.layers)
+    # A continuous clay thread can carry every filled layer in one stroke.
+    assert _fill_strokes(gcode)
 
     recipe = parse_weave_gcode(gcode)
     restored = restore_weave_result(recipe, mesh_path)

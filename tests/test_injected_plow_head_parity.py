@@ -12,15 +12,16 @@ deficit.  Whole-report equality would compare bytes HEAD cannot produce.
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import re
+from pathlib import Path
 
 import pytest
-from test_zellige_clearance_convergence import SETTLE_OFF_GCODE_SHA256, _request
+from golden_support import historical_profile
+from test_zellige_clearance_convergence import SETTLE_OFF_GCODE_SHA256
 
 from clayline.lint import lint_gcode
-from clayline.profiles import load_profile
-from clayline.workflow import build_pipeline
 
 PROFILE = "potterbot-xl"
 _Z = re.compile(r"(?<= )Z(-?\d+(?:\.\d*)?)(?= )")
@@ -45,7 +46,12 @@ HEAD_VERDICTS = {
 
 @pytest.fixture(scope="module")
 def settle_off_gcode() -> str:
-    gcode = build_pipeline(_request(0.0, 12.0, settle=False)).emission.gcode
+    source = (
+        Path(__file__).parent
+        / "fixtures/historical-weave-output"
+        / "zellige-settle-off-two-pass.gcode.gz"
+    )
+    gcode = gzip.decompress(source.read_bytes()).decode("utf-8")
     digest = hashlib.sha256(gcode.encode("utf-8")).hexdigest()
     assert digest == SETTLE_OFF_GCODE_SHA256[2]
     return gcode
@@ -79,7 +85,7 @@ def test_frozen_artifact_is_legacy_parsable_by_head(settle_off_gcode: str) -> No
 
     assert "terrain=" not in settle_off_gcode
     assert "terrain_segment_model" not in settle_off_gcode
-    assert lint_gcode(settle_off_gcode, load_profile(PROFILE)).ok
+    assert lint_gcode(settle_off_gcode, historical_profile()).ok
 
 
 @pytest.mark.parametrize(("drop_mm", "count"), sorted(HEAD_VERDICTS))
@@ -91,7 +97,7 @@ def test_injected_plow_verdict_matches_head(
     expected_count, expected_deficit, expected_message = HEAD_VERDICTS[(drop_mm, count)]
     injected = _inject_plow(settle_off_gcode, drop_mm=drop_mm, count=count)
 
-    report = lint_gcode(injected, load_profile(PROFILE))
+    report = lint_gcode(injected, historical_profile())
     plow = [issue for issue in report.issues if issue.code == "no_plow"]
 
     assert len(plow) == 1

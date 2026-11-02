@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from golden_support import historical_release_text
 
 from clayline.emit import EmissionError
 from clayline.lint import lint_gcode
@@ -319,7 +320,7 @@ def test_missing_release_source_error_is_exact_and_legacy_reproduces_baseline() 
             thread_protection_model=ThreadProtectionModel.LEGACY_FLOW_ONLY_V1,
         )
     )
-    assert legacy.emission.gcode == (
+    assert historical_release_text(legacy.emission.gcode) == (
         BASELINE / "versionless-missing-release-source-positive.gcode"
     ).read_text(encoding="utf-8")
     assert legacy.emission.thread_protection_audit is None
@@ -360,9 +361,9 @@ def test_subquantum_release_error_is_exact_and_legacy_reproduces_baseline() -> N
             thread_protection_model=ThreadProtectionModel.LEGACY_FLOW_ONLY_V1,
         )
     )
-    assert legacy.emission.gcode == (BASELINE / "versionless-subquantum-positive.gcode").read_text(
-        encoding="utf-8"
-    )
+    assert historical_release_text(legacy.emission.gcode) == (
+        BASELINE / "versionless-subquantum-positive.gcode"
+    ).read_text(encoding="utf-8")
     assert legacy.emission.thread_protection_audit is None
 
 

@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import pytest
+from golden_support import assert_historical_gcode
 
 from clayline.models import MoveKind, Severity, WarningCode, ZMode
 from clayline.profiles import load_profile
@@ -36,8 +37,9 @@ def test_f47_stack_fixture_goldens_and_evidence_are_exact_and_lint_clean() -> No
     assert "../../../examples/gallery/rings-grid.svg" in FIXTURE.read_text(encoding="utf-8")
     for case, emission in f47_emissions(profile):
         expected_ranges, expected_height, expected_severity = expected[case.mode]
-        assert emission.gcode == (GOLDEN / case.filename).read_text(encoding="utf-8")
-        assert emission.gcode == (EVIDENCE / case.filename).read_text(encoding="utf-8")
+        frozen = (GOLDEN / case.filename).read_text(encoding="utf-8")
+        assert frozen == (EVIDENCE / case.filename).read_text(encoding="utf-8")
+        assert_historical_gcode(emission.gcode, frozen, profile)
         assert emission.lint_report.ok
         assert emission.lint_report.stats.page_count == 2
         assert emission.prepared.source_stream is emission.stream
