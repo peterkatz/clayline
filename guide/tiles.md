@@ -2,22 +2,22 @@
 
 From a line drawing to a printed tile or open lacework. This is the mode Clayline opens in.
 
-![Draw in Clay after slicing a gallery design: the workflow on the left, the plan in the middle, Before you print on the right](images/tiles-sliced.png)
+![Draw in Clay after slicing the gallery's Petal flower: the workflow on the left, the plan in the middle, Before you print on the right](images/petal-flower-sliced.png)
 
 <div class="cl-pair" markdown>
 
 <figure markdown>
 
-![A tile fresh off the printer: a rosette inside a border of rings](images/prints/rosette-tile-greenware.jpg)
+![The Petal flower tile fresh off the printer: a rosette inside a border of rings](images/prints/rosette-tile-greenware.jpg)
 
-<figcaption>Fresh off the printer: a rosette inside a border of rings, built up in stacked passes.</figcaption>
+<figcaption>That drawing fresh off the printer: Petal flower, from the gallery's Hand-Tile Tracings folder, built up in stacked passes.</figcaption>
 </figure>
 
 <figure markdown>
 
 ![The same drawing after glaze firing, a red rosette inside pale rings](images/prints/rosette-tile-glazed.jpg)
 
-<figcaption>The same drawing after glaze firing. Every line in the drawing became one coil of clay.</figcaption>
+<figcaption>The same tile after glaze firing. Every line in the drawing became one coil of clay.</figcaption>
 </figure>
 
 </div>
@@ -81,7 +81,7 @@ Passes are always tiers. Even when two rows hold different designs, the second p
 
 Once designs are loaded, a **Bed map** shows where every pass sits on the printer bed and whether it fits, checked live before you slice. **Pause between passes** adds a timed pause after every pass except the last, for a look or a canvas change.
 
-![A gallery design loaded and placed, before slicing](images/tiles-loaded.png)
+![The Petal flower loaded and placed, before slicing](images/petal-flower-loaded.png)
 
 ### 03 Layers
 
@@ -99,9 +99,9 @@ This section sets the physical coil and how each pass rises from the bed.
 
 <figure class="cl-photo" markdown>
 
-![A tile printing in Drape: the nozzle rides high above the bed and the coil falls into a loose lattice](images/prints/drape-printing.jpg)
+![The gallery's Endless knot printed in Drape: loose round coils crossing as open lacework](images/prints/endless-knot-draped.jpg)
 
-<figcaption>Drape: the nozzle rides high above the work and the coil falls onto the canvas, settling into open lacework.</figcaption>
+<figcaption>Drape, on the gallery's Endless knot: the coil fell from a raised nozzle and kept its round section, crossing itself in open loops.</figcaption>
 </figure>
 
 The readout under these settings tells you what your numbers mean in clay: how much clay goes into each millimetre of line, how much the coil is squashed, how far apart side-by-side lines sit, and how much free coil there is before it squashes. Its last line is a verdict on the squash:
@@ -153,7 +153,7 @@ A print file is not a project. It holds the finished path for the machine, not t
 
 ## Reading the result
 
-![The 3D toolpath after slicing, with the scrubber below it](images/tiles-3d.png)
+![The 3D toolpath of the Petal flower after slicing, with the scrubber below it](images/petal-flower-3d.png)
 
 **2D plan** shows the bed from above with every pass laid out. **3D toolpath** shows every printed move at its real height; drag to orbit, scroll to zoom. The **Draw / Sliced** switch flips between your editable drawing and the checked path from the last slice.
 

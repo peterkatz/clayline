@@ -28,7 +28,7 @@
 
 <div class="cl-card cl-card--draw" markdown>
 
-![A rosette tile printing from a line drawing, the nozzle laying coil over its rings](images/prints/rosette-tile-printing.jpg)
+![The gallery's Petal flower printing from its line drawing, the nozzle laying coil over its rings](images/prints/rosette-tile-printing.jpg)
 
 ### Draw in Clay
 
@@ -106,7 +106,7 @@ Tiles and vessels printed from Clayline files on a PotterBot 10 XL, then fired a
 
 ![A red and white glazed tile: a rosette inside a border of rings](images/prints/rosette-tile-glazed.jpg)
 
-<figcaption>A drawing printed in stacked passes</figcaption>
+<figcaption>The gallery's Petal flower, in stacked passes</figcaption>
 </figure>
 
 </div>
