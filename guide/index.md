@@ -28,7 +28,7 @@
 
 <div class="cl-card cl-card--draw" markdown>
 
-![A drawn pattern standing up in coils of clay](images/tiles-3d.png)
+![A rosette tile printing from a line drawing, the nozzle laying coil over its rings](images/prints/rosette-tile-printing.jpg)
 
 ### Draw in Clay
 
@@ -38,7 +38,7 @@ Draw directly on the bed, bring a line drawing from any vector app as an SVG, or
 
 <div class="cl-card cl-card--weave" markdown>
 
-![A vessel sliced into rings of woven wall](images/weave-sliced.png)
+![Glazed vessels sliced from 3D models, with ribbed and spiral walls](images/prints/ribs-and-spirals.jpg)
 
 ### Weave · mesh
 
@@ -60,6 +60,56 @@ Both modes show the nozzle path in 2D and 3D, with a move-by-move scrubber and a
 | Put a motif or an all-over relief on a form | Three Images with 80 catalogue depth maps, including 20 paisleys, plus grayscale and color uploads. Repeat around the wall or place a single stamp, then move, resize, rotate, flip or invert it. [Images](weave.md#05-images) |
 | Control the wall and its interior | Depth and clay flow, skips and fades for each effect; spiral Vase mode; hollow walls, solid fill or sparse ribs, with floors and roof skins where needed. [Mesh workflow](weave.md#the-workflow-top-to-bottom) |
 | Keep working on a design later | Portable projects include the drawings or model, settings and uploaded artwork. Save a surface pattern separately to use it on another form, or export G-code and the sliced coils as an OBJ. [Saving your work](weave.md#saving-your-project) |
+
+## Out of the kiln
+
+Tiles and vessels printed from Clayline files on a PotterBot 10 XL, then fired and glazed.
+
+<div class="cl-photos" markdown>
+
+<figure markdown>
+
+![A glazed bowl seen from above, its ribs winding into the centre](images/prints/spiral-bowl-glazed.jpg)
+
+<figcaption>A wave turned a little each layer, seen from above</figcaption>
+</figure>
+
+<figure markdown>
+
+![A dark glazed bowl with a star-shaped rim and spiral ribs](images/prints/spiral-star-bowl.jpg)
+
+<figcaption>A spiral wave over a lobed form</figcaption>
+</figure>
+
+<figure markdown>
+
+![A blue and white glazed form twisted like a pinwheel, with fine ribs](images/prints/pinwheel-blue.jpg)
+
+<figcaption>A twisted form with fine ribs</figcaption>
+</figure>
+
+<figure markdown>
+
+![A small green glazed vessel with scalloped spiral ridges](images/prints/pulse-spiral-green.jpg)
+
+<figcaption>A scalloped wave twisted into a spiral</figcaption>
+</figure>
+
+<figure markdown>
+
+![An orange glazed tile of open lacework](images/prints/drape-tile-glazed.jpg)
+
+<figcaption>A drawing draped from a raised nozzle</figcaption>
+</figure>
+
+<figure markdown>
+
+![A red and white glazed tile: a rosette inside a border of rings](images/prints/rosette-tile-glazed.jpg)
+
+<figcaption>A drawing printed in stacked passes</figcaption>
+</figure>
+
+</div>
 
 ## Images that follow the wall
 
@@ -109,6 +159,13 @@ Stuck, or wondering whether Clayline can do something? Ask under [Questions](htt
 ## Built for real printing
 
 Clayline was built around a PotterBot 10 XL and shaped by real prints. Everything runs on your Mac: no account, no cloud, no internet connection needed. Nothing ever prints from the app itself. It writes a file, you look it over, and you take it to the printer.
+
+<figure class="cl-photo" markdown>
+
+![Seven glazed pieces on a tray: ribbed cones, spiral bowls, a star-shaped bowl and a twisted form](images/prints/seven-pieces.jpg)
+
+<figcaption>Seven pieces sliced from 3D models and printed on the same machine: ribs, spirals, a star-shaped bowl and a twisted form.</figcaption>
+</figure>
 
 !!! warning "Printer files move real machinery"
     Clayline checks every file against the printer's limits, not against your actual printer, clay, nozzle, or the space around it. Look the file over, keep the emergency stop within reach, and stay with the printer. Read [Safety](safety.md) before your first run.

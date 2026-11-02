@@ -447,7 +447,7 @@
   flex-direction: column;
 }
 
-/* The card pictures come in as whole-studio screenshots; show the clay. */
+/* The card pictures are photographs of printed pieces, cropped to the same frame. */
 .md-typeset .cl-card > p:first-child {
   margin: 0;
   display: block;
@@ -460,17 +460,9 @@
 .md-typeset .cl-card > p:first-child img {
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
+  object-fit: cover;
   border-radius: 0;
-  transform-origin: 50% 50%;
-}
-
-.md-typeset .cl-card--draw > p:first-child img {
-  transform: scale(2.8) translate(0, -4%);
-}
-
-.md-typeset .cl-card--weave > p:first-child img {
-  transform: scale(2.8) translate(0, -2%);
 }
 
 .md-typeset .cl-card h3 {
@@ -507,6 +499,77 @@
   border-radius: 0.2rem;
 }
 
+/* ---------- Photographs of printed pieces ---------- */
+
+.md-typeset figure.cl-photo {
+  margin: 1.4rem auto;
+}
+
+.md-typeset figure.cl-photo img {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--cl-hairline);
+  border-radius: 0.2rem;
+}
+
+/* A standing piece needs less than the full column. */
+.md-typeset figure.cl-photo--tall {
+  max-width: 22rem;
+}
+
+.md-typeset figure.cl-photo p,
+.md-typeset .cl-pair figure p,
+.md-typeset .cl-photos figure p {
+  margin: 0;
+}
+
+/* Two photographs side by side: before and after, or two walls. */
+.cl-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 1.2rem 0 1.4rem;
+}
+
+.md-typeset .cl-pair figure {
+  margin: 0;
+}
+
+.md-typeset .cl-pair img {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--cl-hairline);
+  border-radius: 0.2rem;
+}
+
+/* A shelf of finished pieces. */
+.cl-photos {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.9rem 0.8rem;
+  margin: 1rem 0 0.6rem;
+}
+
+.md-typeset .cl-photos figure {
+  margin: 0;
+  min-width: 0;
+}
+
+.md-typeset .cl-photos img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border: 1px solid var(--cl-hairline);
+  border-radius: 0.2rem;
+}
+
+.md-typeset .cl-photos figcaption,
+.md-typeset .cl-pair figcaption {
+  font-size: 0.62rem;
+  margin-top: 0.35rem;
+}
+
 /* ---------- Phone ---------- */
 
 @media screen and (max-width: 44.9375em) {
@@ -516,6 +579,14 @@
 
   .cl-gallery {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .cl-photos {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cl-pair {
+    gap: 0.6rem;
   }
 
   .md-typeset .cl-hero h1 {

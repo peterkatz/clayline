@@ -37,3 +37,10 @@ In Draw in Clay, **Pause between passes** under 02 Passes holds the printer for 
 ## While it prints
 
 Stay with the printer. Watch the first layer land, watch the clearance between the nozzle and the growing piece, and watch the travels, where the thread stops and restarts. Ceramic printers and clay vary from one print to the next, so some trial and error is normal; adjust speed and flow on the machine as you go.
+
+<figure class="cl-photo cl-photo--tall" markdown>
+
+![A rippled bottle on the printer bed with the nozzle just above its narrowing neck](images/prints/bottle-neck-printing.jpg)
+
+<figcaption>A bottle closing in on its neck. As the wall leans in, watch the clearance between the nozzle and the shoulder below it.</figcaption>
+</figure>
