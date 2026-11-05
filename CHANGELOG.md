@@ -2,6 +2,16 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.12.2 — 2026-11-05
+
+### Plainer words
+- If Layer height, First layer height or Ripple length is empty, Slice waits and the
+  note says which box to fill in.
+- Any other number Clayline can't use now names the box as you see it, such as "Join
+  ends that nearly touch must be at least 0 mm."
+- Warnings say which pass they're on, and say in plain words when a shape was left out
+  and why.
+
 ## 0.12.1 — 2026-11-05
 
 ### Shapes and drawings that were turned away now print

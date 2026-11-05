@@ -119,14 +119,14 @@ def test_make_lines_answers_for_a_file_that_stays_as_it_is(client: TestClient) -
         pytest.param(
             {"png": base64.b64encode(b"nope").decode()}, "could not be read", id="not-png"
         ),
-        pytest.param({"coil_width_mm": 0}, "coil_width_mm", id="no-coil"),
-        pytest.param({"coil_width_mm": "wide"}, "coil_width_mm", id="coil-not-a-number"),
+        pytest.param({"coil_width_mm": 0}, "Coil width", id="no-coil"),
+        pytest.param({"coil_width_mm": "wide"}, "Coil width", id="coil-not-a-number"),
         pytest.param({"join": 1.5}, "join", id="join-too-big"),
-        pytest.param({"target_mm": -5}, "target_mm", id="negative-size"),
+        pytest.param({"target_mm": -5}, "Size", id="negative-size"),
         pytest.param({"bed_mm": [100]}, "bed_mm", id="one-sided-bed"),
         pytest.param({"bed_mm": [0, 100]}, "bed_mm", id="flat-bed"),
         pytest.param({"bed_mm": [1e9, 1e9]}, "bed_mm", id="bed-past-any-bed"),
-        pytest.param({"target_mm": 1_000_000}, "target_mm", id="size-past-any-bed"),
+        pytest.param({"target_mm": 1_000_000}, "Size", id="size-past-any-bed"),
     ],
 )
 def test_make_lines_refuses_nonsense_clearly(client: TestClient, change: dict, words: str) -> None:

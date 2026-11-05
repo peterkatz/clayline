@@ -271,8 +271,8 @@ def slice_mesh_form(
                     code=FormWarningCode.OPEN_RING,
                     severity=Severity.WARNING,
                     message=(
-                        f"Layer {layer.index + 1} at Z {layer.z:.3f} mm produced no section; "
-                        "the mesh may be open or disconnected at this height."
+                        f"Layer {layer.index + 1} ({layer.z:.1f} mm up) has no outline; "
+                        "the model may be open or in separate pieces at this height."
                     ),
                     layer_span=LayerSpan(layer.index, layer.index),
                 )
@@ -284,8 +284,8 @@ def slice_mesh_form(
                         code=FormWarningCode.OPEN_RING,
                         severity=Severity.WARNING,
                         message=(
-                            f"Layer {layer.index + 1} ring {ring.provenance.island_index} is open; "
-                            "it remains an open printable stroke rather than being silently healed."
+                            f"Layer {layer.index + 1}: this outline is open, "
+                            "so it prints as an open line."
                         ),
                         ring=ring.provenance,
                         layer_span=LayerSpan(layer.index, layer.index),
@@ -356,12 +356,13 @@ def _slice_heights(
 ) -> np.ndarray:
     if first_layer_height >= maximum_z:
         raise ValueError(
-            f"first layer Z {first_layer_height:.3f} mm must be below mesh top {maximum_z:.3f} mm"
+            f"First layer height ({first_layer_height:.1f} mm) must be below "
+            f"the top of the model ({maximum_z:.1f} mm)."
         )
     epsilon = max(1e-12, abs(maximum_z) * 1e-12)
     count = math.floor((maximum_z - epsilon - first_layer_height) / layer_height) + 1
     if count < 1:
-        raise ValueError("mesh height does not contain a printable slice plane")
+        raise ValueError("This model is too short for a layer at this layer height.")
     return first_layer_height + np.arange(count, dtype=np.float64) * layer_height
 
 

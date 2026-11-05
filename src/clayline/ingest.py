@@ -31,6 +31,7 @@ _SVG_NAMESPACE_PREFIX = "{http://www.w3.org/2000/svg}"
 _SUPPORTED_TAGS = {"path", "line", "polyline", "polygon", "circle", "ellipse", "rect"}
 # What a potter would call the shapes that have a plain name.
 _SHAPE_NAMES = {"circle": "circle", "ellipse": "oval", "rect": "rectangle"}
+_LEFT_OUT_NAMES = {"image": "picture", "text": "text"}
 _SVG_LENGTH = re.compile(r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*([A-Za-z%]*)\s*$")
 _XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
 # Draw's area fills ride on the root element as ``pattern x y`` entries joined
@@ -276,7 +277,7 @@ def _fill_seeds(
                 Warning(
                     code=WarningCode.FILL_UNREADABLE,
                     severity=Severity.WARNING,
-                    message=f"Skipped an area fill the file could not read: {entry.strip()!r}.",
+                    message="Skipped an area fill the file could not read.",
                 )
             )
             continue
@@ -365,7 +366,10 @@ def ingest_svg(
                 Warning(
                     code=WarningCode.DROPPED_ELEMENT,
                     severity=Severity.WARNING,
-                    message=f"Dropped unsupported SVG <{tag}> element.",
+                    message=(
+                        f"This {_LEFT_OUT_NAMES.get(tag, 'part of the drawing')} "
+                        "can't be printed, so it was left out."
+                    ),
                     point=_element_point(element, to_printer_point),
                     provenance=provenance,
                 )
@@ -397,7 +401,10 @@ def ingest_svg(
                 Warning(
                     code=WarningCode.DROPPED_ELEMENT,
                     severity=Severity.WARNING,
-                    message=f"Dropped degenerate SVG <{tag}> element with no printable length.",
+                    message=(
+                        f"This {_SHAPE_NAMES.get(tag, 'line')} is too short to print, "
+                        "so it was left out."
+                    ),
                     point=_element_point(element, to_printer_point),
                     provenance=provenance,
                 )

@@ -147,7 +147,7 @@ const WARNING_COPY = {
   },
   dropped_element: {
     title: "A shape was skipped",
-    hint: "This shape has no line of its own, so it was left out.",
+    hint: "It won't print. Open it to see why.",
   },
   out_of_bed: {
     title: "Outside the printable area",
@@ -990,6 +990,21 @@ function linesSizeRefusal(file, sizeMm) {
 
 function linesDiffer(left, right) {
   return !Number.isFinite(left) || !Number.isFinite(right) || Math.abs(left - right) > 0.0011;
+}
+
+// An empty box reads as 0, and these three can't print at 0. Slice stays off until they
+// hold a number, with the box named, and nothing goes to the engine to refuse it.
+function boxWantsANumber(id) {
+  return !(Number($(id)?.value) > 0);
+}
+
+function boxWantingANumber() {
+  if (boxWantsANumber("#layerHeight")) return "a layer height";
+  if (selectedZMode() === "calibrated" && boxWantsANumber("#firstLayerHeight")) {
+    return "a first layer height";
+  }
+  if (!$("#wavelength").disabled && boxWantsANumber("#wavelength")) return "a ripple length";
+  return null;
 }
 
 function coilWidthIsSet(width = effectiveBeadWidth()) {
@@ -2511,9 +2526,10 @@ async function runLayoutCheck() {
     weld_tol: numberValue("#weldTol"),
     kiss: $("#kiss").checked,
     overlap_fraction: overlapFraction(),
-    layer_height: numberValue("#layerHeight"),
     z_mode: selectedZMode(),
   };
+  // Nor does an empty Layer height change what a drawing measures.
+  if (!boxWantsANumber("#layerHeight")) body.layer_height = numberValue("#layerHeight");
   // An empty Width box still has a size to measure. Slice's footnote asks for the number.
   if (selectedBeadWidthMode() === "measured" && coilWidthIsSet()) body.bead_width = numberValue("#beadWidth");
   try {
@@ -3302,7 +3318,9 @@ function updateDependencies() {
 
   const pause = numberValue("#pagePause");
   const linesFootnote = linesSliceFootnote();
+  const wanted = boxWantingANumber();
   const canSlice = allPassMeasurementsReady()
+    && !wanted
     && !linesFootnote
     && Number.isFinite(pause)
     && pause >= 0
@@ -3321,6 +3339,8 @@ function updateDependencies() {
         ? linesFootnote
         : !coilWidthIsSet()
           ? COIL_WANTED_FOOTNOTE
+          : wanted
+            ? `Type ${wanted} before Slice.`
           : !allPassMeasurementsReady()
             ? passMeasurementFailure() || "Measuring every pass before Slice can run."
             : rippleTooDeep
@@ -3491,7 +3511,8 @@ function requestPayload(snapshot = drawSettingsSnapshot()) {
     settle_valleys: job.settle_valleys,
     flow_modulation: job.flow_modulation,
     z_modulation: job.z_modulation,
-    modulation_wavelength: job.modulation_wavelength,
+    // Left out when empty with no ripple to use it: there is no box to go and fill.
+    modulation_wavelength: job.modulation_wavelength > 0 ? job.modulation_wavelength : undefined,
     joint_boost: job.joint_boost,
     flow_multiplier: job.flow_multiplier,
     start_charge_e: Number.isFinite(job.start_charge_e) ? job.start_charge_e : null,
@@ -4319,6 +4340,12 @@ function renderReport(result) {
   renderWarnings(warnings);
 }
 
+// The title and hint already say these in plain words. The engine's own sentence for
+// them is its record for the report file, so it stays there and out of the page.
+const WARNINGS_SAID_IN_THE_HINT = new Set([
+  "tight_radius", "under_spaced", "open_end", "out_of_bed", "assumed_units",
+]);
+
 function warningCopyFor(warning) {
   const entry = WARNING_COPY[warning.code];
   if (!entry) return { title: String(warning.code || "note").replaceAll("_", " "), hint: "" };
@@ -4336,15 +4363,14 @@ function warningDetailBlock(warning) {
   if (warning.point) {
     parts.push(`X ${Number(warning.point.x).toFixed(2)} · Y ${Number(warning.point.y).toFixed(2)} mm`);
   }
-  if (warning.page_id) parts.push(warning.page_id);
-  if (warning.provenance && !Lines.isLineId(warning.provenance.element_id)) {
-    parts.push(warning.provenance.element_id || `element[${warning.provenance.element_index}]`);
-  }
+  const pass = /^page-0*(\d+)-/.exec(warning.page_id || "");
+  if (pass) parts.push(`Pass ${pass[1]}`);
   coordinate.textContent = parts.join(" · ") || "No single spot — this applies to the whole file.";
   const raw = document.createElement("p");
   raw.className = "warning-raw";
   raw.textContent = warning.message || "";
-  detail.append(coordinate, raw);
+  detail.append(coordinate);
+  if (!WARNINGS_SAID_IN_THE_HINT.has(warning.code)) detail.append(raw);
   return detail;
 }
 
