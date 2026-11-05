@@ -73,9 +73,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.12.0</string>
+	<string>0.12.1</string>
 	<key>CFBundleVersion</key>
-	<string>30</string>
+	<string>31</string>
 	<key>ClaylineEngineExecutable</key>
 	<string>Resources/Engine/ClaylineEngine</string>
 	<key>LSApplicationCategoryType</key>

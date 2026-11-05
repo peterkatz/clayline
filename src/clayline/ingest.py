@@ -29,6 +29,8 @@ _MM_PER_CSS_PX = 25.4 / _CSS_PPI
 _MAX_USE_EXPANSION_ELEMENTS = 20_000
 _SVG_NAMESPACE_PREFIX = "{http://www.w3.org/2000/svg}"
 _SUPPORTED_TAGS = {"path", "line", "polyline", "polygon", "circle", "ellipse", "rect"}
+# What a potter would call the shapes that have a plain name.
+_SHAPE_NAMES = {"circle": "circle", "ellipse": "oval", "rect": "rectangle"}
 _SVG_LENGTH = re.compile(r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*([A-Za-z%]*)\s*$")
 _XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
 # Draw's area fills ride on the root element as ``pattern x y`` entries joined
@@ -374,7 +376,10 @@ def ingest_svg(
                 Warning(
                     code=WarningCode.DROPPED_ELEMENT,
                     severity=Severity.WARNING,
-                    message=f"Dropped SVG <{tag}> element without a visible stroke.",
+                    message=(
+                        f"To print this {_SHAPE_NAMES.get(tag, 'shape')}, "
+                        "give it a line in your drawing program."
+                    ),
                     point=_element_point(element, to_printer_point),
                     provenance=provenance,
                 )

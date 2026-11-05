@@ -22,11 +22,20 @@ from functools import cache
 from pathlib import Path
 
 import pytest
+import trimesh
 
 import clayline as cl
-from clayline.emit import EmissionError, EmissionSettings, is_flowing_crossing
+from clayline import emit
+from clayline.emit import (
+    EmissionError,
+    EmissionMotion,
+    EmissionPoint,
+    EmissionSettings,
+    is_flowing_crossing,
+)
 from clayline.lint import lint_gcode
 from clayline.mesh_export import coils_from_prepared
+from clayline.models import Move, MoveKind
 from clayline.preview import build_deposition_parts, build_preview_data, render_plan_svg
 from clayline.profiles import load_profile
 from clayline.weave_restore import parse_weave_gcode, restore_weave_result
@@ -122,6 +131,84 @@ def test_on_lines_start_and_end_at_full_flow() -> None:
     last_print = max(i for i, row in enumerate(rows) if "kind=print" in row[2])
     # Between the first line and the last, every motion carries clay.
     assert all("E" in words for _c, words, _note in rows[first_print : last_print + 1])
+
+
+# --- a long thread: two totals of one length part by rounding ----------------
+#
+# A plain 64-sided cylinder was refused by the final check: on Python 3.12+
+# ``sum`` is compensated and the emitter's running total is not, so a line tens
+# of metres long could leave a few billionths of a millimetre past its own
+# length, laid as a final motion with no clay.  Section count and height only
+# decide how the rounding falls, which is why neighbouring forms passed.
+
+
+@pytest.mark.parametrize(("radius", "height"), [(40.0, 80.0), (60.0, 120.0)])
+def test_a_long_thread_pushes_clay_to_its_very_end(
+    radius: float, height: float, tmp_path: Path
+) -> None:
+    mesh = tmp_path / "cylinder.obj"
+    trimesh.creation.cylinder(radius=radius, height=height, sections=64).export(mesh)
+    sliced = cl.load_mesh(mesh).slice(nozzle=5.0, layer_height=1.5, bead_width=5.0)
+    # ``modulate`` runs the final check and raises if it refuses.
+    result = sliced.modulate("flat", reproducible=True, keep_clay_flowing=True)
+    assert result.emission.lint_report.ok, result.emission.lint_report.format()
+    gcode = result.emission.gcode
+    assert "note=end-early tail" not in gcode
+    rows = _motions(gcode)
+    first_print = next(i for i, row in enumerate(rows) if "kind=print" in row[2])
+    # One unbroken thread: no motion after the first line lays no clay, nothing
+    # crosses the piece, and it ends on the line's own last point.
+    assert all("E" in words for _command, words, _note in rows[first_print:])
+    assert all("kind=print" in note for _command, _words, note in rows[first_print:])
+    last_move = next(m for m in reversed(result.emission.stream.moves) if m.kind is MoveKind.PRINT)
+    _, last_words, last_note = rows[-1]
+    assert (last_words["X"], last_words["Y"], last_words["Z"]) == pytest.approx(
+        (last_move.x, last_move.y, last_move.z), abs=1e-6
+    )
+    assert f"note={last_move.comment}" in last_note
+
+
+def _laid_with_a_gap(
+    monkeypatch: pytest.MonkeyPatch, gap: float, **settings: object
+) -> list[EmissionMotion]:
+    """Lay a short run whose two totals part by ``gap``, on any Python."""
+
+    monkeypatch.setattr(emit, "sum", lambda parts: sum(parts) - gap, raising=False)
+    points = [EmissionPoint(100.0 + x, 100.0, 2.0) for x in (0.0, 10.0, 20.0)]
+    run = [(Move(MoveKind.PRINT, 0, 0, "line", x=p.x, y=p.y, z=p.z), p) for p in points]
+    resolved = EmissionSettings(bead_width=5.0, layer_height=1.5, **settings)
+    return [
+        event
+        for event in emit._print_run(run, points[0], PROFILE, resolved, 0.0, 0.0)
+        if isinstance(event, EmissionMotion)
+    ]
+
+
+def test_a_gap_past_the_part_skip_leaves_no_motion_without_clay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    laid = _laid_with_a_gap(monkeypatch, 5e-9, keep_clay_flowing=True)
+    assert [event.extrude for event in laid] == [True, True]
+    # The line runs to its true end, not to where the rounding fell.
+    assert laid[-1].point == EmissionPoint(120.0, 100.0, 2.0)
+
+
+def test_a_gap_the_part_skip_swallows_keeps_its_split_so_passing_jobs_keep_their_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Forms that always passed sit here, the radius 40 sphere among them: moving
+    # this point by even a billionth changes the trace hash in the file's header.
+    laid = _laid_with_a_gap(monkeypatch, 4e-10, keep_clay_flowing=True)
+    assert [event.extrude for event in laid] == [True, True]
+    assert laid[-1].point != EmissionPoint(120.0, 100.0, 2.0)
+    assert laid[-1].point.x == pytest.approx(120.0, abs=1e-9)
+
+
+def test_a_job_with_the_switch_off_writes_what_it_wrote_with_a_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    laid = _laid_with_a_gap(monkeypatch, 5e-9, prime_mm=0.0, end_early_mm=0.0)
+    assert [event.extrude for event in laid] == [True, True, False]
 
 
 def test_every_crossing_carries_one_full_bead_per_mm_at_the_next_lines_feed() -> None:

@@ -146,7 +146,7 @@ const pass = (name, svg, extra = {}) => ({
   name, svg, sizeMm: null, sizePinned: false, measurementStatus: "pending", ...extra,
 });
 const tick = async () => { for (let i = 0; i < 20; i += 1) await new Promise((r) => setTimeout(r, 0)); };
-const CONVERTED = @@CONVERTED@@;
+const CONVERTED = Lines.withLinesHash(@@CONVERTED@@);
 const LEAVE = { verdict: "leave" };
 const CONVERT = { verdict: "convert", paint_svg: "<svg/>", canvas: { width: 10, height: 10 } };
 const LINES = { verdict: "lines", svg: CONVERTED, size_basis: "fit", target_mm: 100 };
@@ -444,7 +444,7 @@ def test_two_files_loaded_close_together_each_keep_their_lines_through_an_undo()
         """
 const finish = [];
 answers["/api/svg/examine"] = CONVERT;
-const made = (name) => CONVERTED.replace('data-clayline-target="100"', `data-clayline-target="${name}"`);
+const made = (name) => Lines.withLinesHash(CONVERTED.replace('data-clayline-target="100"', `data-clayline-target="${name}"`));
 answers["/api/svg/make-lines"] = (body) => new Promise((resolve) => {
   finish.push(() => resolve(respond(200, { ...LINES, svg: body.svg === "<svg>a</svg>" ? made(1) : made(2) })));
 });
@@ -615,7 +615,7 @@ assert.equal(rebuilt.svg, CONVERTED);
 def test_a_size_and_its_lines_are_one_step_and_the_typed_size_is_what_is_asked_for() -> None:
     _run_section(
         """
-const remade = CONVERTED.replace('data-clayline-target="100"', 'data-clayline-target="240"');
+const remade = Lines.withLinesHash(CONVERTED.replace('data-clayline-target="100"', 'data-clayline-target="240"'));
 answers["/api/svg/examine"] = CONVERT;
 answers["/api/svg/make-lines"] = { ...LINES, svg: remade, target_mm: 240 };
 const file = pass("cat.svg", CONVERTED, { sizeMm: 100, measurementStatus: "ready" });
@@ -722,7 +722,7 @@ assert.equal(linesRowActions(file).length, 0);
 def test_a_new_coil_width_makes_the_lines_again_and_undo_holds_both() -> None:
     _run_section(
         """
-const remade = CONVERTED.replace('data-clayline-coil="5"', 'data-clayline-coil="8"');
+const remade = Lines.withLinesHash(CONVERTED.replace('data-clayline-coil="5"', 'data-clayline-coil="8"'));
 answers["/api/svg/examine"] = CONVERT;
 answers["/api/svg/make-lines"] = { ...LINES, svg: remade };
 const file = pass("cat.svg", CONVERTED, { sizeMm: 96, measurementStatus: "ready" });
@@ -1047,6 +1047,7 @@ def test_clayline_s_own_saved_file_comes_back_as_it_was_saved() -> None:
         """
 const edited = CONVERTED
   .replace(/<metadata[\\s\\S]*?<\\/metadata>\\n?/, "")
+  .replace(/ data-clayline-lines-hash="[^"]*"/, "")
   .replace("<svg ", '<svg data-clayline-origin="edited" ');
 const traced = '<svg data-clayline-converted="1" data-clayline-origin="drawn" xmlns="x"><path d="M0 0L9 9"/></svg>';
 const saved = pass("cat-lines.svg", CONVERTED);
@@ -1083,7 +1084,7 @@ assert.equal(asked.length, 0);
 def test_saved_lines_at_a_typed_size_come_back_at_that_size() -> None:
     _run_section(
         """
-const typed = CONVERTED.replace('data-clayline-size-basis="fit"', 'data-clayline-size-basis="typed"').replace('data-clayline-target="100"', 'data-clayline-target="140"');
+const typed = Lines.withLinesHash(CONVERTED.replace('data-clayline-size-basis="fit"', 'data-clayline-size-basis="typed"').replace('data-clayline-target="100"', 'data-clayline-target="140"'));
 const saved = pass("cat-lines.svg", typed);
 const fitted = pass("dog-lines.svg", CONVERTED);
 addDrawings([saved, fitted]);
@@ -1277,7 +1278,7 @@ def test_the_original_never_counts_against_a_request_and_measurements_key_on_a_h
     assert "file.svg" not in key
     # Neither remembered: what a pass is being made into isn't part of its snapshot.
     snapshot = _block(APP, "function drawSettingsSnapshot", "function sameKeys")
-    for field in ("makingLines", "linesFailed", "linesProblem", "svgHash"):
+    for field in ("makingLines", "linesFailed", "linesWantCoil", "linesProblem", "svgHash"):
         assert field not in snapshot
 
 
@@ -1479,3 +1480,444 @@ def test_the_lines_say_where_the_files_own_page_lands_under_them() -> None:
     y = (float(start.group(2)) - margin) / final + top
     assert x * to_page_mm == pytest.approx(20.0, abs=0.5)
     assert y * to_page_mm == pytest.approx(20.0, abs=0.5)
+
+
+# --- the coil box empty when a drawing arrives ------------------------------------
+
+
+def test_a_drawing_added_with_the_coil_box_empty_waits_and_a_number_starts_it() -> None:
+    _run_section(
+        """
+answers["/api/svg/examine"] = CONVERT;
+answers["/api/svg/make-lines"] = LINES;
+coil = 0;
+const file = pass("cat.svg", "<svg>filled</svg>");
+addDrawings([file]);
+await tick();
+// Sorted, since that asks for no coil, and nothing else went out.
+assert.deepEqual(asked.map((c) => c.path), ["/api/svg/examine"]);
+assert.equal(file.svg, "<svg>filled</svg>");
+assert.equal(file.makingLines, null);
+assert.equal(file.linesFailed, false);
+assert.equal(passHeldByLines(file), true);
+assert.equal(layoutFiles().length, 0);
+const note = linesNoteContent(file);
+assert.equal(note.text, "Type a coil width to make lines from this drawing.");
+assert.equal(note.role, "status");
+assert.deepEqual(note.buttons, []);
+assert.deepEqual(linesRowActions(file), []);
+assert.equal(linesSliceFootnote(), "Type a coil width before Slice.");
+// Half a number is still no number.
+coil = 0.05;
+noteCoilOrJoinChanged({ settled: false });
+assert.equal(file.makingLines, null);
+assert.equal(linesNoteContent(file).text, "Type a coil width to make lines from this drawing.");
+// The number starts it, with nothing more to press.
+coil = 5;
+noteCoilOrJoinChanged({ settled: false });
+assert.equal(file.makingLines.phase, "making");
+assert.equal(linesNoteContent(file).text, "Making lines from your drawing…");
+noteCoilOrJoinChanged({ settled: true });
+await tick();
+assert.equal(asked.find((c) => c.path === "/api/svg/make-lines").body.coil_width_mm, 5);
+assert.equal(file.svg, CONVERTED);
+assert.equal(file.linesWantCoil, false);
+assert.equal(passHeldByLines(file), false);
+assert.equal(linesSliceFootnote(), null);
+"""
+    )
+
+
+def test_the_number_and_the_lines_it_started_are_one_undo_step() -> None:
+    _run_section(
+        """
+answers["/api/svg/examine"] = CONVERT;
+answers["/api/svg/make-lines"] = LINES;
+coil = 0;
+const file = pass("cat.svg", "<svg>filled</svg>");
+addDrawings([file]);
+await tick();
+coil = 5;
+noteCoilOrJoinChanged({ settled: true });
+drawStateWriter.flush();
+await tick();
+assert.equal(drawHistory.current().passes[0].svg, CONVERTED);
+assert.equal(drawHistory.current().job.bead_width_mm, 5);
+const before = drawHistory.undo();
+assert.equal(before.passes[0].svg, "<svg>filled</svg>");
+assert.equal(before.job.bead_width_mm, 0);
+"""
+    )
+
+
+def test_clearing_the_box_again_goes_back_to_waiting_and_says_so() -> None:
+    _run_section(
+        """
+answers["/api/svg/examine"] = CONVERT;
+coil = 0;
+const file = pass("cat.svg", "<svg>filled</svg>");
+addDrawings([file]);
+await tick();
+coil = 5;
+noteCoilOrJoinChanged({ settled: false });
+assert.equal(linesNoteContent(file).text, "Making lines from your drawing…");
+coil = 0;
+noteCoilOrJoinChanged({ settled: false });
+assert.equal(file.makingLines, null);
+assert.equal(linesNoteContent(file).text, "Type a coil width to make lines from this drawing.");
+await tick();
+assert.equal(asked.filter((c) => c.path === "/api/svg/make-lines").length, 0);
+"""
+    )
+
+
+def test_a_number_that_comes_while_the_file_is_sorted_is_the_one_used() -> None:
+    _run_section(
+        """
+answers["/api/svg/examine"] = () => {
+  coil = 6;
+  return respond(200, CONVERT);
+};
+answers["/api/svg/make-lines"] = LINES;
+coil = 0;
+const file = pass("cat.svg", "<svg>filled</svg>");
+addDrawings([file]);
+await tick();
+const made = asked.filter((c) => c.path === "/api/svg/make-lines");
+assert.equal(made.length, 1);
+assert.equal(made[0].body.coil_width_mm, 6);
+assert.equal(file.svg, CONVERTED);
+"""
+    )
+
+
+def test_a_box_emptied_before_its_turn_sends_nothing() -> None:
+    _run_section(
+        """
+answers["/api/svg/examine"] = () => {
+  coil = 0;
+  return respond(200, CONVERT);
+};
+coil = 5;
+const file = pass("cat.svg", "<svg>filled</svg>");
+addDrawings([file]);
+await tick();
+assert.equal(asked.filter((c) => c.path === "/api/svg/make-lines").length, 0);
+assert.equal(file.linesWantCoil, true);
+"""
+    )
+
+
+def test_every_way_of_asking_for_lines_waits_for_the_box() -> None:
+    _run_section(
+        """
+answers["/api/svg/examine"] = CONVERT;
+answers["/api/svg/make-lines"] = () => respond(422, { detail: "bed_mm must be two positive numbers" });
+const failed = pass("failed.svg", "<svg>failed</svg>");
+addDrawings([failed]);
+await tick();
+assert.equal(failed.linesFailed, "load");
+const madeCount = () => asked.filter((c) => c.path === "/api/svg/make-lines").length;
+const before = madeCount();
+coil = 0;
+// Try again.
+tryLinesAgain(failed);
+await tick();
+assert.equal(failed.linesFailed, false);
+assert.equal(failed.linesWantCoil, true);
+// Make lines again.
+const again = pass("again.svg", CONVERTED, { sizeMm: 96, measurementStatus: "ready" });
+state.files = [failed, again];
+makeLinesAgain(again);
+await tick();
+assert.equal(again.linesWantCoil, true);
+// A new size. These lines still can't be used, and it can still be set back.
+const sized = pass("sized.svg", CONVERTED, { sizeMm: 96, measurementStatus: "ready" });
+state.files = [failed, again, sized];
+setLinesSize(sized, 240);
+await tick();
+assert.equal(sized.linesWantCoil, true);
+assert.equal(sized.svg, CONVERTED);
+assert.equal(passSizeStaysOpen(sized), true);
+assert.equal(passSizeStaysOpen(failed), false);
+assert.deepEqual(linesNoteContent(sized).buttons.map((b) => b.textContent), ["Use original"]);
+assert.equal(madeCount(), before);
+// One number, and each goes on its way for its own size.
+answers["/api/svg/make-lines"] = LINES;
+coil = 5;
+noteCoilOrJoinChanged({ settled: true });
+await tick();
+for (const file of [failed, again, sized]) assert.equal(file.linesWantCoil, false);
+assert.equal(failed.svg, CONVERTED);
+assert.equal(asked.filter((c) => c.path === "/api/svg/make-lines").at(-1).body.target_mm, 240);
+"""
+    )
+
+
+def test_a_pass_put_back_with_use_original_stays_as_it_is_when_a_coil_is_typed() -> None:
+    _run_section(
+        """
+answers["/api/svg/examine"] = CONVERT;
+answers["/api/svg/make-lines"] = LINES;
+const file = pass("cat.svg", CONVERTED, { sizeMm: 96, measurementStatus: "ready" });
+state.files = [file];
+coil = 0;
+useOriginal(file);
+const original = Lines.originalOf(CONVERTED);
+assert.equal(file.svg, original);
+assert.equal(file.linesWantCoil, false);
+coil = 8;
+noteCoilOrJoinChanged({ settled: true });
+await tick();
+assert.equal(asked.length, 0);
+assert.equal(file.svg, original);
+// It waited, then the potter chose the file instead: no lines come for it after all.
+const waiting = pass("dog.svg", "<svg>dog</svg>");
+coil = 0;
+addDrawings([waiting]);
+await tick();
+assert.equal(waiting.linesWantCoil, true);
+useOriginal(waiting);
+assert.equal(waiting.linesWantCoil, false);
+const sofar = asked.length;
+coil = 8;
+noteCoilOrJoinChanged({ settled: true });
+await tick();
+assert.equal(asked.length, sofar);
+"""
+    )
+
+
+def test_a_coil_the_engine_turned_down_is_tried_again_only_when_the_number_changes() -> None:
+    _run_section(
+        """
+answers["/api/svg/examine"] = CONVERT;
+answers["/api/svg/make-lines"] = () => respond(422, { detail: "coil_width_mm must be at most 100" });
+coil = 500;
+const file = pass("cat.svg", "<svg>filled</svg>");
+addDrawings([file]);
+await tick();
+assert.equal(file.linesFailed, "load");
+const count = () => asked.filter((c) => c.path === "/api/svg/make-lines").length;
+const before = count();
+// The same number, or another setting saying nothing moved, asks nothing new.
+noteCoilOrJoinChanged({ settled: true });
+await tick();
+assert.equal(count(), before);
+assert.equal(file.linesFailed, "load");
+answers["/api/svg/make-lines"] = LINES;
+coil = 5;
+noteCoilOrJoinChanged({ settled: true });
+await tick();
+assert.equal(count(), before + 1);
+assert.equal(file.svg, CONVERTED);
+assert.equal(file.linesFailed, false);
+"""
+    )
+
+
+def test_waiting_for_a_coil_follows_the_pass_through_undo_and_never_makes_lines_of_its_own() -> None:
+    _run_section(
+        """
+answers["/api/svg/examine"] = CONVERT;
+coil = 0;
+const file = pass("cat.svg", "<svg>filled</svg>");
+addDrawings([file]);
+await tick();
+const same = pass("cat.svg", "<svg>filled</svg>");
+setFiles([same]);
+assert.equal(same.linesWantCoil, true);
+// A rebuild that puts a number back makes nothing, and the row offers it instead.
+coil = 5;
+const back = pass("cat.svg", "<svg>filled</svg>");
+setFiles([back]);
+assert.equal(back.linesWantCoil, undefined);
+await tick();
+assert.equal(asked.filter((c) => c.path === "/api/svg/make-lines").length, 0);
+assert.deepEqual(linesRowActions(back).map((b) => b.textContent), ["Make lines again"]);
+"""
+    )
+
+
+def test_plain_lines_added_with_the_coil_box_empty_stay_the_identical_string() -> None:
+    _run_section(
+        """
+answers["/api/svg/examine"] = LEAVE;
+coil = 0;
+const plain = '<svg xmlns="x" viewBox="0 0 9 9">\\r\\n<path d="M0 0L9 9" stroke="#000"/></svg>';
+const file = pass("plain.svg", plain);
+addDrawings([file]);
+await tick();
+assert.equal(file.svg, plain);
+assert.equal(asked[0].body.svg, plain);
+assert.equal(asked.length, 1);
+assert.equal(passHeldByLines(file), false);
+assert.equal(layoutFiles()[0], file);
+assert.equal(linesNoteContent(file), null);
+coil = 5;
+noteCoilOrJoinChanged({ settled: true });
+await tick();
+assert.equal(asked.length, 1);
+assert.equal(file.svg, plain);
+"""
+    )
+
+
+# --- saved lines changed in another app --------------------------------------------
+
+# Inkscape 1.3.2 on a saved lines file, as it really wrote it: every mark kept, the
+# root and the kept file's tag laid out its own way.
+OUT_OF_INKSCAPE = """<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="110mm"
+   height="60mm"
+   viewBox="0 0 110 60"
+   fill="none"
+   stroke="#000"
+   stroke-width="5"
+   stroke-linecap="round"
+   data-clayline-converted="1"
+   data-clayline-target="100"
+   data-clayline-coil="5"
+   data-clayline-join="0.2"
+   data-clayline-size-basis="typed"
+   data-clayline-place="1 2 0.5 5 200 100"
+   data-clayline-lines-hash="123:abc"
+   version="1.1"
+   id="svg1"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs1" />
+  <metadata
+     id="clayline-original">&lt;svg xmlns=&quot;http://www.w3.org/2000/svg&quot;&gt;&lt;/svg&gt;
+</metadata>
+  <path
+     id="from-shape-0"
+     d="M 5 5 L 105 55" />
+</svg>
+"""
+
+
+def test_the_hash_covers_the_lines_and_the_page_and_leaves_other_files_alone() -> None:
+    _with_lines(
+        """
+const stamped = Lines.withLinesHash(CONVERTED);
+assert.notEqual(stamped, CONVERTED);
+assert.equal(Lines.withLinesHash(stamped), stamped);
+assert.equal(Lines.changedElsewhere(stamped), false);
+// What the page reads off it, and the kept file, are as they were.
+assert.deepEqual(Lines.marksOf(stamped), Lines.marksOf(CONVERTED));
+assert.equal(Lines.originalOf(stamped), Lines.originalOf(CONVERTED));
+// A line moved, or the page resized, with every mark left in place.
+assert.equal(Lines.changedElsewhere(stamped.replace("M 5 5 L 105 55", "M 5 5 L 105 50")), true);
+assert.equal(Lines.changedElsewhere(stamped.replace('width="110mm"', 'width="220mm"')), true);
+// Saved by Clayline's last release there is no hash, and nothing to go on.
+assert.equal(Lines.changedElsewhere(CONVERTED), false);
+assert.equal(Lines.changedElsewhere(CONVERTED.replace("M 5 5", "M 6 6")), false);
+// A file that isn't Clayline's lines is the identical string, and is never asked.
+for (const plain of ["<svg>plain</svg>", '<svg xmlns="x">\\r\\n<path/></svg>', ""]) {
+  assert.equal(Lines.withLinesHash(plain), plain);
+  assert.equal(Lines.changedElsewhere(plain), false);
+}
+assert.equal(Lines.changedElsewhere('<svg data-clayline-lines-hash="1:a"><path/></svg>'), false);
+"""
+    )
+
+
+def test_lines_changed_elsewhere_lose_the_kept_file_and_read_as_edited_by_hand() -> None:
+    _with_lines(
+        f"""
+const stamped = Lines.withLinesHash(CONVERTED);
+const changed = Lines.asHandEdited(stamped.replace("M 5 5", "M 6 6"));
+assert.equal(Lines.hasOriginal(changed), false);
+assert.ok(!changed.includes("<metadata"));
+assert.ok(!changed.includes("lines-hash"));
+assert.ok(changed.includes('d="M 6 6 L 105 55"'));
+assert.equal(Lines.isConverted(changed), true);
+assert.equal(Lines.originOf(changed), "edited");
+// A drawing with an origin keeps it.
+const drawn = '<svg data-clayline-converted="1" data-clayline-origin="drawn" data-clayline-lines-hash="1:a" xmlns="x"><path/></svg>';
+assert.equal(Lines.originOf(Lines.asHandEdited(drawn)), "drawn");
+// What Inkscape wrote is seen as changed, and its kept file goes too.
+const inkscape = {json.dumps(OUT_OF_INKSCAPE)};
+assert.equal(Lines.changedElsewhere(inkscape), true);
+const owned = Lines.asHandEdited(inkscape);
+assert.ok(!owned.includes("metadata"));
+assert.ok(!owned.includes("lines-hash"));
+assert.equal(Lines.originOf(owned), "edited");
+assert.ok(owned.includes('d="M 5 5 L 105 55"'));
+assert.ok(/^<\\?xml[^>]*>\\n<svg data-clayline-origin="edited"\\n   width="110mm"/.test(owned));
+"""
+    )
+
+
+def test_lines_that_land_are_stamped_and_come_back_unchanged() -> None:
+    _run_section(
+        """
+answers["/api/svg/examine"] = CONVERT;
+answers["/api/svg/make-lines"] = { ...LINES, svg: LINES.svg.replace(/ data-clayline-lines-hash="[^"]*"/, "") };
+const file = pass("cat.svg", "<svg>filled</svg>");
+addDrawings([file]);
+await tick();
+assert.equal(file.svg, CONVERTED);
+assert.equal(drawHistory.current().passes[0].svg, CONVERTED);
+const back = pass("cat-lines.svg", file.svg);
+addDrawings([back]);
+await tick();
+assert.equal(back.svg, CONVERTED);
+assert.equal(Lines.hasOriginal(back.svg), true);
+assert.deepEqual(linesRowActions(back).map((b) => b.textContent), ["Use original"]);
+"""
+    )
+
+
+def test_a_saved_file_changed_elsewhere_keeps_the_change_through_size_and_coil() -> None:
+    _run_section(
+        f"""
+answers["/api/svg/examine"] = CONVERT;
+answers["/api/svg/make-lines"] = LINES;
+const changed = CONVERTED.replace("M 5 5 L 105 55", "M 5 5 L 105 20").replace('data-clayline-size-basis="fit"', 'data-clayline-size-basis="typed"');
+const file = pass("cat-lines.svg", changed);
+const inkscaped = pass("ink.svg", {json.dumps(OUT_OF_INKSCAPE)});
+addDrawings([file, inkscaped]);
+await tick();
+for (const each of [file, inkscaped]) {{
+  assert.equal(Lines.hasOriginal(each.svg), false);
+  assert.equal(Lines.isConverted(each.svg), true);
+  assert.equal(Lines.originOf(each.svg), "edited");
+  // A size typed for the old lines doesn't come back onto these.
+  assert.equal(each.sizePinned, false);
+  assert.deepEqual(linesRowActions(each), []);
+  assert.equal(linesNoteContent(each), null);
+}}
+assert.ok(file.svg.includes("M 5 5 L 105 20"));
+const kept = file.svg;
+// The next size or coil change leaves them alone.
+coil = 8;
+noteCoilOrJoinChanged({{ settled: true }});
+setLinesSize(file, 240);
+await tick();
+assert.equal(asked.length, 0);
+assert.equal(file.svg, kept);
+assert.equal(file.makingLines, undefined);
+"""
+    )
+
+
+# --- words --------------------------------------------------------------------------
+
+
+def test_an_empty_coil_box_is_never_sent_and_slice_says_what_it_wants() -> None:
+    check = _block(APP, "async function runLayoutCheck", "function bedMapFrame")
+    assert (
+        'if (selectedBeadWidthMode() === "measured" && coilWidthIsSet()) '
+        'body.bead_width = numberValue("#beadWidth");' in check
+    )
+    settled = _block(APP, "function updateDependencies", "const DRAW_SETTINGS_SCHEMA")
+    assert "&& coilWidthIsSet()\n" in settled
+    assert ": !coilWidthIsSet()\n          ? COIL_WANTED_FOOTNOTE" in settled
+    assert "effectiveBeadWidth() > 0" not in settled
+    # The box's own smallest, so what it holds is a width or it isn't.
+    assert re.search(r'id="beadWidth"[^>]*\bmin="0\.1"', HTML)
+    assert "const SMALLEST_COIL_MM = 0.1;" in APP

@@ -2,6 +2,25 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.12.1 — 2026-11-05
+
+### Shapes and drawings that were turned away now print
+- Many plain cylinders were turned away at the final check because of a tiny
+  measuring slip at the very end of the line. They now slice and print. Shapes that
+  already worked come out exactly as they did.
+- Some busy drawings, such as floor plans, were turned away because a line came back
+  past clay it had just laid. Clayline now lifts those short stretches and checks
+  again. If it still can't pass, you see the same note as before.
+
+### Lines from a drawing
+- If the coil width box is empty when you add a drawing, the note under its pass asks
+  for a coil width. Type one and the lines start, with nothing else to press.
+- If you change saved lines in another program, your change stays. It's no longer lost
+  the next time you change the size or coil width. **Use original** isn't offered for
+  a file changed this way.
+- A shape with no line now says what to do, such as "To print this circle, give it a
+  line in your drawing program."
+
 ## 0.12.0 — 2026-11-04
 
 ### Drawings made of filled shapes now print
