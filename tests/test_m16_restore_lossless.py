@@ -601,7 +601,7 @@ def test_selected_range_public_diagnostics_use_source_one_based_layers() -> None
         "Vase mode needs one continuous ring per layer."
     )
     open_warning = next(warning for warning in selected.warnings if warning.ring is not None)
-    assert open_warning.message.startswith("Layer 31 ")
+    assert open_warning.message.startswith("Layer 31:")
     assert open_warning.ring.layer_index == 0
     stats = sliced_form_stats(selected)
     detail = next(row for row in stats["warning_details"] if row["layer_index"] == 0)

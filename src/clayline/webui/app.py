@@ -3244,6 +3244,34 @@ def _scale(value: Any) -> float | str:
     return scale
 
 
+# What the page calls each box, so a refusal names something the potter can see.
+_BOX_WORDS: dict[str, tuple[str, str]] = {
+    "bead_width": ("Coil width", " mm"),
+    "bed_offset": ("Work surface height", " mm"),
+    "coil_width_mm": ("Coil width", " mm"),
+    "first_layer_height": ("First layer height", " mm"),
+    "flatten_tol": ("Curve smoothness", " mm"),
+    "flow_modulation": ("Hand ripple flow", ""),
+    "flow_multiplier": ("Clay flow", ""),
+    "join": ("Side-by-side join", ""),
+    "joint_boost": ("Protect the thread", ""),
+    "layer_height": ("Layer height", " mm"),
+    "modulation_wavelength": ("Ripple length", " mm"),
+    "nozzle": ("Nozzle opening", " mm"),
+    "overlap_fraction": ("Side-by-side join", ""),
+    "page_gap": ("Gap between passes", " mm"),
+    "page_pause_seconds": ("Pause between passes", " seconds"),
+    "rotation_deg": ("Rotation", " degrees"),
+    "sample_spacing": ("Pattern smoothness", " mm"),
+    "standoff_z": ("Nozzle height above canvas", " mm"),
+    "start_charge_e": ("Start charge", ""),
+    "target_mm": ("Size", " mm"),
+    "weld_tol": ("Join ends that nearly touch", " mm"),
+    "z_modulation": ("Hand ripple height", " mm"),
+    "z_step_per_layer": ("Raise nozzle each pass", " mm"),
+}
+
+
 def _finite(
     payload: dict[str, Any],
     key: str,
@@ -3290,19 +3318,20 @@ def _mapping_finite(
     minimum: float | None = None,
     maximum: float | None = None,
 ) -> float:
+    name, unit = _BOX_WORDS.get(key, (key, ""))
     value = payload.get(key, default)
     if isinstance(value, bool):
-        raise UiRequestError(f"{key} must be numeric")
+        raise UiRequestError(f"{name} needs a number.")
     try:
         number = float(value)
     except (TypeError, ValueError) as exc:
-        raise UiRequestError(f"{key} must be numeric") from exc
+        raise UiRequestError(f"{name} needs a number.") from exc
     if not math.isfinite(number):
-        raise UiRequestError(f"{key} must be finite")
+        raise UiRequestError(f"{name} needs a number.")
     if minimum is not None and number < minimum:
-        raise UiRequestError(f"{key} must be at least {minimum:g}")
+        raise UiRequestError(f"{name} must be at least {minimum:g}{unit}.")
     if maximum is not None and number > maximum:
-        raise UiRequestError(f"{key} must be at most {maximum:g}")
+        raise UiRequestError(f"{name} must be at most {maximum:g}{unit}.")
     return number
 
 
