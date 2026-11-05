@@ -19,7 +19,7 @@ plain language; this README is the developer's view.
 won't slice or a print that went wrong belongs under [Issues](https://github.com/peterkatz/clayline/issues), with the
 drawing or model and the settings you used.
 
-This is release `0.10.0`; [CHANGELOG.md](CHANGELOG.md) lists what each release
+This is release `0.12.0`; [CHANGELOG.md](CHANGELOG.md) lists what each release
 changed. The software pipeline has substantial local verification, and full
 tiles and Weave forms have been printed and accepted on the PotterBot. It is not
 on PyPI.
@@ -505,8 +505,9 @@ the declared dependencies are already cached.
   petal-flower is **2 / 1**.
 - Current examples contain substantial, intentionally visible planner warnings.
   They are test and inspiration assets, not cleared production files.
-- SVG input is stroked centerline geometry. Filled-only artwork is reported and
-  dropped rather than silently treated as a printable outline.
+- In the app, an SVG with filled shapes, text or a placed picture gets lines made
+  from what it shows, previewed before slicing. The command line and `load_svg`
+  read stroked centerline geometry only, and report filled-only artwork as dropped.
 - There is no send-to-printer, non-planar draping, Windows app, or PyPI release.
 
 See the [examples gallery](examples/README.md), the

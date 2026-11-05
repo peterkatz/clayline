@@ -4275,11 +4275,18 @@ def _prepare_with_actual_first_z(
 
     prepared = prepare_emission(stream, profile, settings=settings)
     first_z = next(
-        event.point.z if isinstance(event, EmissionMotion) else _launch_z(event)
-        for event in prepared.events
-        if (isinstance(event, EmissionMotion) and event.extrude)
-        or isinstance(event, EmissionLaunch)
+        (
+            event.point.z if isinstance(event, EmissionMotion) else _launch_z(event)
+            for event in prepared.events
+            if (isinstance(event, EmissionMotion) and event.extrude)
+            or isinstance(event, EmissionLaunch)
+        ),
+        None,
     )
+    if first_z is None:
+        raise StackError(
+            "The lines in this drawing are too short to print. Make the drawing bigger."
+        )
     if settings.first_layer_z is not None and not math.isclose(
         settings.first_layer_z,
         first_z,

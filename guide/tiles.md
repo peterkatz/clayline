@@ -26,7 +26,7 @@ From a line drawing to a printed tile or open lacework. This is the mode Claylin
 
 Every line you give Clayline becomes the centre of a coil of clay. That one idea decides how to draw:
 
-- **Draw with lines, not filled shapes.** A filled circle is not a ring to Clayline; it is reported in the warnings and left out. Draw the ring as a line. To fill an area with coil, draw its outline and use **Fill** in Draw (below): Clayline lays the fill lines for you.
+- **Lines print as you drew them, and shapes become lines.** A filled shape, text or a traced logo gets lines made from what it shows when you add it, and you see them before anything prints. **Use original** on its pass puts your file back. To fill an area with coil, draw its outline and use **Fill** in Draw (below): Clayline lays the fill lines for you.
 - **Line weight doesn't matter.** A hairline and a fat stroke print the same coil. The coil width comes from the nozzle, not the drawing.
 - **Draw in millimetres, at real size.** The gallery tiles are 152.4 mm square. You can resize a design after loading it, but drawing at real size keeps you honest about what the nozzle can do.
 - **Touching shapes join.** Where two lines meet, or two closed rings touch, Clayline prints straight through the joint as one stroke. Draw joins as real overlaps or gaps under about 0.8 mm. A gap of exactly 1 mm sits right on the edge of the join tolerance and may go either way.
@@ -59,6 +59,8 @@ Nothing plans while you draw. Press **Done**, then **Slice job**.
 ### 01 Design
 
 Drop one or more SVG files on the box, or click it to choose them. Each file becomes one pass, in the order you add them. The line under the box tells you the file's size and that its placement lives in Passes.
+
+A file with filled shapes, text or a placed picture gets lines made from what it shows. The middle of the window shows them over a faded copy of your drawing before anything prints. If there is something to know, such as small gaps filling in, its row in Passes says so and offers the next step. **Use original** puts your file back, and your file on disk is never changed.
 
 **Browse the gallery** opens the example drawings that come with Clayline: 98 tiles sorted into folders by tradition, from Celtic knots and Japanese waves to Victorian ornament and a small zoo. They're the quickest way to see what the printer does with different kinds of line before you draw your own, and every one of them is yours to resize, repeat, and print. **File → Open from Gallery…** goes to the same place.
 
@@ -167,7 +169,7 @@ The **scrubber** under the preview walks through the print move by move. Press p
 
 | Warning | What it means |
 |---|---|
-| **A shape was skipped** | A filled shape with no line was left out. Redraw it as a line. |
+| **A shape was skipped** | This shape has no line of its own, so it was left out. |
 | **No physical size in the file** | The drawing declared no units, so one drawing unit was taken as one millimetre. Check the size in Passes. |
 | **Lines run too close together** | Two separate lines sit closer than about 60% of the coil width and will smear into one. Space them out or let them touch fully. |
 | **Curve too tight for the nozzle** | A bend sharper than the nozzle can follow cleanly. **Round this corner** in the drawing tools fixes it in one click. |

@@ -200,6 +200,18 @@
       entries[index] = next;
       return true;
     };
+    // The same, for a change that took a while to arrive: back from the step the
+    // potter is on, for as long as `update` recognizes each one. Null stops it.
+    const amendBack = (update) => {
+      let amended = false;
+      for (let at = index; at >= 0; at -= 1) {
+        const next = update(clone(entries[at]));
+        if (next === null || next === undefined) break;
+        entries[at] = clone(next);
+        amended = true;
+      }
+      return amended;
+    };
     // The distinct values one key takes along the whole history, oldest first.
     const distinct = (key) => {
       const seen = [];
@@ -223,7 +235,7 @@
     };
 
     return Object.freeze({
-      seed, push, undo, redo, current, state, amend, distinct, forgetOldestWhile,
+      seed, push, undo, redo, current, state, amend, amendBack, distinct, forgetOldestWhile,
     });
   }
 

@@ -279,6 +279,9 @@ class Design:
     # Draw area fills read from the root ``data-clayline-fill`` attribute.
     # Empty for every drawing without one, which leaves planning untouched.
     fill_seeds: tuple[FillSeed, ...] = ()
+    # No line came through, and what the file shows is solid colour: a traced
+    # drawing, say, which looks like lines on screen and gives nothing to follow.
+    only_filled_shapes: bool = False
 
 
 @dataclass(frozen=True, slots=True)

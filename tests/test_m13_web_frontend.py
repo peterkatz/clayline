@@ -878,7 +878,8 @@ def test_rib_spacing_and_rib_angle_gray_when_the_skins_leave_no_rib() -> None:
     assert result.index("S.settledNoRibs =") < result.index("applyCapabilities(payload);")
     facts = _function("renderSliceFacts", "function rereadParkedRange")
     assert "S.settledNoRibs = false;" in facts
-    assert WEAVE.count("S.settledNoRibs = false;") == 2
+    assert "S.settledNoRibs = false;" in _function("forgetModelPanels", "function removeWeaveModel")
+    assert WEAVE.count("S.settledNoRibs = false;") == 3  # a new slice, Reset, the model taken off
     assert "settledNoRibs: false," in WEAVE
 
     # The house mechanism, at both controls, with one sentence between them.
@@ -1391,7 +1392,9 @@ def test_the_interior_gray_out_works_in_both_orders_from_one_mechanism() -> None
     # that reads it — no second hint, no second gray-out path.
     assert "S.interiorHint = message.slice(INTERIOR_REFUSAL_PREFIX.length);" in refusal
     assert "syncControls();" in refusal
-    assert WEAVE.count("S.interiorHint = ") == 2
+    # The third goes with the model: no model, no verdict on it.
+    assert "S.interiorHint = null;" in _function("forgetModelPanels", "function removeWeaveModel")
+    assert WEAVE.count("S.interiorHint = ") == 3
 
     # Fed from the failing modulate itself, both qualities, and only once the
     # expired-session recovery has declined it.
@@ -1672,7 +1675,8 @@ def test_an_opened_print_file_keeps_its_rule_until_its_model_comes_or_the_job_ch
     assert open_project.index("S.restoreAwaitingMesh = false;") < open_project.index(
         "applyWeaveSettings(project.settings"
     )
-    assert WEAVE.count("S.restoreAwaitingMesh = false;") == 3  # model loaded, project, Reset
+    # model loaded, project, Reset, the model taken off
+    assert WEAVE.count("S.restoreAwaitingMesh = false;") == 4
 
     # The old "below" top lets go once the artist changes how the form is placed or
     # sliced; a restore never calls it, because a restore sets the rule it brings.

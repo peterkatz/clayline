@@ -398,6 +398,48 @@ select:focus-visible,
   font-size: 11px;
 }
 
+/* The model's name, and what can be done to the model itself beside it. */
+.model-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-name-row > .file-summary {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.model-name-row > .compact-button {
+  flex: none;
+  width: auto;
+}
+
+#weaveLayFlat[aria-pressed="true"] {
+  color: var(--paper);
+  background: var(--ink);
+}
+
+/* What the form stands on, and the way to set it down, beside its name. */
+.base-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.base-line > .field-hint {
+  flex: 1 1 0;
+  min-width: 0;
+  margin-top: 0;
+}
+
+.base-line > .compact-button {
+  flex: none;
+  width: auto;
+}
+
 /* A form made from a print file: what it is, and the model it can give way
    to. A long model name is cut short on the button; its tooltip says why. */
 .from-print-line {
@@ -846,6 +888,49 @@ input[type="range"] {
 .page-row-error {
   color: var(--danger);
 }
+.page-row-tag {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+/* The row's one sentence, on its own line under the fields. */
+.page-row-note {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 5px;
+}
+.page-row-note-text {
+  margin: 0;
+  color: var(--ink);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.page-row-note[role="alert"] .page-row-note-text {
+  color: var(--clay-dark);
+}
+.page-row-note-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.page-row-note-actions .page-edit-button {
+  min-height: 24px;
+  padding: 3px 8px;
+  border-color: var(--clay);
+  color: var(--clay-dark);
+}
+.page-edit-button:disabled,
+.page-thumb-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.drop-notes {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+}
 
 .slice-dock {
   position: relative;
@@ -1115,6 +1200,36 @@ input[type="range"] {
   to { transform: scaleY(0.62); opacity: 0.55; }
 }
 
+/* The lines over a faded copy of the drawing, in the empty middle of the window. */
+.lines-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 18px 16px;
+}
+.lines-preview-art {
+  flex: 1 1 0;
+  width: 100%;
+  min-height: 0;
+}
+.lines-preview-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+.lines-preview-caption {
+  flex: none;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
 .plan-view,
 .toolpath-view {
   position: absolute;
@@ -2851,6 +2966,23 @@ input[type="range"] {
 
 .weave-tool-readout {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Lay flat's one line, on the view it is about. Clicks go through to the form. */
+.surface-pick-hint {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  max-width: calc(100% - 24px);
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  color: var(--ink);
+  background: rgb(244 240 232 / 92%);
+  font-size: 12px;
+  transform: translateX(-50%);
+  pointer-events: none;
 }
 
 .viewport3d-canvas-wrap,

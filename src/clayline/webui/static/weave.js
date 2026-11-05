@@ -414,7 +414,12 @@
   }
 
   async function jsonResponse(response) {
-    const payload = await response.json().catch(() => ({}));
+    // A read stopped part way is a stopped request, never an empty answer: an
+    // empty answer would land as a slice with no id.
+    const payload = await response.json().catch((error) => {
+      if (error.name === "AbortError") throw error;
+      return {};
+    });
     if (!response.ok) {
       const error = new Error(errorMessage(payload, response));
       error.status = response.status;
@@ -428,6 +433,23 @@
   function abortStage(stage) {
     S.controllers[stage]?.abort();
     S.controllers[stage] = null;
+  }
+
+  // Stops the slice and the final path of a placement that has changed.
+  // Aborting does not stop an answer the engine has already sent; only a new
+  // sequence number does. Without it an old tilted slice lands on the new
+  // placement and reads Ready to print.
+  function dropSliceAndPath() {
+    abortStage("slice");
+    S.sequence.slice += 1;
+    dropFinalPath();
+  }
+
+  function dropFinalPath() {
+    abortStage("modulate");
+    S.sequence.modulate += 1;
+    // The final path's own clean-up no longer runs for it.
+    setRoughPreviewWorking(false);
   }
 
   function newStage(stage) {
@@ -449,6 +471,7 @@
 
   function activateMode(mode) {
     if (!['tiles', 'weave'].includes(mode)) return;
+    cancelLayFlat();
     S.activeMode = mode;
     $("#tilesWorkspace").hidden = mode !== "tiles";
     $("#weaveWorkspace").hidden = mode !== "weave";
@@ -1368,9 +1391,15 @@
   function switchWeaveModel(token) {
     const file = token ? weaveModelShelf?.get(token) : null;
     window.clearTimeout(S.timers.mesh);
-    abortStage("mesh");
-    abortStage("slice");
-    abortStage("modulate");
+    window.clearTimeout(S.timers.modulate);
+    window.clearTimeout(S.timers.settle);
+    // Aborting does not stop an answer the engine has already sent; only a new
+    // sequence number does. Without it a slice that finished just after the
+    // model left would land and put the model's rings back on the table.
+    Object.keys(S.sequence).forEach((stage) => {
+      abortStage(stage);
+      S.sequence[stage] += 1;
+    });
     S.modelToken = file ? token : null;
     S.file = file || null;
     S.mesh = null;
@@ -1383,6 +1412,7 @@
     $("#weaveInchesBanner").hidden = true;
     syncWeaveProjectControls();
     syncFormFromPrint();
+    renderBaseLine();
     if (file) return;
     S.lastTrace = null;
     S.lastMeshPreview = null;
@@ -1394,10 +1424,80 @@
     $("#weaveFileSummary").textContent = "No model loaded";
     $("#weaveModelFacts").textContent = "Mesh units and watertightness appear once the mesh loads.";
     $("#weaveModelSize").hidden = true;
+    forgetModelPanels();
     invalidateExact("Load a mesh to begin.");
     showWeaveState("empty");
     setStatus("Waiting for mesh");
     idle();
+  }
+
+  // Everything on the page that describes the model that left. A later step
+  // with a model puts its own back from its mesh and its slice.
+  function forgetModelPanels() {
+    S.sliceDirty = false;
+    S.scope = null;
+    S.unrolled = null;
+    S.imageFits = [];
+    S.islandEmergence = null;
+    S.rangeAutoIslandStop = false;
+    S.settledNoRibs = false;
+    S.crownFinish = null;
+    S.zBlendHint = null;
+    S.zBlendUnavailable = false;
+    S.bottomHint = null;
+    S.interiorHint = null;
+    S.pendingRange = null;
+    S.rangeTotal = null;
+    S.restoreAwaitingMesh = false;
+    S.restoreAwaitingModel = null;
+    S.weavesTakenOffSaid = "";
+    $("#weaveRangeEnabled").checked = false;
+    $("#weaveRangeEnabled").disabled = true;
+    setControlValue("#weaveRangeFrom", 1);
+    setControlValue("#weaveRangeTo", 1);
+    $("#weaveFitButton").disabled = true;
+    $("#weavePreviewTitle").textContent = "No mesh staged";
+    $("#weaveSliceFacts").replaceChildren(factSpan("Layers —"), factSpan("Rings —"), factSpan("Samples —"));
+    $("#weavePhysicalReadout").textContent = "Slice the form to see how many waves fit each ring.";
+    $("#weaveAmplitudeReadout").textContent = swingReadoutText(null);
+    $("#weaveRestoreStatus").textContent = restoreStatusDefault;
+    setWeaveProjectStatus("");
+    renderCombinedSwing(null);
+    renderZBlendReachReadout(null);
+    renderWarnings([], false);
+    renderImageFit();
+    renderPatternVisuals(null);
+    drawUnrolled(null);
+    syncFlowControls();
+    syncControls();
+    // The panel on the right goes back to its quiet line until the next slice.
+    setInspectorRevealed(false);
+    syncGcodeButton();
+    // The same file can be picked again: a file input fires no change for the
+    // file it already holds.
+    $("#weaveFileInput").value = "";
+  }
+
+  // Takes the model off the bed, as one step. Undo brings it back through the
+  // model shelf, placed as it was; the engine's own copy is left alone for that.
+  function removeWeaveModel() {
+    if (!S.file) return;
+    // Whatever was waiting to be recorded is its own step.
+    window.claylineHistoryControls?.commitField?.();
+    commitPendingWeaveEdit();
+    bumpFormGeneration();
+    weaveStateWriter?.suspend(() => {
+      switchWeaveModel(null);
+      // Rotation, nudge and stretch belong to the model that left: the next
+      // one must not arrive tilted by its angles. Written straight to the
+      // boxes, because their input events would ask for a placement of nothing.
+      ["#weaveOffsetX", "#weaveOffsetY", "#weaveRotate", "#weaveRotateX", "#weaveRotateY"]
+        .forEach((selector) => setControlValue(selector, 0));
+      ["#weaveScaleX", "#weaveScaleY", "#weaveScaleZ"]
+        .forEach((selector) => setControlValue(selector, 1));
+    });
+    commitWeaveStep();
+    window.claylineHistoryControls?.sync();
   }
 
   // How an Undo or Redo brings the slice back. A slice this session already
@@ -1458,8 +1558,11 @@
     S.landingWeave = weaveHistoryGestureActive
       ? S.selectedWeave
       : landingWeaveFor(weaveSettingsSnapshot().pattern_json, snapshot.pattern_json);
-    // Nothing still on its way for the step being left may land on this one.
-    abortStage("modulate");
+    // Nothing still on its way for the step being left may land on this one. A
+    // slice runs on: it holds for a step with the same slice numbers, and a landing
+    // with other numbers stops it. While the loading view shows, S.busy is still its.
+    dropFinalPath();
+    if ($("#weaveLoadingState").hidden) idle();
     window.clearTimeout(S.timers.modulate);
     window.clearTimeout(S.timers.settle);
     const modelChanged = (entry.model || null) !== (S.modelToken || null);
@@ -1539,17 +1642,20 @@
   // Quiet pre-slice inspector: the "Before you print" panel shows only a
   // placeholder line until the first slice/report exists, then reveals the
   // stat grid, print-variability guidance, warnings block, and Download button —
-  // and stays revealed for the rest of the session.
-  function revealInspector() {
-    if (S.inspectorRevealed) return;
-    S.inspectorRevealed = true;
+  // and stays revealed until the model is taken off the bed.
+  function setInspectorRevealed(revealed) {
+    S.inspectorRevealed = revealed;
     const quiet = $("#weaveInspectorQuiet");
-    if (quiet) quiet.hidden = true;
+    if (quiet) quiet.hidden = revealed;
     ["#weaveSafetyCallout", "#weaveReportSummary", "#weaveWarningSection", "#weaveExportActions"]
       .forEach((selector) => {
         const el = $(selector);
-        if (el) el.hidden = false;
+        if (el) el.hidden = !revealed;
       });
+  }
+
+  function revealInspector() {
+    if (!S.inspectorRevealed) setInspectorRevealed(true);
   }
 
   function setRoughPreviewWorking(working) {
@@ -1611,7 +1717,12 @@
     $("#weaveLoadingState").hidden = kind !== "loading";
     $("#weaveErrorState").hidden = kind !== "error";
     $("#weaveActiveState").hidden = kind !== "active";
-    if (kind !== "active") showRoughPreview(false);
+    if (kind !== "active") {
+      showRoughPreview(false);
+      cancelLayFlat();
+    }
+    syncLayFlatButton();
+    if (kind === "empty" || kind === "error") scheduleBaseLine();
     if (kind === "loading" && message) $("#weaveLoadingLabel").textContent = message;
     if (kind === "error") {
       $("#weaveErrorMessage").textContent = message;
@@ -1726,8 +1837,7 @@
     // Undo after a move sends the model once, not twice.
     window.clearTimeout(S.timers.mesh);
     S.timers.mesh = null;
-    abortStage("slice");
-    abortStage("modulate");
+    dropSliceAndPath();
     const { controller, sequence } = newStage("mesh");
     invalidateExact("Mesh placement changed — slice the form again.");
     S.mesh = null;
@@ -1735,6 +1845,7 @@
     S.result = null;
     S.sliceFromCache = false;
     forgetSliceReadouts();
+    renderBaseLine();
     busy("Reading mesh triangles…");
     // The step this placement belongs to, read now: the model may be moved
     // again before the engine answers.
@@ -1851,12 +1962,13 @@
     if (sequence !== S.sequence.slice) return false;
     $("#weaveFitButton").disabled = !plot;
     const patternPreview = await canonicalPatternRequest();
-    if (sequence !== S.sequence.slice) return false;
-    if (patternPreview.sliceCleared) {
+    // Asked first: finding this slice gone has already moved the sequence on.
+    if (patternPreview.sliceCleared && patternPreview.clearedSequence === sequence) {
       // The engine no longer holds this slice: make it again.
       if (fromCache && S.mesh) runSlice();
       return false;
     }
+    if (sequence !== S.sequence.slice) return false;
     S.scope = patternPreview.pattern;
     renderPatternVisuals(patternPreview.pattern);
     setStatus("Sliced · pattern ready");
@@ -1919,8 +2031,7 @@
   // An Undo or Redo back to a placement this session already loaded: the
   // engine's placed mesh comes back without sending the model again.
   async function landCachedMesh(payload) {
-    abortStage("slice");
-    abortStage("modulate");
+    dropSliceAndPath();
     window.clearTimeout(S.timers.mesh);
     S.timers.mesh = null;
     const { sequence } = newStage("mesh");
@@ -2118,8 +2229,7 @@
   }
 
   function invalidateSlice() {
-    abortStage("slice");
-    abortStage("modulate");
+    dropSliceAndPath();
     S.slice = null;
     // A stale settled trace must never keep coloring the view or the flow
     // legend after its inputs died (Pete: phantom extrusion striping) — nor
@@ -2133,7 +2243,13 @@
     S.sliceFromCache = false;
     forgetSliceReadouts();
     invalidateExact("Slice settings changed — choose Slice form to rebuild the rings.");
-    if (S.mesh) setStatus("Slice required");
+    if (S.mesh) {
+      // What was just stopped no longer ends itself, so its view and its greyed
+      // buttons end here. A model still being read has no S.mesh yet and keeps both.
+      if (!$("#weaveLoadingState").hidden) showWeaveState("active");
+      idle();
+      setStatus("Slice required");
+    }
     syncSettleButton();
     weaveStateWriter?.schedule();
   }
@@ -2192,7 +2308,10 @@
     const units = window.claylineUnits;
     $("#weaveSizeText").textContent =
       `${units.fmtBare(width, 0)} × ${units.fmtBare(depth, 0)} ×`;
-    setControlValue("#weaveHeightEdit", height);
+    // Rounded as the preview title rounds it, or a laid-flat form's 80.0000036
+    // clips in the box. Only the potter's own typing is read back from here, and
+    // S.lastDims keeps the full height.
+    $("#weaveHeightEdit").value = String(Number(units.fmtBare(height, 1)));
     $("#weaveHeightUnit").textContent = units.label();
   }
 
@@ -2713,6 +2832,7 @@
     S.lastMeshPreview = source
       ? { ...source, bounds: vertices.length ? computeVertexBounds(vertices) : null }
       : null;
+    scheduleBaseLine();
     const host = weaveToolpathHost();
     if (!window.THREE || !window.claylineViewport3d) {
       host.replaceChildren();
@@ -2774,6 +2894,16 @@
 
   function round1(value) {
     return Math.round(value * 10) / 10;
+  }
+
+  // A ring writes tenths of a degree, but a form laid flat holds thousandths.
+  // Tenths would tilt it again on a plain turn about Z: 0.22 mm across 190 mm.
+  function ringRounding() {
+    const fine = ["#weaveRotateX", "#weaveRotateY", "#weaveRotate"].some((selector) => {
+      const value = numberValue(selector, 0);
+      return Math.abs(value - round1(value)) > 1e-9;
+    });
+    return fine ? (value) => Math.round(value * 1000) / 1000 : round1;
   }
 
   function rotationMatrixX(deg) {
@@ -2895,9 +3025,10 @@
     const delta = axisRotationMatrix(axis, deltaDeg);
     const next = matMul3(delta, current);
     const euler = decomposeRotationZYX(next);
-    setControlValue("#weaveRotateX", round1(euler.rx));
-    setControlValue("#weaveRotateY", round1(euler.ry));
-    setControlValue("#weaveRotate", round1(euler.rz));
+    const round = ringRounding();
+    setControlValue("#weaveRotateX", round(euler.rx));
+    setControlValue("#weaveRotateY", round(euler.ry));
+    setControlValue("#weaveRotate", round(euler.rz));
     beginMetric();
     // Three dispatches share scheduleMesh's own debounce timer slot (each
     // clears the previous), so this is one re-prep round trip, not three.
@@ -2931,6 +3062,183 @@
       onRotateCommit: commitGizmoRotate,
       onScaleCommit: commitGizmoScale,
     });
+  }
+
+  // --- Lay flat and Flatten base (docs/plan-mesh-mode-fixes.md, section 3) --
+  // The geometry is in lay-flat.js. This writes the existing rotation fields, as
+  // a ring does, and the mesh those fields bring back is the proof of it. No
+  // project format changes: the fields already save.
+  const layFlat = {
+    picking: false,
+    vertices: null, // the display copy `mesh` was prepared from
+    mesh: null,
+    region: null, // the area last lit
+    verdict: null,
+    verdictCoil: null,
+    timer: null,
+  };
+
+  function layFlatMesh() {
+    const preview = S.lastMeshPreview;
+    const tools = window.ClaylineLayFlat;
+    if (!tools || !preview?.vertices?.length || !preview.faces?.length) {
+      layFlat.vertices = null;
+      layFlat.mesh = null;
+      layFlat.region = null;
+      layFlat.verdict = null;
+      return null;
+    }
+    if (layFlat.vertices !== preview.vertices) {
+      layFlat.vertices = preview.vertices;
+      layFlat.mesh = tools.prepareMesh(preview.vertices, preview.faces);
+      layFlat.region = null;
+      layFlat.verdict = null;
+    }
+    return layFlat.mesh;
+  }
+
+  function baseVerdict() {
+    const mesh = layFlatMesh();
+    if (!mesh) return null;
+    const coil = numberValue("#weaveBeadWidth") || selectedNozzle();
+    if (!layFlat.verdict || layFlat.verdictCoil !== coil) {
+      layFlat.verdict = window.ClaylineLayFlat.analyzeBase(mesh, { coilWidth: coil });
+      layFlat.verdictCoil = coil;
+    }
+    return layFlat.verdict;
+  }
+
+  function renderBaseLine() {
+    window.clearTimeout(layFlat.timer);
+    const line = $("#weaveBaseLine");
+    if (!line) return;
+    const report = S.mesh && !layFlat.picking
+      ? window.ClaylineLayFlat?.baseLine(baseVerdict(), (mm) => window.claylineUnits.fmt(mm, 1))
+      : null;
+    line.hidden = !report;
+    $("#weaveBaseText").textContent = report?.text || "";
+    $("#weaveFlattenBase").hidden = !report?.flatten;
+  }
+
+  // After the mesh has landed, never in its way: at 150k faces this is a tenth of
+  // a second.
+  function scheduleBaseLine() {
+    window.clearTimeout(layFlat.timer);
+    layFlat.timer = window.setTimeout(renderBaseLine, 0);
+  }
+
+  // The fields lead the mesh on screen by a debounce. The faces being picked from
+  // have to be the fields' own.
+  async function placedMeshSettled() {
+    if (S.timers.mesh !== null) await uploadMesh();
+    else if (meshUploadPromise) await meshUploadPromise;
+    return Boolean(S.mesh) && Boolean(layFlatMesh());
+  }
+
+  function layDown(normal) {
+    const tools = window.ClaylineLayFlat;
+    const stretch = ["#weaveScaleX", "#weaveScaleY", "#weaveScaleZ"].map(stretchValue);
+    const answer = tools.fieldsForFace({
+      normal,
+      stretch,
+      fields: {
+        rx: numberValue("#weaveRotateX", 0),
+        ry: numberValue("#weaveRotateY", 0),
+        rz: numberValue("#weaveRotate", 0),
+      },
+    });
+    if (!answer.turned) return false;
+    // A held height rescales the form to it. This one holds the scale instead.
+    const fit = numberValue("#weaveFitHeight");
+    let heldHeight = null;
+    if (fit !== null && fit > 0) {
+      const bounds = S.mesh?.bounds_mm || {};
+      heldHeight = tools.heldFitHeight(layFlat.mesh, {
+        turn: answer.turn,
+        stretch,
+        placedHeight: Number(bounds.max_z) - Number(bounds.min_z),
+      });
+      if (heldHeight === null) return false;
+    }
+    // Whatever was waiting to be recorded is its own step.
+    window.claylineHistoryControls?.commitField?.();
+    commitPendingWeaveEdit();
+    setControlValue("#weaveRotateX", answer.rx);
+    setControlValue("#weaveRotateY", answer.ry);
+    setControlValue("#weaveRotate", answer.rz);
+    if (heldHeight !== null) setControlValue("#weaveFitHeight", heldHeight);
+    beginMetric();
+    // Three dispatches share scheduleMesh's one timer: one round trip, one step.
+    $("#weaveRotateX").dispatchEvent(new Event("input", { bubbles: true }));
+    $("#weaveRotateY").dispatchEvent(new Event("input", { bubbles: true }));
+    $("#weaveRotate").dispatchEvent(new Event("input", { bubbles: true }));
+    commitWeaveStep();
+    window.claylineHistoryControls?.sync();
+    return true;
+  }
+
+  function surfaceRegionAtFace(face) {
+    if (layFlat.region?.flags[face]) return layFlat.region;
+    const region = window.ClaylineLayFlat.pickRegion(layFlat.mesh, face);
+    if (region) layFlat.region = region;
+    return region;
+  }
+
+  function surfacePickEnded() {
+    layFlat.picking = false;
+    $("#weaveLayFlat")?.setAttribute("aria-pressed", "false");
+    const hint = $("#weaveSurfacePickHint");
+    if (hint) hint.hidden = true;
+    renderBaseLine();
+  }
+
+  function cancelLayFlat() {
+    if (!layFlat.picking) return;
+    window.claylineViewport3d?.endSurfacePick();
+    surfacePickEnded();
+  }
+
+  function laySurfaceDown(region) {
+    surfacePickEnded();
+    // A placement typed while picking: the area chosen is not on the fields' form.
+    if (S.timers.mesh !== null || meshUploadPromise || !layFlatMesh()) return;
+    layDown(window.ClaylineLayFlat.facingOutward(layFlat.mesh, region.normal, region.point));
+  }
+
+  async function toggleLayFlat() {
+    if (layFlat.picking) {
+      cancelLayFlat();
+      return;
+    }
+    if (!(await placedMeshSettled()) || $("#weaveActiveState").hidden) return;
+    const began = window.claylineViewport3d?.beginSurfacePick({
+      regionAt: surfaceRegionAtFace,
+      onPick: laySurfaceDown,
+      onCancel: surfacePickEnded,
+    });
+    if (!began) return;
+    layFlat.picking = true;
+    $("#weaveLayFlat").setAttribute("aria-pressed", "true");
+    $("#weaveSurfacePickHint").hidden = false;
+    renderBaseLine();
+  }
+
+  async function flattenBase() {
+    if (!(await placedMeshSettled())) return;
+    const verdict = baseVerdict();
+    if (verdict?.state === "tilted") layDown(verdict.normal);
+    else renderBaseLine();
+  }
+
+  function syncLayFlatButton() {
+    const button = $("#weaveLayFlat");
+    if (!button) return;
+    button.hidden = !S.file;
+    // Slicing or loading, the view it picks from is not on screen.
+    button.disabled = $("#weaveActiveState").hidden;
+    // A slice on its way is for the placement it was asked for. After a refusal
+    // Flatten base stays a way out.
+    $("#weaveFlattenBase").disabled = !$("#weaveLoadingState").hidden;
   }
 
   // Renders either the sliced-toolpath trace (trace.moves) or the pre-slice
@@ -4620,6 +4928,8 @@
   }
 
   function syncControls() {
+    // A thicker coil needs a wider base to hold a ring; and the units may have changed.
+    scheduleBaseLine();
     if ($("#weaveExportCoils")) $("#weaveExportCoils").disabled = $("#weaveDownloadButton").disabled;
     if ($("#weaveExportSurface")) $("#weaveExportSurface").disabled = !S.mesh;
     const amplitude = numberValue("#weaveAmplitude", 0);
@@ -4858,6 +5168,7 @@
     let sliceChanged = false;
     if (S.beadWidthFollows && numberValue("#weaveBeadWidth") !== nozzle) {
       setControlValue("#weaveBeadWidth", nozzle);
+      scheduleBaseLine();
       sliceChanged = true;
     }
     if (S.layerHeightFollows) {
@@ -5465,6 +5776,7 @@
     } catch (error) {
       if (error.code !== "weave_slice_expired" || sliceId === null || withoutSlice) throw error;
       const recovered = await canonicalPatternRequest(source, extra, { withoutSlice: true });
+      recovered.clearedSequence = S.sequence.slice;
       invalidateSlice();
       recovered.sliceCleared = true;
       return recovered;
@@ -6605,6 +6917,9 @@
 
   function bindMeshControls() {
     $("#weaveFileInput").addEventListener("change", (event) => setDroppedFile(event.target.files?.[0]));
+    $("#weaveRemoveModel").addEventListener("click", removeWeaveModel);
+    $("#weaveLayFlat").addEventListener("click", toggleLayFlat);
+    $("#weaveFlattenBase").addEventListener("click", flattenBase);
     $("#weaveOpenProjectButton").addEventListener("click", () => window.claylineProjectFiles?.chooser());
     $("#weaveEmptyOpenProjectButton").addEventListener("click", () => window.claylineProjectFiles?.chooser());
     $("#weaveEmptyChooseModelButton").addEventListener("click", () => $("#weaveFileInput").click());
@@ -6718,6 +7033,7 @@
       followExtraWavelengths(derivedWavelength(numberValue("#weaveBeadWidth", selectedNozzle())));
       syncFollowChips();
       invalidateSlice();
+      scheduleBaseLine();
     });
     $("#weaveBeadWidthFollow").addEventListener("click", (event) => {
       event.preventDefault();
@@ -7087,6 +7403,9 @@
   }
 
   function syncWeaveProjectControls() {
+    const remove = $("#weaveRemoveModel");
+    if (remove) remove.hidden = !S.file;
+    syncLayFlatButton();
     const save = $("#weaveSaveProjectButton");
     if (!save) return;
     // A disabled button gets no tooltip in a browser, so the reason replaces
@@ -7846,6 +8165,10 @@
     });
   }
 
+  // image_relief.py's MAX_SOURCE_BYTES and its words for it.
+  const IMAGE_UPLOAD_MAX_BYTES = 17 * 1024 * 1024;
+  const IMAGE_TOO_LARGE = "Image artwork must be no larger than 17 MB";
+
   function bindImageControls() {
     $("#weaveAddImage").addEventListener("click", () => {
       if (S.images.length >= 3) return;
@@ -7859,7 +8182,13 @@
       syncImages(); refreshImagePreview(); imageChanged();
     });
     bindImageGallery();
-    $("#weaveImageUpload").addEventListener("click", () => $("#weaveImageFile").click());
+    // The packaged app's native picker filters by this one-shot marker, not by
+    // the input's accept list, which only a browser reads. Without it the panel
+    // was the Model box's, with every image greyed out (Pete, 2026-11-04).
+    $("#weaveImageUpload").addEventListener("click", () => {
+      document.body.dataset.claylineFileRequest = "image";
+      $("#weaveImageFile").click();
+    });
     $("#weaveImageFile").addEventListener("change", async (event) => {
       const file = event.target.files?.[0];
       const target = chosenImage();
@@ -7868,10 +8197,19 @@
       const sourceVersion = nextImageSourceVersion(target);
       const sourceIsCurrent = () => S.images.includes(target) && imageSourceVersions.get(target) === sourceVersion;
       const hint = $("#weaveImageSourceHint");
+      // Said before the file is read into memory: a model-sized file picked
+      // by mistake must not cost the laptop its memory to be turned down.
+      if (file.size > IMAGE_UPLOAD_MAX_BYTES) {
+        hint.textContent = IMAGE_TOO_LARGE;
+        return;
+      }
       hint.textContent = "Opening image…";
       try {
         const dataUrl = await new Promise((resolve, reject) => {
-          const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file);
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error("The file could not be read."));
+          reader.readAsDataURL(file);
         });
         if (!sourceIsCurrent()) return;
         const result = await jsonResponse(await fetch(API.imageUpload, {
@@ -7893,7 +8231,10 @@
         commitWeaveStep();
       } catch (error) {
         if (sourceIsCurrent() && chosenImage() === target) {
-          hint.textContent = `This image could not be opened. ${error.message}`;
+          // The engine's refusals are sentences a potter can act on already.
+          if (error.status === 413) hint.textContent = IMAGE_TOO_LARGE;
+          else if (error.status === 422) hint.textContent = error.message;
+          else hint.textContent = `This image could not be opened. ${error.message}`;
         }
       }
     });

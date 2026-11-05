@@ -2,6 +2,34 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.12.0 — 2026-11-04
+
+### Drawings made of filled shapes now print
+- Add a logo, some lettering or a drawing from Illustrator, and Clayline makes
+  lines from what it shows when the file arrives. They appear over a faded copy of
+  the drawing before anything prints, and real lines in the file are kept as drawn.
+- **Use original** puts the file back on its pass, and **Make lines again** makes
+  them afresh. Saving lines always asks where and makes a new file, so the file you
+  added is never written over. The original travels inside the saved lines.
+- The note under a pass says what it needs, such as a bigger size so small gaps stay
+  open. A photo offers **Trace over it**, which opens it in Draw.
+- Lines size themselves to fit the bed unless you type a size. A typed size stays,
+  including when saved lines are added again.
+- Drawings that already hold lines print exactly as they did.
+- A drawing too short to print now says so in words.
+
+### Mesh Mode
+- **Lay flat…** sets any surface of the model on the bed: rest the pointer on a
+  surface and click. Undo turns it back.
+- A line under the model's name says when its base is tilted and by how much, and
+  **Flatten base** sets the nearest flat base down.
+- **Remove** takes the model off the bed without restarting. Undo brings it back.
+- **Upload image…** now lets you choose pictures in the Mac app: PNG, JPEG, TIFF,
+  WebP, BMP, HEIC and Photoshop, up to 17 MB and 16 million pixels. A file over the
+  limit gets a plain sentence.
+- Changing a slice setting during a slice now ends that slice cleanly, so an old
+  result can't land under the new setting.
+
 ## 0.11.0 — 2026-11-02
 
 - Rename the mesh workspace **Mesh Mode**, keeping **Weave** as the waveform effect.

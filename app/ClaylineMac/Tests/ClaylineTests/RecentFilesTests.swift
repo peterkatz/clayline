@@ -285,7 +285,7 @@ final class RecentFilesTests: XCTestCase {
         // A photo is traced over, and Restore pattern takes only the pattern
         // out of a print file; the Open Project panel's file waits for the
         // page to say it opened.
-        for raw in ["tiles:reference-photo", "weave:gcode", "tiles:project", "weave:project"] {
+        for raw in ["tiles:reference-photo", "weave:image", "weave:gcode", "tiles:project", "weave:project"] {
             XCTAssertFalse(ClaylineOpenRequest(raw: raw).addsToOpenRecent, raw)
         }
     }
@@ -549,6 +549,20 @@ final class RecentFilesTests: XCTestCase {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { tick.fulfill() }
             wait(for: [tick], timeout: 5)
         }
+
+        // Chosen in Upload image: nothing goes on, however the page answers, not
+        // even a file the menu could open again.
+        let imagePanel = ClaylineOpenRequest(raw: "weave:image")
+        for name in ["relief.psd", "form.stl"] {
+            let chosen = folder.appendingPathComponent(name)
+            try Data("solid".utf8).write(to: chosen)
+            coordinator.rememberPanelChoice([chosen], for: imagePanel)
+            XCTAssertEqual(recents.urls, [])
+        }
+        _ = try evaluate(answer(true), in: webView)
+        waitForThePage()
+        XCTAssertEqual(recents.urls, [])
+        XCTAssertEqual(opened, [])
 
         // Chosen in Weave's Model box: nothing goes on until the page answers,
         // and a file the page turns down never does.

@@ -121,9 +121,8 @@ def test_a_plan_with_no_lines_is_left_as_it_is() -> None:
         transform_plan(plan, scale=0.0)
 
 
-# A pass with nothing to print: no shapes at all, only filled shapes that are
-# left out because they have no line to follow, and only an area fill's point
-# with no line round it.
+# A pass with nothing to print: no shapes at all, only filled shapes, and only
+# an area fill's point with no line round it.
 _NOTHING_TO_PRINT = {
     "empty.svg": (SVG / "empty.svg").read_text(encoding="utf-8"),
     "filled-only.svg": (SVG / "filled-only.svg").read_text(encoding="utf-8"),
@@ -131,6 +130,14 @@ _NOTHING_TO_PRINT = {
         '<svg xmlns="http://www.w3.org/2000/svg" width="80mm" height="80mm" '
         'viewBox="0 0 80 80" data-clayline-fill="concentric 40 40"/>'
     ),
+}
+_NO_LINES = "it has no lines to follow. Draw on it, or remove the pass."
+_NOTHING_TO_PRINT_REASON = {
+    "empty.svg": _NO_LINES,
+    "filled-only.svg": (
+        "this file holds only filled shapes. Press Make lines again, or remove the pass."
+    ),
+    "fill-point-only.svg": _NO_LINES,
 }
 _LINE = (
     '<svg xmlns="http://www.w3.org/2000/svg" width="50mm" height="20mm" viewBox="0 0 50 20">'
@@ -179,8 +186,7 @@ def test_a_turned_or_sized_pass_with_nothing_to_print_says_so_plainly(
     assert arranged.detail == plain.detail
     number = 2 if stacked else 1
     assert str(arranged) == (
-        f"Pass {number} has nothing to print: it has no lines to follow. "
-        "Draw on it, or remove the pass."
+        f"Pass {number} has nothing to print: {_NOTHING_TO_PRINT_REASON[name]}"
     )
     assert arranged.code == "pass_has_nothing_to_print"
     assert arranged.data == {"pass": number}

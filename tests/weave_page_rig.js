@@ -593,6 +593,7 @@ if (process.env.CLAYLINE_PAGE_CONTROLS === "1") {
 }
 vm.runInThisContext(fs.readFileSync(`${STATIC}/studio-state.js`, "utf8"), { filename: "studio-state.js" });
 vm.runInThisContext(fs.readFileSync(`${STATIC}/project-file.js`, "utf8"), { filename: "project-file.js" });
+vm.runInThisContext(fs.readFileSync(`${STATIC}/lay-flat.js`, "utf8"), { filename: "lay-flat.js" });
 // weave.js itself, with one line added at its end that hands the test its
 // internals. Nothing else in it changes.
 const marker = "\n  initialise();\n})();";

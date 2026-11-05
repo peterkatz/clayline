@@ -36,7 +36,7 @@ Words as Clayline uses them, in the order you're likely to meet them.
 
 **Print file, G-code.** The text file the printer reads: one line per move. Clayline writes it, you take it to the machine.
 
-**SVG.** The file type for line drawings from apps such as Illustrator, Inkscape, or Affinity Designer. Clayline reads the lines in it, not filled shapes.
+**SVG.** The file type for drawings from apps such as Illustrator, Inkscape, or Affinity Designer. Clayline prints the lines in it, and makes lines from its filled shapes and text.
 
 **Mesh, 3D model.** The file for a solid form: STL, OBJ, PLY, or 3MF. In Mesh Mode, Clayline cuts it into rings.
 

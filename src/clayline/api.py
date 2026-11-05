@@ -222,6 +222,7 @@ def _as_design_facade(design: Design) -> DesignFacade:
         design.scale,
         design.document_bounds,
         design.fill_seeds,
+        design.only_filled_shapes,
     )
 
 
