@@ -209,13 +209,13 @@ def test_same_session_undo_reuses_measurement_without_consuming_redo() -> None:
     layout = _block("async function runLayoutCheck", "function bedMapFrame")
     assert "hydratePassMeasurement(pendingPassFile" in apply_settings
     assert "state.sourceMeasurements.set" in layout
-    assert "completedPendingMeasurement && allPassMeasurementsReady()" in layout
+    assert "completedPendingMeasurement && measuring.every(passMeasurementReady)" in layout
     assert "saveDrawSettingsSnapshot(drawSettingsSnapshot())" in layout
     assert (
         "drawStateWriter?.schedule();"
-        not in layout.split("if (completedPendingMeasurement && allPassMeasurementsReady())", 1)[
-            1
-        ].split("}", 1)[0]
+        not in layout.split(
+            "if (completedPendingMeasurement && measuring.every(passMeasurementReady))", 1
+        )[1].split("}", 1)[0]
     )
 
 

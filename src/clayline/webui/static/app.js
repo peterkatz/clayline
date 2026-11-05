@@ -2,6 +2,7 @@
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+const Lines = window.ClaylineShapeLines;
 
 // Engine defaults come from GET /api/defaults. Draw adds two artist-facing
 // launch semantics on top: calibrated Z, and nozzle-derived starting values
@@ -29,6 +30,9 @@ const state = {
   profiles: new Map(),
   defaults: null,
   sourceMeasurements: new Map(),
+  // What the engine answered for each file it was shown, keyed on a hash of the
+  // drawing. Undo and Repeat find their words here without asking again.
+  linesAnswers: new Map(),
   // F5.6: the drape z-step follows coil height until the artist edits it.
   zStepFollows: true,
   // First pass height follows coil height the same way (Pete's conch-rings,
@@ -143,7 +147,7 @@ const WARNING_COPY = {
   },
   dropped_element: {
     title: "A shape was skipped",
-    hint: "Filled shapes without a stroked centerline aren't printable line-work, so this one was left out.",
+    hint: "This shape has no line of its own, so it was left out.",
   },
   out_of_bed: {
     title: "Outside the printable area",
@@ -334,7 +338,7 @@ function passMeasurementFailure() {
 
 function sourceMeasurementKey(file) {
   return JSON.stringify([
-    file.svg,
+    passHash(file),
     numberValue("#flattenTol"),
     numberValue("#nozzle"),
     selectedBeadWidthMode(),
@@ -488,6 +492,9 @@ function structuredErrorFrom(payload, response) {
         : `Slice failed with HTTP ${response.status}.`,
       code: typeof detail.code === "string" ? detail.code : "",
       data: detail.data && typeof detail.data === "object" ? detail.data : {},
+      technical: typeof detail.data?.technical?.message === "string"
+        ? detail.data.technical.message
+        : "",
     };
   }
   return {
@@ -506,6 +513,14 @@ function errorSuggestionsFor(code) {
 
 function showSliceError(error) {
   $("#errorMessage").textContent = error.message;
+  // What the check itself said rides along in small print, never as the headline.
+  const technical = $("#errorTechnical");
+  const detail = String(error.technical || "");
+  // The finding comes last, after a long list of counts.
+  const finding = detail.indexOf("[ERROR");
+  const small = finding >= 0 ? detail.slice(finding) : detail;
+  technical.textContent = small.length > 400 ? `${small.slice(0, 400)}…` : small;
+  technical.hidden = !detail;
   const actions = $("#errorActions");
   actions.replaceChildren();
   const suggestions = errorSuggestionsFor(error.code);
@@ -679,6 +694,13 @@ function updateDesignSizeHint() {
     return;
   }
   const first = state.files[0];
+  // While a new file is sorted its own size is the answer, as it is for plain lines.
+  const sorting = first.makingLines?.phase === "sorting";
+  if (Lines.isConverted(first.svg) || (passHeldByLines(first) && !sorting)) {
+    const others = state.files.length > 1 ? ` · first of ${state.files.length} designs` : "";
+    hint.textContent = `${first.name}: planned Size and placement are measured in Passes${others}`;
+    return;
+  }
   if (first.declaredSize === undefined) first.declaredSize = declaredDesignSize(first.svg);
   const size = first.declaredSize;
   const suffix = state.files.length > 1 ? ` · first of ${state.files.length} designs` : "";
@@ -781,6 +803,7 @@ function setFiles(files) {
       file.thumbUrl = null;
     }
   });
+  carryLinesJobs(files);
   state.files = files.map(normalizePassFile);
   const followed = selected ? files.indexOf(selected) : -1;
   // A lone design is auto-selected so the bed-map move/rotate/scale handles
@@ -792,13 +815,1042 @@ function setFiles(files) {
   invalidateResult(
     files.length
       ? "Design order changed. Slice to build and audit the exact export trace."
-      : "Load centerline SVGs, tune the job, then Slice.",
+      : "Add a drawing, tune the job, then Slice.",
   );
   updateDependencies();
   scheduleLayoutCheck();
   // File-list actions are discrete, so they become undoable immediately even
   // while their authoritative Size measurement is still pending.
   drawStateWriter?.flush();
+}
+
+/* ---------- lines from a drawing ---------------------------------------------
+ *
+ * A file with anything other than plain lines gets lines made from what it
+ * shows, when it arrives: the engine sorts it (/api/svg/examine), this page
+ * paints the copy it hands back, and the engine makes lines from the picture
+ * (/api/svg/make-lines).  The pass then simply holds those lines as its drawing.
+ * Slice, Draw and project files need no new format.
+ *
+ * Only readFiles and desktopImport start this.  Draw's blank pass, a project
+ * opening, undo, redo and Repeat also reach setFiles, and they never convert.
+ *
+ * What the pass is made of lives on the drawing's own root (Lines.marksOf), so
+ * it survives undo and reopen.  file.makingLines, file.linesFailed and
+ * file.linesProblem are transient, and they stay off the pass's snapshot.
+ */
+
+const LINES_MAKING = "Making lines from your drawing…";
+const LINES_STILL_MAKING = "Still working — big drawings take longer.";
+const LINES_COULD_NOT = "Clayline couldn't make lines from this drawing.";
+const LINES_SIZE_TOO_BIG = "That size is too big for this drawing. Type a smaller size.";
+const LINES_MADE_TIP = "Clayline drew these lines from what your file shows.";
+const SIZE_TIP = "The longest side of this pass. It follows the drawing until you type a size.";
+const LINES_SLOW_AFTER_MS = 8000;
+const LINES_TYPING_PAUSE_MS = 400;
+const LINES_REQUEST_LIMIT_MS = 120000;
+const LINES_SMALLEST_SIZE_MM = 1;
+const LINES_LARGEST_SIZE_MM = 10000;
+const LINES_NO_LINES = new Set([
+  "photo", "nothing", "linked_picture", "too_large", "too_small", "unreadable",
+]);
+// A different size or coil could change these answers. The others stand.
+const LINES_SIZE_MATTERS = new Set(["nothing", "too_small", "size_too_big"]);
+// Sentences that come with a plain go-ahead in the footnote.
+const LINES_SAYING_KINDS = new Set(["colour_edges", "white_art", "specks", "photo_left_out"]);
+const LINES_TIPS = Object.freeze({
+  fine_detail: "A coil that is wide for the drawing closes its small gaps. A bigger size or a narrower coil keeps them open.",
+  too_short: "A line has to be long enough for the printer to get going and stop again.",
+  colour_edges: "Your drawing has no outlines, so each line runs where two colours meet.",
+  white_art: "Your drawing is white on a clear page, so the white shapes are what prints.",
+  specks: "Marks smaller than your coil can't be printed. A bigger size or a narrower coil may bring them back.",
+  photo_left_out: "A photo has no lines to follow. The lines in your file print as you drew them.",
+  photo: "Trace over it opens Draw with this picture under your lines. The picture never prints.",
+  linked_picture: "The picture is kept in another file, where Clayline can't see it.",
+  nothing: "Nothing in this file shows on the page.",
+  unreadable: "Nothing in this file shows on the page.",
+  too_large: "Clayline takes files up to 8 MB.",
+  too_many_repeats: "It repeats its shapes so many times that it may never finish showing.",
+  size_too_big: "This drawing doesn't hold enough detail to be made that big.",
+  failed: "Try again makes the lines once more. Use original puts your file back.",
+});
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function passHash(file) {
+  if (file.hashedSvg !== file.svg) {
+    file.hashedSvg = file.svg;
+    file.svgHash = Lines.hashOf(file.svg);
+  }
+  return file.svgHash;
+}
+
+function passLinesAnswer(file) {
+  const hash = passHash(file);
+  if (!state.linesAnswers.has(hash)) {
+    const kept = Lines.answerOf(file.svg);
+    if (kept) state.linesAnswers.set(hash, kept);
+  }
+  return state.linesAnswers.get(hash);
+}
+
+// `asked` is set only for an answer that depends on the size and coil it was asked at.
+function rememberLinesAnswer(svg, answer, asked = null) {
+  const nothing = answer.verdict === "leave" && answer.nothing_to_draw;
+  const remembered = {
+    // A pass given lines holds them, so what's left to know about its file is that
+    // it can be made into lines again.
+    verdict: nothing ? "nothing" : answer.verdict === "lines" ? "convert" : answer.verdict,
+    reason: answer.reason || "",
+    sentence: answer.sentence || "",
+    kind: answer.sentence_kind || "",
+    next: answer.next || "",
+    suggested_mm: Number.isFinite(answer.suggested_mm) ? answer.suggested_mm : null,
+    target_mm: Number.isFinite(answer.target_mm) ? answer.target_mm : null,
+    asked: LINES_SIZE_MATTERS.has(nothing ? "nothing" : answer.verdict) ? asked : null,
+  };
+  state.linesAnswers.set(Lines.hashOf(svg), remembered);
+  return remembered;
+}
+
+function linesProblemOf(file) {
+  if (file.linesProblem) return file.linesProblem;
+  if (Lines.isConverted(file.svg)) return null;
+  const known = passLinesAnswer(file);
+  return known && LINES_NO_LINES.has(known.verdict) ? known : null;
+}
+
+function passHeldByLines(file) {
+  return Boolean(file.makingLines || file.linesFailed || linesProblemOf(file));
+}
+
+// The passes the bed-fit check can measure. Each of these answers by its place in
+// this list, so a pass held back can sit anywhere in the stack.
+function layoutFiles() {
+  return state.files.filter((file) => !passHeldByLines(file));
+}
+
+function anyPassMakingLines() {
+  return state.files.some((file) => file.makingLines);
+}
+
+function passMayPaint(file) {
+  if (file.makingLines?.phase === "sorting") return false;
+  if (Lines.isConverted(file.svg) || Lines.originOf(file.svg)) return true;
+  const known = passLinesAnswer(file);
+  return Boolean(known) && known.reason !== "too_many_repeats";
+}
+
+function passOpensInDraw(file) {
+  return !passHeldByLines(file);
+}
+
+function passSizeStaysOpen(file) {
+  if (file.makingLines) return false;
+  const problem = linesProblemOf(file);
+  if (problem) return Boolean(problem.asked);
+  return Boolean(file.linesFailed && Lines.hasOriginal(file.svg));
+}
+
+function passScaledToFit(file) {
+  if (file.sizePinned || !Lines.hasOriginal(file.svg)) return false;
+  return Lines.marksOf(file.svg)?.basis === "fit" && !passOverBed(file);
+}
+
+// Measured, and bigger than the bed now, as after a switch to a smaller printer.
+function passOverBed(file) {
+  const bed = linesBed();
+  if (!bed || !passMeasurementReady(file)) return false;
+  const scale = passScaleFactor(file);
+  return file.sourceWmm * scale > bed[0] + 0.01 || file.sourceHmm * scale > bed[1] + 0.01;
+}
+
+// Lines the bed-fit suggestion has something to offer, typed size or not.
+function passWantsFitSize(file) {
+  return Lines.hasOriginal(file.svg) && passOverBed(file) && passFitSize(file) !== null;
+}
+
+function typedLinesSize(file) {
+  return file.sizePinned && Number.isFinite(file.sizeMm) && file.sizeMm > 0 ? file.sizeMm : null;
+}
+
+function linesSizeRefusal(file, sizeMm) {
+  if (!Lines.hasOriginal(file.svg) && !linesProblemOf(file)?.asked && !file.linesFailed) return null;
+  if (sizeMm > LINES_LARGEST_SIZE_MM) return LINES_SIZE_TOO_BIG;
+  if (sizeMm < LINES_SMALLEST_SIZE_MM) {
+    return `Type a size of at least ${window.claylineUnits.fmt(LINES_SMALLEST_SIZE_MM, 0)}.`;
+  }
+  return null;
+}
+
+function linesDiffer(left, right) {
+  return !Number.isFinite(left) || !Number.isFinite(right) || Math.abs(left - right) > 0.0011;
+}
+
+// A box left empty hasn't moved anywhere yet. Slice is off on its own account until
+// it holds a number, and nothing can be made for a coil of no width.
+function linesCoilAndJoinAreSet() {
+  return effectiveBeadWidth() > 0 && Number.isFinite(overlapFraction());
+}
+
+function linesCoilOrJoinMoved(coil, join) {
+  if (!linesCoilAndJoinAreSet()) return false;
+  return linesDiffer(coil, effectiveBeadWidth()) || linesDiffer(join, overlapFraction());
+}
+
+// The lines on this pass were made for another size, coil or join.
+function linesOutOfDate(file) {
+  if (!Lines.hasOriginal(file.svg)) return false;
+  const marks = Lines.marksOf(file.svg);
+  if (linesCoilOrJoinMoved(marks.coil, marks.join)) return true;
+  const typed = typedLinesSize(file);
+  return typed !== null && linesDiffer(marks.target, typed);
+}
+
+function linesAskedOutOfDate(asked, file) {
+  if (linesCoilOrJoinMoved(asked.coil, asked.join)) return true;
+  const typed = typedLinesSize(file);
+  return typed === null ? asked.target !== null : asked.target === null || linesDiffer(asked.target, typed);
+}
+
+function linesBed() {
+  const bounds = state.profiles.get($("#profile").value)?.work_bounds;
+  if (!bounds) return null;
+  const width = bounds.max_x - bounds.min_x;
+  const height = bounds.max_y - bounds.min_y;
+  const usable = (side) => Number.isFinite(side) && side > 0 && side <= LINES_LARGEST_SIZE_MM;
+  return usable(width) && usable(height) ? [width, height] : null;
+}
+
+// The engine's own rule for the largest that fits with a margin.
+function passFitSize(file) {
+  const bed = linesBed();
+  const { sourceWmm: width, sourceHmm: height, sourceLongestMm: longest } = file;
+  if (!bed || !(width > 0) || !(height > 0) || !(longest > 0)) return null;
+  const room = Math.min((bed[0] - 20) / width, (bed[1] - 20) / height);
+  const fit = Math.floor((room * longest) / 5) * 5;
+  return fit >= LINES_SMALLEST_SIZE_MM ? Math.min(fit, LINES_LARGEST_SIZE_MM) : null;
+}
+
+// One place that swaps a pass's drawing, because nothing else clears what was
+// worked out from the old one.
+function replacePassSvg(file, svg) {
+  if (file.thumbUrl) {
+    URL.revokeObjectURL(file.thumbUrl);
+    file.thumbUrl = null;
+  }
+  file.svg = svg;
+  file.declaredSize = undefined;
+  invalidatePassMeasurement(file);
+  state.layout = null;
+}
+
+function linesSourceOf(file) {
+  if (Lines.hasOriginal(file.svg)) return Lines.originalOf(file.svg);
+  return Lines.isConverted(file.svg) ? null : Lines.withoutAnswer(file.svg);
+}
+
+/* --- the queue: one at a time, so nothing waits inside the engine's lock --- */
+
+const linesQueue = Lines.createQueue({
+  work: runLinesJob,
+  land: landLines,
+  idle: () => scheduleLayoutCheck(),
+});
+
+function newLinesJob(file, kind) {
+  const source = linesSourceOf(file);
+  const job = {
+    file,
+    kind,
+    source,
+    held: file.svg,
+    targetMm: typedLinesSize(file),
+    coil: effectiveBeadWidth(),
+    join: overlapFraction(),
+    bed: linesBed(),
+    dropped: false,
+  };
+  job.key = JSON.stringify([
+    kind === "sort" ? "sort" : "lines",
+    Lines.hashOf(source),
+    job.targetMm,
+    job.coil,
+    job.join,
+    job.bed,
+  ]);
+  return job;
+}
+
+function stopMaking(file) {
+  const making = file.makingLines;
+  if (!making) return;
+  window.clearTimeout(making.slowTimer);
+  if (making.job) making.job.dropped = true;
+  file.makingLines = null;
+}
+
+function enterMakingPhase(file) {
+  const making = file.makingLines;
+  making.phase = "making";
+  window.clearTimeout(making.slowTimer);
+  making.slowTimer = window.setTimeout(() => {
+    making.slow = true;
+    const row = $(`#pageList .page-row[data-index="${state.files.indexOf(file)}"] .page-row-note-text`);
+    if (row) row.textContent = LINES_STILL_MAKING;
+  }, LINES_SLOW_AFTER_MS);
+}
+
+function readyLinesJob(file, kind) {
+  stopMaking(file);
+  file.linesFailed = false;
+  file.linesProblem = null;
+  const job = newLinesJob(file, kind);
+  file.makingLines = { job, phase: "sorting", slow: false, slowTimer: 0 };
+  // Only a new file might turn out to be plain lines. Everything else is known to
+  // make lines, so it says so straight away.
+  if (kind !== "load") enterMakingPhase(file);
+  return job;
+}
+
+function startLinesJob(file, kind, sort = null) {
+  const job = readyLinesJob(file, kind);
+  if (sort) job.sort = sort;
+  invalidatePassMeasurement(file);
+  state.layout = null;
+  state.layoutToken += 1;
+  window.clearTimeout(state.layoutTimer);
+  linesQueue.add(job);
+  return job;
+}
+
+// A new pass waits in line from the moment its row appears. Clayline's own saved
+// lines or traced page aren't new: they are a drawing the potter owns, and come back
+// as they were saved. Their mark stays, so a later save stays off this file too.
+function addDrawings(loaded) {
+  const jobs = [];
+  loaded.forEach((file) => {
+    normalizePassFile(file);
+    if (!Lines.isConverted(file.svg)) {
+      jobs.push(readyLinesJob(file, "load"));
+      return;
+    }
+    // A size the potter typed still wins when the saved lines come back.
+    const marks = Lines.marksOf(file.svg);
+    if (Lines.hasOriginal(file.svg) && marks.basis === "typed" && marks.target > 0) {
+      file.sizeMm = marks.target;
+      file.sizePinned = true;
+    }
+  });
+  setFiles([...state.files, ...loaded]);
+  jobs.forEach((job) => linesQueue.add(job));
+}
+
+// An undo or a project rebuilds its pass objects. A job follows its pass into the
+// rebuild when that hands back the same drawing at the same size, and otherwise
+// its answer has nowhere left to land.
+function carryLinesJobs(files) {
+  linesQueue.jobs().forEach((job) => {
+    if (job.dropped || job.kind === "sort" || files.includes(job.file)) return;
+    const heir = files.find((candidate) => (
+      !candidate.makingLines
+      && candidate.name === job.file.name
+      && candidate.svg === job.held
+      && typedLinesSize(candidate) === job.targetMm
+    ));
+    if (!heir) {
+      stopMaking(job.file);
+      job.dropped = true;
+      return;
+    }
+    heir.makingLines = job.file.makingLines;
+    job.file.makingLines = null;
+    job.file = heir;
+  });
+}
+
+async function linesRequest(path, body) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), LINES_REQUEST_LIMIT_MS);
+  try {
+    const response = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const refused = new Error("this drawing was refused");
+      refused.detail = typeof payload.detail === "string" ? payload.detail : "";
+      throw refused;
+    }
+    return payload;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function runLinesJob(job) {
+  const sort = job.sort || await linesRequest("/api/svg/examine", { svg: job.source });
+  rememberLinesAnswer(job.source, sort);
+  // Sorting asks about no size, so what it finds doesn't change with one.
+  if (job.kind === "sort" || sort.verdict !== "convert" || job.dropped) return { ...sort, sorted: true };
+  // A new file goes to the back of the line once it is known to want lines, so
+  // every waiting row is sorted first and each can say what it is waiting for.
+  if (!job.sort && job.kind === "load") return { requeue: sort };
+  const picture = await Lines.paintToBlob(sort.paint_svg, sort.canvas);
+  const png = await Lines.blobToBase64(picture);
+  const body = { svg: job.source, png, coil_width_mm: job.coil, join: job.join };
+  if (job.bed) body.bed_mm = job.bed;
+  if (job.targetMm !== null) body.target_mm = job.targetMm;
+  return linesRequest("/api/svg/make-lines", body);
+}
+
+// The step this change belongs to, and any recorded while the lines were on their
+// way, so that loading plus its conversion is one undo step, and so is a size plus
+// its lines.
+function amendLinesIntoHistory(file, held, job) {
+  const position = state.files.indexOf(file);
+  // Another pass can hold the same file in its own right, and its copies aren't this
+  // one's to change, so a step counts only if it holds more than they do.
+  const others = state.files.filter((each) => each !== file && each.svg === held).length;
+  drawHistory?.amendBack((entry) => {
+    if (!Array.isArray(entry?.passes)) return null;
+    if (entry.passes.filter((pass) => pass.svg === held).length <= others) return null;
+    const at = entry.passes[position]?.svg === held
+      ? position
+      : entry.passes.findIndex((pass) => pass.svg === held);
+    if (linesDiffer(entry.job.bead_width_mm, job.coil)) return null;
+    if (linesDiffer(entry.job.overlap_fraction, job.join)) return null;
+    const pass = entry.passes[at];
+    if (job.targetMm !== null && (!pass.size_pinned || linesDiffer(pass.size_mm, job.targetMm))) {
+      return null;
+    }
+    const passes = [...entry.passes];
+    passes[at] = { ...pass, svg: file.svg };
+    return { ...entry, passes };
+  });
+}
+
+function refreshAfterLines() {
+  renderPages();
+  updateDependencies();
+  scheduleLayoutCheck();
+}
+
+// Passes starts closed, and the row is where all of this is said. Scrolling to it
+// opens the panel that holds it.
+function showPassRow(file) {
+  const index = state.files.indexOf(file);
+  $(`#pageList .page-row[data-index="${index}"]`)?.scrollIntoView({ block: "nearest" });
+}
+
+// Sorting comes back to any pass that asks, but only making lines can say this one
+// has none. Written on the pass, it survives a reopen with nothing asked again, and
+// like its lines it belongs to the step that started it.
+function keepNoLinesAnswer(file, answer, job) {
+  const held = file.svg;
+  replacePassSvg(file, Lines.withAnswer(held, answer));
+  if (job.kind !== "again") amendLinesIntoHistory(file, held, job);
+  drawStateWriter?.flush();
+}
+
+function landLines(job, { answer, error }) {
+  const file = job.file;
+  if (job.kind === "sort") {
+    if (error) state.linesAnswers.set(Lines.hashOf(job.source), { verdict: "unknown" });
+    if (state.files.includes(file)) refreshAfterLines();
+    return;
+  }
+  if (file.makingLines?.job !== job) return;
+  if (answer?.requeue) {
+    job.sort = answer.requeue;
+    if (file.makingLines.phase === "sorting") enterMakingPhase(file);
+    renderPages();
+    updateDependencies();
+    showPassRow(file);
+    linesQueue.add(job);
+    return;
+  }
+  const stale = linesCoilOrJoinMoved(job.coil, job.join);
+  window.clearTimeout(file.makingLines.slowTimer);
+  file.makingLines = null;
+  // A late answer for a pass that has gone, or that has become something else.
+  if (!state.files.includes(file) || file.svg !== job.held) {
+    refreshAfterLines();
+    return;
+  }
+  if (stale) {
+    // Undo put back another coil while these were being made. Lines already there
+    // match it. A file with none still has its answer to come.
+    if (!Lines.isConverted(file.svg)) startLinesJob(file, job.kind);
+    refreshAfterLines();
+    return;
+  }
+  const asked = { coil: job.coil, join: job.join, target: job.targetMm };
+  if (error || !answer) {
+    if (error?.detail === LINES_SIZE_TOO_BIG) {
+      file.linesProblem = {
+        verdict: "size_too_big", sentence: LINES_SIZE_TOO_BIG, next: "", asked,
+      };
+    } else {
+      file.linesFailed = job.kind;
+    }
+    refreshAfterLines();
+    showPassRow(file);
+    return;
+  }
+  const remembered = rememberLinesAnswer(job.source, answer, answer.sorted ? null : asked);
+  if (answer.sorted && answer.verdict === "convert") {
+    // Sorted but not yet made: the lines are still owed, and only "leave" gives the
+    // pass back its file.
+    startLinesJob(file, job.kind, answer);
+    refreshAfterLines();
+    return;
+  }
+  if (answer.verdict === "lines") {
+    const held = file.svg;
+    replacePassSvg(file, answer.svg);
+    if (job.kind !== "again") amendLinesIntoHistory(file, held, job);
+    markDirty("Your lines are ready. Press Slice to build the print.");
+    renderPages();
+    drawStateWriter?.flush();
+    showPassRow(file);
+    return;
+  }
+  if (LINES_NO_LINES.has(remembered.verdict)) {
+    // A pass that still holds lines needs telling apart from its file's own answer.
+    file.linesProblem = Lines.isConverted(file.svg) ? remembered : null;
+    if (!file.linesProblem && !answer.sorted) keepNoLinesAnswer(file, remembered, job);
+    refreshAfterLines();
+    showPassRow(file);
+    return;
+  }
+  if (file.svg !== job.source) replacePassSvg(file, job.source);
+  refreshAfterLines();
+}
+
+/* --- what starts it again --- */
+
+function remakeLinesIfStale(file) {
+  const problem = linesProblemOf(file);
+  const stale = file.linesFailed
+    || (problem ? Boolean(problem.asked) && linesAskedOutOfDate(problem.asked, file) : linesOutOfDate(file));
+  if (stale && !file.makingLines) startLinesJob(file, "remake");
+  else if (stale) {
+    const { job } = file.makingLines;
+    if (!job || job.targetMm !== typedLinesSize(file)) startLinesJob(file, job?.kind || "remake");
+  }
+}
+
+function linesWantOtherCoil(file) {
+  const job = file.makingLines?.job;
+  if (job) return linesCoilOrJoinMoved(job.coil, job.join);
+  const problem = linesProblemOf(file);
+  if (problem) return Boolean(problem.asked) && linesCoilOrJoinMoved(problem.asked.coil, problem.asked.join);
+  if (!Lines.hasOriginal(file.svg)) return false;
+  const marks = Lines.marksOf(file.svg);
+  return linesCoilOrJoinMoved(marks.coil, marks.join);
+}
+
+let linesCoilTimer = 0;
+
+function startCoilRemakes() {
+  state.files.forEach((file) => {
+    const waiting = file.makingLines && !file.makingLines.job;
+    if (waiting) stopMaking(file);
+    const kind = file.makingLines?.job?.kind || "remake";
+    if (linesWantOtherCoil(file)) startLinesJob(file, kind);
+  });
+  refreshAfterLines();
+}
+
+function noteCoilOrJoinChanged({ settled }) {
+  window.clearTimeout(linesCoilTimer);
+  // Half-typed. Nothing is on its way, so nothing says it is, and the usual word about
+  // the box can speak. The next number starts it again.
+  if (!linesCoilAndJoinAreSet()) {
+    const waiting = state.files.filter((file) => file.makingLines && !file.makingLines.job);
+    waiting.forEach(stopMaking);
+    if (waiting.length) refreshAfterLines();
+    return;
+  }
+  let changed = false;
+  state.files.forEach((file) => {
+    if (file.makingLines || !linesWantOtherCoil(file)) return;
+    file.makingLines = { job: null, phase: "making", slow: false, slowTimer: 0 };
+    invalidatePassMeasurement(file);
+    changed = true;
+  });
+  const waiting = state.files.some((file) => file.makingLines && !file.makingLines.job);
+  if (settled) {
+    if (waiting || state.files.some(linesWantOtherCoil)) startCoilRemakes();
+    return;
+  }
+  if (changed) {
+    renderPages();
+    updateDependencies();
+  }
+  if (waiting || state.files.some(linesWantOtherCoil)) {
+    linesCoilTimer = window.setTimeout(startCoilRemakes, LINES_TYPING_PAUSE_MS);
+  }
+}
+
+// A project or an undo can bring back a pass nobody has sorted yet. Asking makes no
+// lines and changes nothing on the pass. It only finds out what the row can offer,
+// and whether its thumbnail is safe to paint.
+function askAboutUnsortedPasses() {
+  state.files.forEach((file) => {
+    if (file.makingLines || Lines.isConverted(file.svg) || Lines.originOf(file.svg)) return;
+    if (passLinesAnswer(file) || file.sortAskedFor === passHash(file)) return;
+    file.sortAskedFor = passHash(file);
+    linesQueue.add(newLinesJob(file, "sort"));
+  });
+}
+
+/* --- the row's buttons --- */
+
+function setLinesSize(file, sizeMm) {
+  file.sizeMm = sizeMm;
+  file.sizePinned = true;
+  remakeLinesIfStale(file);
+  markDirty("Pass size or placement changed. Slice again before export.");
+  renderPages();
+  endDrawGesture();
+}
+
+function useOriginal(file) {
+  const original = Lines.originalOf(file.svg);
+  file.linesFailed = false;
+  file.linesProblem = null;
+  if (original !== null) {
+    replacePassSvg(file, original);
+    file.sizeMm = null;
+    file.sizePinned = false;
+    if (!state.linesAnswers.has(Lines.hashOf(original))) {
+      rememberLinesAnswer(original, { verdict: "convert" });
+    }
+  }
+  markDirty("Your file is back as you added it.");
+  renderPages();
+  // Its own undo step.
+  endDrawGesture();
+}
+
+function makeLinesAgain(file) {
+  startLinesJob(file, "again");
+  markDirty("Making lines from your drawing again.");
+  renderPages();
+}
+
+function tryLinesAgain(file) {
+  startLinesJob(file, typeof file.linesFailed === "string" ? file.linesFailed : "remake");
+  renderPages();
+  updateDependencies();
+}
+
+function removePass(file) {
+  setFiles(state.files.filter((item) => item !== file));
+}
+
+async function traceOverPass(file) {
+  const known = linesProblemOf(file);
+  let picture = null;
+  try {
+    picture = await Lines.paintToBlob(linesSourceOf(file));
+  } catch (_error) {
+    picture = null;
+  }
+  if (!state.files.includes(file)) return;
+  const opened = picture
+    ? await window.claylineDraw?.traceOver(picture, { name: file.name, replacing: file }).catch(() => false)
+    : false;
+  if (opened || !known) return;
+  // It wouldn't paint, so there is nothing to trace. Remove is the step left.
+  known.next = "remove";
+  known.sentence = "Clayline couldn't show this file, so it can't be traced. Save a simpler copy from your drawing program.";
+  known.traceFailed = true;
+  refreshAfterLines();
+}
+
+function linesButton(label, title, onPress) {
+  const button = document.createElement("button");
+  button.className = "page-edit-button";
+  button.type = "button";
+  button.textContent = label;
+  button.title = title;
+  button.addEventListener("click", onPress);
+  return button;
+}
+
+function useOriginalButton(file) {
+  const button = linesButton(
+    "Use original",
+    "Put your file back exactly as you added it. The lines Clayline made are removed.",
+    () => useOriginal(file),
+  );
+  button.classList.add("page-use-original-button");
+  return button;
+}
+
+function makeLinesAgainButton(file) {
+  const button = linesButton(
+    "Make lines again",
+    "Make lines from what your drawing shows, as Clayline does when you add it.",
+    () => makeLinesAgain(file),
+  );
+  button.classList.add("page-make-lines-button");
+  return button;
+}
+
+function linesRowActions(file) {
+  if (file.makingLines || file.linesFailed) return [];
+  const buttons = [];
+  if (Lines.hasOriginal(file.svg)) {
+    buttons.push(useOriginalButton(file));
+    // A size the drawing can't hold wants a new size, not the same answer again.
+    if (linesOutOfDate(file) && !file.linesProblem) buttons.push(makeLinesAgainButton(file));
+    return buttons;
+  }
+  if (Lines.isConverted(file.svg) || Lines.originOf(file.svg)) return buttons;
+  if (passLinesAnswer(file)?.verdict === "convert") buttons.push(makeLinesAgainButton(file));
+  return buttons;
+}
+
+function linesSetSizeButton(file, suggestedMm) {
+  const size = window.claylineUnits.fmt(suggestedMm, 0);
+  const button = linesButton(
+    "Set Size",
+    `Make this pass ${size} on its longest side, and make its lines again.`,
+    () => setLinesSize(file, suggestedMm),
+  );
+  button.classList.add("page-set-size-button");
+  return button;
+}
+
+function linesTraceButton(file) {
+  const button = linesButton(
+    "Trace over it",
+    "Open Draw with this picture under your lines. The picture never prints.",
+    () => traceOverPass(file),
+  );
+  button.classList.add("page-trace-button");
+  return button;
+}
+
+function linesRemoveButton(file) {
+  return linesButton("Remove this pass", "Take this pass out of the job.", () => removePass(file));
+}
+
+function linesSentenceOf(sentence, suggestedMm) {
+  return Lines.sentenceFor(sentence, suggestedMm, (mm) => window.claylineUnits.fmt(mm, 0));
+}
+
+function linesNoteContent(file) {
+  const making = file.makingLines;
+  if (making) {
+    if (making.phase !== "making") return null;
+    return {
+      text: making.slow ? LINES_STILL_MAKING : LINES_MAKING,
+      tip: "Slice waits until the lines land. The × above takes this pass out.",
+      role: "status",
+    };
+  }
+  if (file.linesFailed) {
+    const retry = linesButton("Try again", "Make the lines once more.", () => tryLinesAgain(file));
+    return {
+      text: LINES_COULD_NOT,
+      tip: LINES_TIPS.failed,
+      role: "alert",
+      buttons: [retry, useOriginalButton(file)],
+    };
+  }
+  const problem = linesProblemOf(file);
+  if (problem) {
+    const buttons = [];
+    const current = typedLinesSize(file) ?? problem.target_mm ?? NaN;
+    // Pressing a size it is already at would do nothing, so that isn't offered.
+    const sizeWouldChange = Number.isFinite(problem.suggested_mm)
+      && linesDiffer(problem.suggested_mm, current);
+    if (problem.next === "set_size") {
+      if (sizeWouldChange) buttons.push(linesSetSizeButton(file, problem.suggested_mm));
+    } else if (problem.next === "trace") {
+      buttons.push(linesTraceButton(file));
+    } else if (problem.next === "remove") {
+      buttons.push(linesRemoveButton(file));
+    }
+    // Painting this one may never finish, so tracing isn't on offer.
+    let text = linesSentenceOf(problem.sentence, problem.suggested_mm);
+    if (problem.reason === "too_many_repeats") {
+      text = "This file is too large for Clayline. Save a simpler copy from your drawing program.";
+    } else if (problem.next === "set_size" && !sizeWouldChange) {
+      text = "At this size the lines are too short to print. Type a bigger size.";
+    }
+    return {
+      text,
+      tip: LINES_TIPS[problem.reason] || LINES_TIPS[problem.kind] || LINES_TIPS[problem.verdict] || "",
+      role: "alert",
+      buttons,
+    };
+  }
+  if (!Lines.hasOriginal(file.svg)) return null;
+  if (linesOutOfDate(file)) {
+    return {
+      text: "These lines were made for another size or coil width.",
+      tip: "Make lines again makes them for what is set now.",
+      role: "status",
+    };
+  }
+  const marks = Lines.marksOf(file.svg);
+  const text = linesSentenceOf(marks.sentence, marks.suggested);
+  if (!text) return null;
+  const buttons = [];
+  if (marks.kind === "fine_detail" && Number.isFinite(marks.suggested)
+    && linesDiffer(marks.suggested, typedLinesSize(file) ?? NaN)) {
+    buttons.push(linesSetSizeButton(file, marks.suggested));
+  }
+  return { text, tip: LINES_TIPS[marks.kind] || "", role: "status", buttons };
+}
+
+function linesRowNote(file) {
+  const content = linesNoteContent(file);
+  if (!content) return null;
+  const note = document.createElement("div");
+  note.className = "page-row-note";
+  note.setAttribute("role", content.role);
+  const text = document.createElement("p");
+  text.className = "page-row-note-text";
+  text.textContent = content.text;
+  if (content.tip) text.title = content.tip;
+  note.append(text);
+  if (content.buttons?.length) {
+    const buttons = document.createElement("div");
+    buttons.className = "page-row-note-actions";
+    content.buttons.forEach((button) => buttons.append(button));
+    note.append(buttons);
+  }
+  return note;
+}
+
+function linesSliceFootnote() {
+  const making = state.files.find((file) => file.makingLines?.phase === "making");
+  if (making) {
+    const what = state.files.length > 1 ? making.name : "your drawing";
+    return `Making lines from ${what} — Slice is ready in a moment.`;
+  }
+  const failed = state.files.find((file) => file.linesFailed);
+  if (failed) return `Clayline couldn't make lines from ${failed.name} — try again, or use the original.`;
+  const stuck = state.files.find(linesProblemOf);
+  if (stuck) {
+    const problem = linesProblemOf(stuck);
+    if (problem.verdict === "size_too_big") return `${stuck.name} needs a smaller size.`;
+    const steps = problem.next === "trace"
+      ? "trace it, or remove it"
+      : problem.asked
+        ? "set its size, or remove it"
+        : "remove it";
+    return `Nothing to print in ${stuck.name} — ${steps}.`;
+  }
+  const outOfDate = state.files.find(linesOutOfDate);
+  if (outOfDate) return `Press Make lines again on ${outOfDate.name} before Slice.`;
+  return null;
+}
+
+function anyPassSaysSomething() {
+  return state.files.some((file) => (
+    Lines.hasOriginal(file.svg) && LINES_SAYING_KINDS.has(Lines.marksOf(file.svg).kind)
+  ));
+}
+
+/* --- a picture dropped on Passes --- */
+
+const PICTURE_NAME = /\.(png|jpe?g|webp|heic|heif|gif|bmp|tiff?)$/i;
+
+function showDropNotes(rejected) {
+  const host = $("#dropNotes");
+  host.replaceChildren();
+  host.hidden = !rejected.length;
+  rejected.forEach((file) => {
+    const note = document.createElement("div");
+    note.className = "page-row-note drop-note";
+    note.setAttribute("role", "status");
+    const text = document.createElement("p");
+    text.className = "page-row-note-text";
+    const picture = PICTURE_NAME.test(file.name) || String(file.type).startsWith("image/");
+    text.textContent = picture
+      ? `${file.name} is a picture, not a drawing. Trace over it in Draw.`
+      : `Clayline can't use ${file.name}. Add a drawing, or a picture to trace over.`;
+    note.append(text);
+    const buttons = document.createElement("div");
+    buttons.className = "page-row-note-actions";
+    const leave = () => {
+      note.remove();
+      host.hidden = !host.childElementCount;
+    };
+    if (picture) {
+      const trace = linesButton(
+        "Trace over it",
+        "Open Draw with this picture under your lines. The picture never prints.",
+        async () => {
+          const name = `${file.name.replace(/\.[^.]+$/, "")}.svg`;
+          const opened = await window.claylineDraw?.traceOver(file, { name }).catch(() => false);
+          if (opened) {
+            leave();
+            return;
+          }
+          text.textContent = `Clayline couldn't read ${file.name}. Try saving it as a PNG or JPEG.`;
+        },
+      );
+      trace.classList.add("page-trace-button");
+      buttons.append(trace);
+    }
+    buttons.append(linesButton("OK", "Put this note away.", leave));
+    note.append(buttons);
+    host.append(note);
+  });
+}
+
+/* --- the stage: the lines before anything prints --- */
+
+let linesPreviewSignature = "";
+let linesPreviewUrls = [];
+
+function linesPreviewUrl(text) {
+  const url = URL.createObjectURL(new Blob([text], { type: "image/svg+xml" }));
+  linesPreviewUrls.push(url);
+  return url;
+}
+
+// The file's page has to land on the box the engine measured it in. A file with no
+// view of its own wouldn't scale to fit that box, and one with no namespace wouldn't
+// paint at all.
+function fadedCopyOf(original, place) {
+  const root = /<svg\b[^>]*>/.exec(original)?.[0];
+  if (!root) return original;
+  const extra = [];
+  if (!/\sxmlns=/.test(root)) extra.push(`xmlns="${SVG_NS}"`);
+  if (!/\sviewBox=/i.test(root)) extra.push(`viewBox="0 0 ${place[4]} ${place[5]}"`);
+  return extra.length ? original.replace("<svg", `<svg ${extra.join(" ")}`) : original;
+}
+
+function linesPreviewImage(url, x, y, width, height, opacity = null) {
+  const image = document.createElementNS(SVG_NS, "image");
+  image.setAttribute("href", url);
+  image.setAttribute("x", x);
+  image.setAttribute("y", y);
+  image.setAttribute("width", width);
+  image.setAttribute("height", height);
+  image.setAttribute("preserveAspectRatio", "none");
+  if (opacity !== null) image.setAttribute("opacity", opacity);
+  return image;
+}
+
+function drawLinesPreview(passes) {
+  const selected = state.selectedFile !== null ? state.files[state.selectedFile] : null;
+  const signature = JSON.stringify(passes.map((file) => [
+    passHash(file),
+    state.files.indexOf(file),
+    file.sizeMm,
+    file.sourceLongestMm,
+    file.nudgeX,
+    file.nudgeY,
+    file.rotation,
+    file === selected || passes.length === 1,
+    Boolean(file.makingLines),
+  ]));
+  if (signature === linesPreviewSignature) return;
+  linesPreviewSignature = signature;
+  linesPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+  linesPreviewUrls = [];
+  const art = $("#linesPreviewArt");
+  art.replaceChildren();
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  // Stack order: pass 1 first, and each later one over it.
+  passes.forEach((file) => {
+    const marks = Lines.marksOf(file.svg);
+    if (!(marks?.width > 0) || !(marks?.height > 0)) return;
+    const lit = file === selected || passes.length === 1;
+    const { width, height, place } = marks;
+    const scale = passScaleFactor(file, 1);
+    const rotation = Number(file.rotation) || 0;
+    const group = document.createElementNS(SVG_NS, "g");
+    group.setAttribute(
+      "transform",
+      `translate(${file.nudgeX} ${-file.nudgeY}) rotate(${rotation}) scale(${scale}) translate(${-width / 2} ${-height / 2})`,
+    );
+    if (lit && place) {
+      const original = Lines.originalOf(file.svg);
+      const [left, top, final, margin, pageWidth, pageHeight] = place;
+      group.append(linesPreviewImage(
+        linesPreviewUrl(fadedCopyOf(original, place)),
+        margin - left * final,
+        margin - top * final,
+        pageWidth * final,
+        pageHeight * final,
+        0.28,
+      ));
+    }
+    if (!file.makingLines) {
+      const colour = pageColor(state.files.indexOf(file));
+      const lines = Lines.withoutOriginal(file.svg).replace('stroke="#000"', `stroke="${colour}"`);
+      group.append(linesPreviewImage(linesPreviewUrl(lines), 0, 0, width, height, lit ? 1 : 0.45));
+    }
+    art.append(group);
+    const radians = (rotation * Math.PI) / 180;
+    const reachX = (Math.abs(Math.cos(radians)) * width + Math.abs(Math.sin(radians)) * height) * scale / 2;
+    const reachY = (Math.abs(Math.sin(radians)) * width + Math.abs(Math.cos(radians)) * height) * scale / 2;
+    minX = Math.min(minX, file.nudgeX - reachX);
+    maxX = Math.max(maxX, file.nudgeX + reachX);
+    minY = Math.min(minY, -file.nudgeY - reachY);
+    maxY = Math.max(maxY, -file.nudgeY + reachY);
+  });
+  if (Number.isFinite(minX)) {
+    art.setAttribute("viewBox", `${minX} ${minY} ${maxX - minX} ${maxY - minY}`);
+  } else {
+    art.removeAttribute("viewBox");
+  }
+}
+
+// "Press Slice" is only true while Slice can run. Whatever holds it back, the row
+// says so, and these aren't what will print.
+function syncLinesCaption() {
+  const making = state.files.some((file) => file.makingLines?.phase === "making");
+  $("#linesPreviewCaption").hidden = making
+    || !linesCoilAndJoinAreSet()
+    || Boolean(linesSliceFootnote())
+    || $("#sliceButton").disabled;
+}
+
+// In the empty middle of the window only: it never hides a real result, and it
+// comes back after any change, the way the empty state does.
+function syncLinesPreview() {
+  const preview = $("#linesPreview");
+  if (window.claylineDraw?.isOpen()) {
+    preview.hidden = true;
+    return;
+  }
+  const empty = state.stageKind === "empty";
+  const making = state.files.some((file) => file.makingLines?.phase === "making");
+  const passes = state.files.filter((file) => Lines.hasOriginal(file.svg));
+  const showing = empty && (making || passes.length > 0);
+  preview.hidden = !showing;
+  $("#emptyState").hidden = !empty || showing;
+  if (showing) {
+    $("#linesPreviewSpinner").hidden = !making;
+    syncLinesCaption();
+    drawLinesPreview(passes);
+    return;
+  }
+  // Nothing of the last pass stays held once it has gone.
+  if (!passes.length) drawLinesPreview(passes);
+  if (empty && state.files.some((file) => file.linesFailed || linesProblemOf(file))) {
+    // "Slice" isn't the next step here, so the usual empty words would be wrong.
+    $("#emptyTitle").textContent = "Nothing to print yet";
+    $("#emptyMessage").textContent = "See the note under this pass in Passes.";
+  }
 }
 
 async function readFiles(fileList) {
@@ -818,15 +1870,8 @@ async function readFiles(fileList) {
       measurementStatus: "pending",
     })),
   );
-  if (loaded.length) setFiles([...state.files, ...loaded]);
-  const rejected = selected.filter((file) => !svgFiles.includes(file));
-  if (rejected.length) {
-    showSliceError({
-      message: `Ignored ${rejected.length} non-SVG file${rejected.length === 1 ? "" : "s"}: ${rejected.map((file) => file.name).join(", ")}. Clayline plans centerline SVG line-work only.`,
-      code: "",
-      data: {},
-    });
-  }
+  if (loaded.length) addDrawings(loaded);
+  showDropNotes(selected.filter((file) => !svgFiles.includes(file)));
 }
 
 function movePageSource(index, delta) {
@@ -838,10 +1883,14 @@ function movePageSource(index, delta) {
 }
 
 function thumbnailUrl(file) {
+  // A file the engine hasn't sorted yet may be one that never finishes painting.
+  if (!passMayPaint(file)) return "";
   // F10.6: the browser renders the uploaded SVG string itself — no second
   // geometry path.  The CSP allows blob: images explicitly for this.
   if (!file.thumbUrl) {
-    file.thumbUrl = URL.createObjectURL(new Blob([file.svg], { type: "image/svg+xml" }));
+    file.thumbUrl = URL.createObjectURL(
+      new Blob([Lines.withoutOriginal(file.svg)], { type: "image/svg+xml" }),
+    );
   }
   return file.thumbUrl;
 }
@@ -900,7 +1949,19 @@ function updatePageMeta() {
     // Where this design came from. Editing never rewrites the file on disk, so
     // a loaded SVG that has been drawn on says so out loud.
     const mark = window.claylineDraw?.pageMark(file);
-    if (mark) parts.push(mark);
+    const madeLines = Lines.hasOriginal(file.svg);
+    if (mark && !madeLines) parts.push(mark);
+    // Too long to sit beside the name, where the line gets cut short, and its tooltip
+    // says something new rather than finishing it, so it has a line of its own.
+    const tag = row.querySelector(".page-row-tag");
+    if (tag) {
+      tag.textContent = madeLines
+        ? [mark, passScaledToFit(file) ? "scaled to fit" : ""].filter(Boolean).join(" · ")
+        : "";
+      tag.title = madeLines ? LINES_MADE_TIP : "";
+      tag.hidden = !madeLines;
+    }
+    const measured = layoutFiles().includes(file);
     if (stacked) {
       const zRange = stackZRange(range.lo, range.hi);
       const first = range.lo + 1;
@@ -910,8 +1971,10 @@ function updatePageMeta() {
       if (zRange) {
         parts.push(`Z ${formatMm(zRange[0])}–${formatMm(zRange[1])} ${window.claylineUnits.label()}`);
       }
-    } else if (layoutPages && layoutPages[range.lo]) {
-      const spot = layoutPages[range.lo];
+    } else if (!measured) {
+      // Nothing to say about the bed yet: the row's own line says what is going on.
+    } else if (layoutPages && layoutPages[layoutFiles().indexOf(file)]) {
+      const spot = layoutPages[layoutFiles().indexOf(file)];
       const w = Number(spot.w_mm);
       const hMm = Number(spot.h_mm);
       if (Number.isFinite(w) && Number.isFinite(hMm)) parts.push(`${formatMm(w)} × ${formatMm(hMm)} mm`);
@@ -934,6 +1997,7 @@ function applySelectionClasses() {
     row.classList.toggle("is-hover", state.hoverFile === index && state.hoverFile !== state.selectedFile);
   });
   updateBedMapHighlight();
+  syncLinesPreview();
 }
 
 // Two-way selection (F10.6): row hover/select drives the preview highlight;
@@ -1035,12 +2099,15 @@ function pageRow(index, stacked) {
   const thumbButton = document.createElement("button");
   thumbButton.className = "page-thumb-button";
   thumbButton.type = "button";
-  thumbButton.title = window.claylineDraw?.editTip() || "Edit on the bed";
+  const canEdit = passOpensInDraw(file);
+  thumbButton.title = window.claylineDraw?.editTip(file) || "Edit on the bed";
   thumbButton.ariaLabel = `Edit ${file.name} on the bed`;
+  thumbButton.disabled = !canEdit;
   const thumb = document.createElement("img");
   thumb.className = "page-thumb";
   thumb.alt = "";
-  thumb.src = thumbnailUrl(file);
+  const thumbSrc = thumbnailUrl(file);
+  if (thumbSrc) thumb.src = thumbSrc;
   thumb.style.borderColor = pageColor(index);
   const editMark = document.createElement("span");
   editMark.className = "page-thumb-pencil";
@@ -1100,6 +2167,10 @@ function pageRow(index, stacked) {
 
   const fields = document.createElement("div");
   fields.className = "page-row-fields";
+  const tagLine = document.createElement("small");
+  tagLine.className = "page-row-tag";
+  tagLine.hidden = true;
+  fields.append(tagLine);
   const addField = (labelText, key, value, { mm = false, positive = false } = {}) => {
     const label = document.createElement("label");
     label.className = "pass-field field";
@@ -1125,9 +2196,22 @@ function pageRow(index, stacked) {
         input.value = mm ? passInputValue(file[key]) : String(file[key] ?? 0);
         return;
       }
+      if (key === "sizeMm") {
+        const refusal = linesSizeRefusal(file, next);
+        if (refusal) {
+          input.setCustomValidity(refusal);
+          input.reportValidity();
+          input.value = passInputValue(file[key]);
+          return;
+        }
+      }
       input.setCustomValidity("");
       file[key] = next;
-      if (key === "sizeMm") file.sizePinned = true;
+      if (key === "sizeMm") {
+        file.sizePinned = true;
+        // Before the dirty mark, so Slice is off from this moment on.
+        remakeLinesIfStale(file);
+      }
       markDirty("Pass size or placement changed. Slice again before export.");
       renderPages();
       drawHistoryGestureActive = false;
@@ -1150,8 +2234,18 @@ function pageRow(index, stacked) {
     { mm: true, positive: true },
   );
   sizeInput.closest("label")?.classList.add("page-size-field");
-  sizeInput.disabled = file.measurementStatus !== "ready";
-  if (file.measurementStatus === "pending") {
+  const sizeOpen = passSizeStaysOpen(file);
+  sizeInput.disabled = file.measurementStatus !== "ready" && !sizeOpen;
+  if (file.makingLines?.phase === "making") {
+    // A typed size stays in sight while its lines are made.
+    sizeInput.value = file.sizePinned ? passInputValue(file.sizeMm) : "";
+    sizeInput.placeholder = "Making lines…";
+  } else if (sizeOpen && file.measurementStatus !== "ready") {
+    sizeInput.value = passInputValue(file.sizeMm ?? linesProblemOf(file)?.target_mm);
+  } else if (passHeldByLines(file) && !file.makingLines) {
+    sizeInput.value = "";
+    sizeInput.placeholder = "";
+  } else if (file.measurementStatus === "pending") {
     sizeInput.value = "";
     sizeInput.placeholder = "Measuring design…";
   } else if (file.measurementStatus === "error") {
@@ -1160,7 +2254,9 @@ function pageRow(index, stacked) {
   }
   sizeInput.title = file.sizePinned
     ? "Pinned size — edits preserve this requested longest side."
-    : "Longest planned centerline side. It follows the design until you type a size.";
+    : passScaledToFit(file)
+      ? `${SIZE_TIP} Scaled to fit your bed. Type a size to change it.`
+      : SIZE_TIP;
   addField("Nudge X", "nudgeX", file.nudgeX, { mm: true });
   addField("Nudge Y", "nudgeY", file.nudgeY, { mm: true });
   addField("Rotate °", "rotation", file.rotation);
@@ -1172,6 +2268,7 @@ function pageRow(index, stacked) {
   repeat.type = "button";
   repeat.textContent = "Repeat pass";
   repeat.title = "Add the same design immediately above this pass, with the same size and placement.";
+  repeat.disabled = !canEdit;
   repeat.addEventListener("click", () => repeatPass(index));
   const recenter = document.createElement("button");
   recenter.className = "page-edit-button page-recenter-button";
@@ -1191,17 +2288,24 @@ function pageRow(index, stacked) {
   const edit = document.createElement("button");
   edit.className = "page-edit-button";
   edit.type = "button";
-  edit.title = window.claylineDraw?.editTip() || "Edit on the bed";
+  edit.title = window.claylineDraw?.editTip(file) || "Edit on the bed";
   edit.textContent = "Edit drawing";
+  edit.disabled = !canEdit;
   edit.addEventListener("click", () => window.claylineDraw?.openFile(index));
   const save = document.createElement("button");
   save.className = "page-edit-button";
   save.type = "button";
   save.title = window.claylineDraw?.saveTip(file) || "Save this design as an SVG file";
   save.textContent = window.claylineDraw?.saveLabel(file) || "Save SVG…";
+  // Saving a file as it came is safe before it is sorted. Repeat and Edit drawing wait,
+  // since a copy made now wouldn't get its lines and Draw would open a filled file blank.
+  save.disabled = !canEdit && file.makingLines?.phase !== "sorting";
   save.addEventListener("click", () => window.claylineDraw?.saveSVG(index));
+  linesRowActions(file).forEach((button) => actions.append(button));
   actions.append(repeat, recenter, edit, save);
   fields.append(actions);
+  const note = linesRowNote(file);
+  if (note) fields.append(note);
 
   if (file.measurementStatus === "error") {
     const error = document.createElement("p");
@@ -1257,6 +2361,7 @@ function renderPages() {
     $("#fileSummary").textContent = "No designs loaded";
     $("#stackCaption").hidden = true;
     renderLayoutCheck();
+    syncLinesPreview();
     window.claylineDraw?.noteFilesChanged();
     return;
   }
@@ -1272,6 +2377,8 @@ function renderPages() {
   updatePageMeta();
   applySelectionClasses();
   renderLayoutCheck();
+  askAboutUnsortedPasses();
+  syncLinesPreview();
   // Every path that adds, removes, reorders, undoes or re-nudges a page ends
   // here, so this is the one place the drawing surface has to re-read.
   window.claylineDraw?.noteFilesChanged();
@@ -1285,7 +2392,7 @@ function renderPages() {
 
 function layoutSignature() {
   return JSON.stringify({
-    files: state.files.map((file) => [
+    files: layoutFiles().map((file) => [
       file.name,
       file.svg,
       file.nudgeX,
@@ -1312,7 +2419,9 @@ function scheduleLayoutCheck() {
   // surface is open the live bed-fit check is held, and the canvas's own
   // out-of-bed finding is the live answer instead. It runs once on Done.
   if (state.layoutHeld) return;
-  if (!state.files.length) {
+  // A pass being made has no lines worth measuring yet. It runs when they land.
+  if (anyPassMakingLines()) return;
+  if (!layoutFiles().length) {
     state.layout = null;
     renderLayoutCheck();
     return;
@@ -1321,16 +2430,18 @@ function scheduleLayoutCheck() {
 }
 
 async function runLayoutCheck() {
+  if (anyPassMakingLines()) return;
   const signature = layoutSignature();
   if (state.layout && state.layout.signature === signature) {
     renderLayoutCheck();
     return;
   }
   const token = ++state.layoutToken;
-  const requestedScaleFactors = state.files.map((file) => passScaleFactor(file, 1));
-  const files = state.files.map((file, index) => ({
+  const measuring = layoutFiles();
+  const requestedScaleFactors = measuring.map((file) => passScaleFactor(file, 1));
+  const files = measuring.map((file, index) => ({
     name: file.name,
-    svg: file.svg,
+    svg: Lines.withoutOriginal(file.svg),
     nudge_x: file.nudgeX,
     nudge_y: file.nudgeY,
     rotation_deg: file.rotation || 0,
@@ -1362,15 +2473,16 @@ async function runLayoutCheck() {
     if (response.status === 404 || response.status === 405) {
       state.layoutUnsupported = true;
       state.layout = null;
-      state.files.filter((file) => file.measurementStatus === "pending").forEach((file) => {
+      measuring.filter((file) => file.measurementStatus === "pending").forEach((file) => {
         file.measurementStatus = "error";
         file.measurementError = "This Clayline build cannot measure planned pass size.";
       });
     } else if (!response.ok) {
       state.layoutUnsupported = false;
-      const message = structuredErrorFrom(payload, response).message;
-      state.layout = { signature, error: message };
-      state.files.filter((file) => file.measurementStatus === "pending").forEach((file) => {
+      const refusal = structuredErrorFrom(payload, response);
+      const message = refusal.message;
+      state.layout = { signature, error: message, code: refusal.code };
+      measuring.filter((file) => file.measurementStatus === "pending").forEach((file) => {
         file.measurementStatus = "error";
         file.measurementError = message;
       });
@@ -1380,7 +2492,7 @@ async function runLayoutCheck() {
       let needsRelayout = false;
       let measurementError = false;
       let completedPendingMeasurement = false;
-      state.files.forEach((file, index) => {
+      measuring.forEach((file, index) => {
         const wasReady = passMeasurementReady(file);
         const page = pages[index] || {};
         const width = Number(page.source_w_mm);
@@ -1417,7 +2529,7 @@ async function runLayoutCheck() {
       } else {
         state.layout = { signature: layoutSignature(), data: payload };
       }
-      if (completedPendingMeasurement && allPassMeasurementsReady()) {
+      if (completedPendingMeasurement && measuring.every(passMeasurementReady)) {
         // Measurement is derived state, not a second artist action. Refresh
         // the session snapshot directly; the authored snapshot was already
         // recorded or scheduled, so this never consumes another undo step.
@@ -1428,7 +2540,7 @@ async function runLayoutCheck() {
   } catch {
     if (token !== state.layoutToken) return;
     state.layout = null;
-    state.files.filter((file) => file.measurementStatus === "pending").forEach((file) => {
+    measuring.filter((file) => file.measurementStatus === "pending").forEach((file) => {
       file.measurementStatus = "error";
       file.measurementError = "Clayline could not reach the planned-size check.";
     });
@@ -1623,6 +2735,7 @@ function renderBedMapHandles() {
       // rendered string, never this value.
       file.sizeMm = startSize * factor;
       file.sizePinned = true;
+      remakeLinesIfStale(file);
       commit();
     });
   });
@@ -1671,7 +2784,8 @@ function renderBedMap(data) {
     const x1 = Number(page.x1);
     const y1 = Number(page.y1);
     if (![x0, y0, x1, y1].every(Number.isFinite)) return;
-    const fileIndex = fileIndexForPage(pageIndex);
+    const fileIndex = state.files.indexOf(layoutFiles()[pageIndex]);
+    if (fileIndex < 0) return;
     const rect = document.createElementNS(NS, "rect");
     rect.setAttribute("x", x0);
     rect.setAttribute("y", flipY(y1));
@@ -1785,13 +2899,23 @@ function overflowSentence(data) {
 // errors (F9.7).  Each is a real, applied change — never a dead hint.
 function bedFitSuggestions() {
   const actions = [];
-  if (state.files.some((file) => file.sizePinned && passMeasurementReady(file))) {
+  if (state.files.some((file) => (file.sizePinned && passMeasurementReady(file)) || passWantsFitSize(file))) {
     actions.push({
       label: "Use measured design sizes",
-      title: "Return every pinned pass to its planned centerline size.",
+      title: "Return every pass with a typed size to the size of its drawing. Lines Clayline made take the largest size that fits your bed.",
       apply: () => {
         state.files.forEach((file) => {
           if (!passMeasurementReady(file)) return;
+          // Lines are made for one size, so a pass of them takes the fit size
+          // and makes them again.
+          const wanted = Lines.hasOriginal(file.svg) && (file.sizePinned || passOverBed(file));
+          const fit = wanted ? passFitSize(file) : null;
+          if (fit !== null) {
+            file.sizeMm = fit;
+            file.sizePinned = true;
+            remakeLinesIfStale(file);
+            return;
+          }
           file.sizeMm = file.sourceLongestMm;
           file.sizePinned = false;
         });
@@ -1830,6 +2954,11 @@ function renderLayoutCheck() {
   }
   if (state.layout.error) {
     $("#bedMapPanel").hidden = true;
+    // A pass with nothing to print says so in its own row. It isn't about the bed.
+    if (state.layout.code === "pass_has_nothing_to_print") {
+      banner.hidden = true;
+      return;
+    }
     banner.hidden = false;
     banner.classList.add("is-error");
     $("#fitBannerText").textContent = `Couldn't check bed fit — ${state.layout.error}`;
@@ -2118,7 +3247,9 @@ function updateDependencies() {
     : "Enter a valid side-by-side join percentage.";
 
   const pause = numberValue("#pagePause");
+  const linesFootnote = linesSliceFootnote();
   const canSlice = allPassMeasurementsReady()
+    && !linesFootnote
     && Number.isFinite(pause)
     && pause >= 0
     && Number.isFinite(overlapPercent)
@@ -2128,17 +3259,22 @@ function updateDependencies() {
     && effectiveBeadWidth() > 0
     && !rippleTooDeep;
   $("#sliceButton").disabled = !canSlice || state.isSlicing;
+  syncLinesCaption();
   $("#sliceFootnote").textContent = state.isSlicing
     ? "Building one immutable trace in a worker…"
     : !state.files.length
       ? "Add or draw a design to begin."
-      : !allPassMeasurementsReady()
-        ? passMeasurementFailure() || "Measuring every pass before Slice can run."
-        : rippleTooDeep
-          ? `The height ripple is deeper than the ${rippleFloorLabel} — see Character.`
-          : canSlice
-            ? `${pages} ${passWord} · nothing slices until you ask.`
-            : "Correct the highlighted numeric setting before slicing.";
+      : linesFootnote
+        ? linesFootnote
+        : !allPassMeasurementsReady()
+          ? passMeasurementFailure() || "Measuring every pass before Slice can run."
+          : rippleTooDeep
+            ? `The height ripple is deeper than the ${rippleFloorLabel} — see Character.`
+            : canSlice
+              ? anyPassSaysSomething()
+                ? "Press Slice when you're ready."
+                : `${pages} ${passWord} · nothing slices until you ask.`
+              : "Correct the highlighted numeric setting before slicing.";
   $("#flattenOutput").textContent = `${numberValue("#flattenTol").toFixed(2)} mm`;
   $("#flowOutput").textContent = `${numberValue("#flow").toFixed(2)}×`;
 
@@ -2270,7 +3406,7 @@ function requestPayload(snapshot = drawSettingsSnapshot()) {
       }
       return {
         name: pass.name,
-        svg: pass.svg,
+        svg: Lines.withoutOriginal(pass.svg),
         nudge_x: pass.nudge_x,
         nudge_y: pass.nudge_y,
         rotation_deg: pass.rotation_deg,
@@ -2449,6 +3585,8 @@ function amendDrawMeasurements() {
     const passes = entry.passes.map((pass, index) => {
       const now = live.passes[index];
       if (!now || now.svg !== pass.svg || now.name !== pass.name) return pass;
+      // Remade lines measure differently, and that belongs to the step that made them.
+      if (Lines.isConverted(pass.svg) && !pass.size_pinned) return { ...pass, size_mm: now.size_mm };
       if (pass.size_pinned || (Number.isFinite(pass.size_mm) && pass.size_mm > 0)) return pass;
       return { ...pass, size_mm: now.size_mm };
     });
@@ -2546,7 +3684,7 @@ function showState(kind) {
   // Remembered so the stage can be put back exactly as it was when the drawing
   // surface hands it over on Done.
   state.stageKind = kind;
-  $("#emptyState").hidden = kind !== "empty";
+  syncLinesPreview();
   $("#loadingState").hidden = kind !== "loading";
   $("#errorState").hidden = kind !== "error";
   $("#planView").hidden = kind !== "result" || state.activeView !== "plan";
@@ -3144,7 +4282,7 @@ function warningDetailBlock(warning) {
     parts.push(`X ${Number(warning.point.x).toFixed(2)} · Y ${Number(warning.point.y).toFixed(2)} mm`);
   }
   if (warning.page_id) parts.push(warning.page_id);
-  if (warning.provenance) {
+  if (warning.provenance && !Lines.isLineId(warning.provenance.element_id)) {
     parts.push(warning.provenance.element_id || `element[${warning.provenance.element_index}]`);
   }
   coordinate.textContent = parts.join(" · ") || "No single spot — this applies to the whole file.";
@@ -3202,11 +4340,20 @@ function renderWarnings(warnings) {
   const designedCrossings = warnings.filter(
     (warning) => warning.code === "crossing" && warning.severity === "info",
   );
-  const actionable = warnings.filter((warning) => !designedCrossings.includes(warning));
+  const whereLinesMeet = warnings.filter(
+    (warning) => !designedCrossings.includes(warning) && Lines.whereLinesMeet(warning),
+  );
+  const actionable = warnings.filter(
+    (warning) => !designedCrossings.includes(warning) && !whereLinesMeet.includes(warning),
+  );
 
   $("#warningBadge").textContent = String(actionable.length);
-  $("#warningBadge").title = designedCrossings.length
-    ? `${actionable.length} to review · ${designedCrossings.length} expected drape crossings listed separately`
+  const setAside = [
+    designedCrossings.length ? `${designedCrossings.length} expected drape crossings` : "",
+    whereLinesMeet.length ? `${whereLinesMeet.length} where lines meet` : "",
+  ].filter(Boolean).join(" · ");
+  $("#warningBadge").title = setAside
+    ? `${actionable.length} to review · ${setAside} listed separately`
     : "Things worth a look before printing";
   $("#warningScope").textContent = warnings.length ? "grouped by cause" : "";
 
@@ -3241,59 +4388,115 @@ function renderWarnings(warnings) {
       list.append(warningRow(items[0], copy));
       return;
     }
-    const group = document.createElement("article");
-    group.className = "warning-group";
-    group.dataset.severity = items[0].severity || "warning";
-    const head = document.createElement("div");
-    head.className = "warning-group-head";
-    const mark = document.createElement("span");
-    mark.className = "warning-mark";
-    const body = document.createElement("span");
-    body.className = "warning-row-body";
-    const heading = document.createElement("strong");
-    heading.textContent = `${copy.title} — ${items.length} spots`;
-    const hintLine = document.createElement("p");
-    hintLine.textContent = copy.hint;
-    body.append(heading, hintLine);
-    head.append(mark, body);
-    group.append(head);
-    // One row per cause, never a row per spot (353 rows on a real relief job
-    // taught us better). A stepper walks the preview through the instances.
-    const stepper = document.createElement("div");
-    stepper.className = "warning-stepper";
-    let cursor = -1;
-    const prev = document.createElement("button");
-    prev.type = "button";
-    prev.className = "stepper-arrow";
-    prev.textContent = "\u25c0";
-    prev.title = "Previous spot";
-    const label = document.createElement("button");
-    label.type = "button";
-    label.className = "stepper-label";
-    label.textContent = `Step through ${items.length} spots`;
-    label.title = "Show the next spot in the preview";
-    const next = document.createElement("button");
-    next.type = "button";
-    next.className = "stepper-arrow";
-    next.textContent = "\u25b6";
-    next.title = "Next spot";
-    const showSpot = (delta) => {
-      cursor = (cursor + delta + items.length) % items.length;
-      label.textContent = `Spot ${cursor + 1} of ${items.length}`;
-      const warning = items[cursor];
-      if (warning.point) locateWarning(warning);
-    };
-    prev.addEventListener("click", () => showSpot(-1));
-    next.addEventListener("click", () => showSpot(1));
-    label.addEventListener("click", () => showSpot(1));
-    stepper.append(prev, label, next);
-    group.append(stepper);
-    list.append(group);
+    list.append(warningGroup(items, copy));
   });
 
+  if (whereLinesMeet.length) list.append(whereLinesMeetGroup(whereLinesMeet));
   if (designedCrossings.length) {
     list.append(designedCrossingGroup(designedCrossings));
   }
+}
+
+function warningGroup(items, copy) {
+  const group = document.createElement("article");
+  group.className = "warning-group";
+  group.dataset.severity = items[0].severity || "warning";
+  const head = document.createElement("div");
+  head.className = "warning-group-head";
+  const mark = document.createElement("span");
+  mark.className = "warning-mark";
+  const body = document.createElement("span");
+  body.className = "warning-row-body";
+  const heading = document.createElement("strong");
+  heading.textContent = `${copy.title} — ${items.length} spots`;
+  const hintLine = document.createElement("p");
+  hintLine.textContent = copy.hint;
+  body.append(heading, hintLine);
+  head.append(mark, body);
+  group.append(head);
+  // One row per cause, never a row per spot (353 rows on a real relief job
+  // taught us better). A stepper walks the preview through the instances.
+  const stepper = document.createElement("div");
+  stepper.className = "warning-stepper";
+  let cursor = -1;
+  const prev = document.createElement("button");
+  prev.type = "button";
+  prev.className = "stepper-arrow";
+  prev.textContent = "\u25c0";
+  prev.title = "Previous spot";
+  const label = document.createElement("button");
+  label.type = "button";
+  label.className = "stepper-label";
+  label.textContent = `Step through ${items.length} spots`;
+  label.title = "Show the next spot in the preview";
+  const next = document.createElement("button");
+  next.type = "button";
+  next.className = "stepper-arrow";
+  next.textContent = "\u25b6";
+  next.title = "Next spot";
+  const showSpot = (delta) => {
+    cursor = (cursor + delta + items.length) % items.length;
+    label.textContent = `Spot ${cursor + 1} of ${items.length}`;
+    const warning = items[cursor];
+    if (warning.point) locateWarning(warning);
+  };
+  prev.addEventListener("click", () => showSpot(-1));
+  next.addEventListener("click", () => showSpot(1));
+  label.addEventListener("click", () => showSpot(1));
+  stepper.append(prev, label, next);
+  group.append(stepper);
+  return group;
+}
+
+// A drawing Clayline made lines from has hundreds of these, nearly all where its
+// lines cross or touch. One collapsed block keeps them from swamping the badge,
+// with every spot still there. A pass edited by hand has lost the ids this goes
+// by, so it is back to ordinary warnings.
+function whereLinesMeetGroup(items) {
+  const group = document.createElement("article");
+  group.className = "warning-group is-collapsed";
+  group.dataset.severity = "info";
+  group.dataset.linesMeet = "true";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "warning-row warning-group-toggle";
+  toggle.setAttribute("aria-expanded", "false");
+  toggle.title = "These are normal. Lines in your drawing cross or touch here.";
+  const mark = document.createElement("span");
+  mark.className = "warning-mark";
+  const body = document.createElement("span");
+  body.className = "warning-row-body";
+  const heading = document.createElement("strong");
+  heading.textContent = `Where lines meet — ${items.length}`;
+  body.append(heading);
+  const chevron = document.createElement("span");
+  chevron.className = "warning-chevron";
+  chevron.setAttribute("aria-hidden", "true");
+  chevron.textContent = "›";
+  toggle.append(mark, body, chevron);
+  const itemsHost = document.createElement("div");
+  itemsHost.className = "warning-group-items";
+  itemsHost.hidden = true;
+  toggle.addEventListener("click", () => {
+    const expanded = itemsHost.hidden;
+    // Built on first opening: there can be hundreds of spots, and most people
+    // never look.
+    if (expanded && !itemsHost.childElementCount) {
+      const byCode = new Map();
+      items.forEach((warning) => {
+        if (!byCode.has(warning.code)) byCode.set(warning.code, []);
+        byCode.get(warning.code).push(warning);
+      });
+      byCode.forEach((same) => {
+        const copy = warningCopyFor(same[0]);
+        itemsHost.append(same.length === 1 ? warningRow(same[0], copy) : warningGroup(same, copy));
+      });
+    }
+    itemsHost.hidden = !expanded;
+    toggle.setAttribute("aria-expanded", String(expanded));
+  });
+  group.append(toggle, itemsHost);
+  return group;
 }
 
 function designedCrossingGroup(crossings) {
@@ -3511,7 +4714,7 @@ function desktopImport(files) {
       measurementStatus: "pending",
     }));
   if (!loaded.length) return false;
-  setFiles([...state.files, ...loaded]);
+  addDrawings(loaded);
   return true;
 }
 
@@ -3888,6 +5091,7 @@ async function resetParameters() {
     drawStateWriter?.suspend(() => {
       applyDefaults(state.defaults);
       if (state.files.length) invalidateAllPassMeasurements();
+      noteCoilOrJoinChanged({ settled: true });
       markDirty("Parameters reset to the Draw factory defaults. Slice again before export.");
     });
     drawStateWriter?.clear();
@@ -4004,6 +5208,15 @@ function bindEvents() {
     control.addEventListener("input", () => {
       if (state.files.length) invalidateAllPassMeasurements();
     });
+  });
+  // Lines are made for one coil width and one join, so a change to either makes
+  // them again. Off at once, so Slice can't print the old ones; the work waits for
+  // the typing to pause, and a finished entry doesn't wait at all.
+  $$([
+    "#profile", "#nozzle", "#beadWidth", "#overlap", "input[name='beadWidthMode']",
+  ].join(", ")).forEach((control) => {
+    control.addEventListener("input", () => noteCoilOrJoinChanged({ settled: false }));
+    control.addEventListener("change", () => noteCoilOrJoinChanged({ settled: true }));
   });
   // Construction overlays (F9.6): pure view toggles — they never dirty the job.
   $("#toggleFuse").addEventListener("click", () => {
@@ -4211,6 +5424,12 @@ window.claylineDrawHost = Object.freeze({
   profile: () => state.profiles.get($("#profile").value) || null,
   effectiveBeadWidth: () => effectiveBeadWidth(),
   addFile: (file) => setFiles([...state.files, file]),
+  // A pass handed over whole, for Trace over it. Undo brings the old one back.
+  replaceFile: (old, file) => setFiles(state.files.map((item) => (item === old ? file : item))),
+  // Lines are on their way to this pass, or it has none to open.
+  passHeld: (file) => passHeldByLines(file),
+  // A file that wants lines, or may yet: its Save asks where, whatever it holds now.
+  saveMustAsk: (file) => Boolean(file.makingLines) || passLinesAnswer(file)?.verdict === "convert",
   removeFile: (index) => setFiles(state.files.filter((_, i) => i !== index)),
   selectFile: (index) => selectFile(index, { forceSelect: true, scroll: true }),
   markDirty: (message) => markDirty(message),

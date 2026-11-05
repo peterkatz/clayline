@@ -48,6 +48,7 @@ EXCLUDED_PATTERNS = (
     re.compile(r"^examples/[^/]+\.gcode$"),  # generated jobs
     re.compile(r"^examples/gallery/compare-.*\.jpg$"),  # contain reference photos
     re.compile(r"^scripts/extract_reference_texture\.py$"),  # bound to the private corpus
+    re.compile(r"^tests/test_shape_lines_private\.py$"),  # names other people's drawings
     re.compile(r"(^|/)\.DS_Store$"),
     re.compile(r"(^|/)__pycache__/"),
     re.compile(r"\.py[cod]$"),

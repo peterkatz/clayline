@@ -86,6 +86,11 @@
   const SCALE_SNAP_FRACTION = 0.02; // snap to x1.0 within 2%
   const ROTATE_SNAP_DEG = 15;
   const ROTATE_SNAP_WINDOW_DEG = 3;
+  // Lay flat's pick: the area about to go down, in the gizmo's own Z blue so it
+  // reads on clay and adds no hue. A press that travels less than this is a click;
+  // further, it is turning the view.
+  const SURFACE_PICK_COLOR = 0x2980b9;
+  const SURFACE_PICK_CLICK_PX = 4;
 
   // Module-level singleton: Weave hosts exactly one placement viewport at a
   // time. init() is idempotent for the same host and re-parents cleanly for
@@ -115,6 +120,10 @@
   let gizmoDrag = null; // active move/rotate/scale gesture, or null
   let hoverRaycastAt = 0;
   let interactionHandlers = {}; // set via setInteractionHandlers()
+  // Lay flat's pick mode, or null: a real tool mode, not a kind of hover. The
+  // print path hides, the gizmo and the mesh drag are off, and the only thing a
+  // click on the form can do is choose the surface. See beginSurfacePick().
+  let surfacePick = null; // {regionAt, onPick, onCancel, region, highlight, press}
   const raycaster = new THREE.Raycaster();
   const bedPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
 
@@ -275,11 +284,18 @@
 
   function onPointerDown(event) {
     if (!hostEl) return;
-    // Plain left-button (no shift — shift is always pan, see below) tries
-    // the gizmo/mesh pick first: a hit hijacks the gesture into move/rotate/
-    // scale and the camera never sees it. A miss falls through to orbit
-    // unchanged, so dragging empty space always still orbits.
-    if (event.button === 0 && !event.shiftKey && tryStartGizmoDrag(event)) {
+    if (surfacePick) {
+      // Nothing on the form moves while picking. Every drag turns the view,
+      // which is how the potter gets round to its base; a press that never
+      // travels is the click (see endDrag).
+      surfacePick.press = event.button === 0 && !event.shiftKey
+        ? { pointerId: event.pointerId, x: event.clientX, y: event.clientY }
+        : null;
+    } else if (event.button === 0 && !event.shiftKey && tryStartGizmoDrag(event)) {
+      // Plain left-button (no shift — shift is always pan, see below) tries
+      // the gizmo/mesh pick first: a hit hijacks the gesture into move/rotate/
+      // scale and the camera never sees it. A miss falls through to orbit
+      // unchanged, so dragging empty space always still orbits.
       event.preventDefault();
       return;
     }
@@ -330,6 +346,13 @@
       try { hostEl.releasePointerCapture(pointer.pointerId); } catch { /* already released */ }
     }
     pointer.pointerId = null;
+    const press = surfacePick?.press;
+    if (!press) return;
+    surfacePick.press = null;
+    if (event?.type === "pointerup" && event.pointerId === press.pointerId
+      && Math.hypot(event.clientX - press.x, event.clientY - press.y) < SURFACE_PICK_CLICK_PX) {
+      finishSurfacePick(event);
+    }
   }
 
   function onWheel(event) {
@@ -488,6 +511,7 @@
     // A drag holds pointer capture, so it keeps receiving events even once
     // the cursor leaves the canvas — only clear hover, never a live drag.
     if (gizmoDrag || pointer.active) return;
+    if (surfacePick) showSurfaceRegion(null);
     applyHoverState(null);
   }
 
@@ -773,6 +797,10 @@
 
   function updateCursor() {
     if (!hostEl) return;
+    if (surfacePick) {
+      hostEl.style.cursor = "crosshair";
+      return;
+    }
     if (gizmoDrag) {
       hostEl.style.cursor = gizmoDrag.kind === "scale" ? "nwse-resize" : "grabbing";
       return;
@@ -793,12 +821,95 @@
   }
 
   function updateHover(event) {
-    if (gizmoDrag || !hostEl || traceActive) return;
+    if (gizmoDrag || !hostEl || (traceActive && !surfacePick)) return;
     const nowTs = window.performance ? window.performance.now() : Date.now();
     if (nowTs - hoverRaycastAt < HOVER_THROTTLE_MS) return;
     hoverRaycastAt = nowTs;
+    if (surfacePick) {
+      const face = surfaceFaceAtPointer(event);
+      showSurfaceRegion(face === null ? null : surfacePick.regionAt(face));
+      return;
+    }
     const rect = hostEl.getBoundingClientRect();
     applyHoverState(pickAtPointer(event, rect));
+  }
+
+  // --- Lay flat's pick mode ---------------------------------------------
+  // Which face is under the pointer, by its place in the `faces` array setMesh
+  // was given: the display copy's own numbering.
+
+  function surfaceFaceAtPointer(event) {
+    if (!camera || !meshObject || !hostEl) return null;
+    raycaster.setFromCamera(pointerToNDCFromRect(event, hostEl.getBoundingClientRect()), camera);
+    const hits = raycaster.intersectObject(meshObject, false);
+    return hits.length && Number.isInteger(hits[0].faceIndex) ? hits[0].faceIndex : null;
+  }
+
+  // Lights the connected area about to go down. regionAt hands back the same
+  // object while the pointer stays on the same area, so this builds once per area.
+  function showSurfaceRegion(region) {
+    if (!surfacePick || surfacePick.region === (region || null)) return;
+    requestRender();
+    clearSurfaceHighlight();
+    surfacePick.region = region || null;
+    if (!region || !meshObject || !scene) return;
+    const corners = meshObject.geometry.getAttribute("position").array;
+    const index = meshObject.geometry.getIndex().array;
+    const positions = new Float32Array(region.faces.length * 9);
+    region.faces.forEach((face, slot) => {
+      for (let corner = 0; corner < 3; corner += 1) {
+        const vertex = index[face * 3 + corner];
+        positions[slot * 9 + corner * 3] = corners[vertex * 3];
+        positions[slot * 9 + corner * 3 + 1] = corners[vertex * 3 + 1];
+        positions[slot * 9 + corner * 3 + 2] = corners[vertex * 3 + 2];
+      }
+    });
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const material = new THREE.MeshBasicMaterial({
+      color: SURFACE_PICK_COLOR,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    surfacePick.highlight = new THREE.Mesh(geometry, material);
+    scene.add(surfacePick.highlight);
+  }
+
+  function clearSurfaceHighlight() {
+    if (!surfacePick?.highlight) return;
+    requestRender();
+    if (surfacePick.highlight.parent) surfacePick.highlight.parent.remove(surfacePick.highlight);
+    disposeObject3D(surfacePick.highlight);
+    surfacePick.highlight = null;
+    surfacePick.region = null;
+  }
+
+  function finishSurfacePick(event) {
+    const face = surfaceFaceAtPointer(event);
+    // A click off the form chooses nothing: still picking.
+    const region = face === null ? null : surfacePick.regionAt(face);
+    if (!region) return;
+    const { onPick } = surfacePick;
+    endSurfacePick();
+    onPick(region);
+  }
+
+  function endSurfacePick() {
+    if (!surfacePick) return;
+    clearSurfaceHighlight();
+    surfacePick = null;
+    applyMeshPresentation();
+    updateCursor();
+    requestRender();
+  }
+
+  function cancelSurfacePick() {
+    if (!surfacePick) return;
+    const { onCancel } = surfacePick;
+    endSurfacePick();
+    onCancel?.();
   }
 
   function disposeGizmo() {
@@ -1130,6 +1241,7 @@
 
   function onDocumentKeydown(event) {
     if (event.key !== "Escape") return;
+    if (surfacePick) { cancelSurfacePick(); return; }
     if (!hostEl || hostEl.getClientRects().length === 0) return; // pane hidden
     if (gizmoDrag) { cancelGizmoDrag(); return; }
     if (selected && !traceActive) hideGizmo();
@@ -1654,7 +1766,7 @@
   // from hiding either opaque deposit coils or later transparent overlays.
   function applyMeshPresentation() {
     if (!meshObject) return;
-    const ghosted = traceActive && sourceMeshGhostActive;
+    const ghosted = traceActive && sourceMeshGhostActive && !surfacePick;
     const material = meshObject.material;
     const transparencyChanged = material.transparent !== ghosted;
     material.color.setHex(ghosted ? SOURCE_MESH_GHOST_COLOR : MESH_COLOR);
@@ -1667,8 +1779,12 @@
     material.polygonOffsetUnits = ghosted ? 1 : 0;
     if (transparencyChanged) material.needsUpdate = true;
     meshObject.renderOrder = ghosted ? SOURCE_MESH_GHOST_RENDER_ORDER : 0;
-    meshObject.visible = !traceActive || ghosted;
-    if (gizmoGroup) gizmoGroup.visible = !traceActive && selected;
+    meshObject.visible = !traceActive || ghosted || Boolean(surfacePick);
+    if (gizmoGroup) gizmoGroup.visible = !traceActive && selected && !surfacePick;
+    // Hidden, not torn down: Esc brings the print path back as it was.
+    [traceGroup, overlayGroup, auxGroup].forEach((group) => {
+      if (group) group.visible = !surfacePick;
+    });
   }
 
   // Adapter the scrubber drives every tick — a single stable object, safe
@@ -1787,6 +1903,34 @@
       interactionHandlers = handlers || {};
     },
 
+    // Lay flat's pick mode. regionAt(faceIndex) names the connected area under
+    // the pointer ({faces}, or null), the same object for the same area. onPick
+    // gets the area clicked; the mode has ended by then. onCancel hears Esc, and
+    // a new mesh landing, whose faces are no longer the ones being picked from.
+    beginSurfacePick({ regionAt, onPick, onCancel }) {
+      if (!meshObject || !scene) return false;
+      cancelGizmoDrag();
+      cancelSurfacePick();
+      applyHoverState(null);
+      surfacePick = { regionAt, onPick, onCancel, region: null, highlight: null, press: null };
+      applyMeshPresentation();
+      updateCursor();
+      requestRender();
+      return true;
+    },
+
+    endSurfacePick,
+
+    surfacePickState() {
+      return {
+        active: Boolean(surfacePick),
+        litFaces: surfacePick?.region ? surfacePick.region.faces.length : 0,
+        pathShowing: Boolean(traceGroup?.visible),
+        gizmoShowing: Boolean(gizmoGroup?.visible),
+        meshShowing: Boolean(meshObject?.visible),
+      };
+    },
+
     setBed(bounds, formatter) {
       requestRender();
       if (!scene) return;
@@ -1811,6 +1955,7 @@
       // also invalidates any trace presentation: a new source mesh must
       // return to its canonical opaque state until a fresh trace arrives.
       cancelGizmoDrag();
+      cancelSurfacePick();
       clearTraceInternal();
       traceActive = false;
       sourceMeshGhostActive = false;
@@ -2088,6 +2233,7 @@
     dispose() {
       disposed = true;
       cancelGizmoDrag();
+      cancelSurfacePick();
       traceActive = false;
       sourceMeshGhostActive = false;
       applyMeshPresentation();

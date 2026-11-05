@@ -35,9 +35,7 @@ DRAW_TOOLTIPS = {
         "Open the bed as a drawing surface: tap points, drag to draw freely, "
         "pull a line to bend it. Nothing plans until you Slice."
     ),
-    "addSvgsButton": (
-        "Load centerline SVG artwork you already have. Each SVG becomes one printable page."
-    ),
+    "addSvgsButton": ("Add a drawing you already have. Each one prints as its own pass."),
     "newDrawingButton": (
         "Start an empty pass and draw it straight onto the bed, in millimetres, at coil width."
     ),
@@ -246,7 +244,7 @@ def test_the_first_run_empty_state_offers_both_ways_to_start() -> None:
     empty = _block('id="emptyState"', "</div>\n          <div class=")
     assert '<h2 id="emptyTitle">Your bed is clear</h2>' in empty
     assert (
-        '<p id="emptyMessage">Draw straight onto the bed, or load centerline SVGs you '
+        '<p id="emptyMessage">Draw straight onto the bed, or add a drawing you '
         "already have. Nothing plans until you Slice.</p>" in empty
     )
     assert 'id="emptyActions"' in empty
@@ -256,7 +254,7 @@ def test_the_first_run_empty_state_offers_both_ways_to_start() -> None:
     # The same copy lives in the shell, which rewrites the empty state whenever
     # the page list empties — two spellings would flicker between them.
     assert (
-        '"Draw straight onto the bed, or load centerline SVGs you already have. '
+        '"Draw straight onto the bed, or add a drawing you already have. '
         'Nothing plans until you Slice."' in SHELL
     )
     assert 'title.textContent = "Your bed is clear"' in SHELL
@@ -278,7 +276,7 @@ def test_every_loaded_design_carries_its_own_edit_affordance() -> None:
     assert APP.count("claylineDraw?.openFile(index)") == 2
     # One tooltip, defined once in the shell and read by both controls.
     assert 'const EDIT_TIP = "Edit on the bed — draw, bend and move this design\'s lines";' in SHELL
-    assert APP.count('window.claylineDraw?.editTip() || "Edit on the bed"') == 2
+    assert APP.count('window.claylineDraw?.editTip(file) || "Edit on the bed"') == 2
     # The edit badge is visible on hover, so the tooltip is not the only affordance.
     assert ".page-thumb-button" in CSS
     assert ".page-thumb-pencil" in CSS
@@ -308,7 +306,10 @@ def test_the_slice_footnote_stopped_assuming_the_design_arrives_from_outside() -
     assert "Add an SVG to begin." not in HTML
     assert "Add an SVG to begin." not in APP
     # The Design section says the same thing about what a drawing IS.
-    assert "Centerline SVGs only — anything you draw here is a centerline by construction." in HTML
+    assert (
+        "Drop in a drawing — lines, shapes or text. "
+        "Shapes become lines you can check before slicing." in HTML
+    )
     # The rail headline is unchanged; it just became true one step earlier.
     assert "From drawing to print" in HTML
 

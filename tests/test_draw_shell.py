@@ -120,10 +120,11 @@ def test_the_strings_that_stopped_assuming_an_svg_arrives_from_outside() -> None
     assert "Add or draw a design to begin." in markup
     assert "Add or draw a design to begin." in app
     assert (
-        "Draw straight onto the bed, or load centerline SVGs you already have. "
+        "Draw straight onto the bed, or add a drawing you already have. "
         "Nothing plans until you Slice." in markup
     )
-    assert "a centerline by construction" in markup
+    assert "Shapes become lines you can check before slicing." in markup
+    assert "Fill-only shapes are reported, never guessed" not in markup
 
 
 def test_the_edit_never_leaves_a_stale_thumbnail_or_size() -> None:

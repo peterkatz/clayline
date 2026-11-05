@@ -175,6 +175,78 @@ final class FileTypeAndImportTests: XCTestCase {
         XCTAssertFalse(ClaylineOpenRequest(raw: nil).isPrintFile)
     }
 
+    /// Upload image… stamps its own one-shot marker. Without it the panel fell
+    /// to the Model box's meshes, projects and print files, where every image
+    /// was greyed out. A picture is no document, so it goes nowhere the shell
+    /// keeps documents, and no other picker inherits it.
+    func testOpenRequestParsesTheImageMarker() throws {
+        let request = ClaylineOpenRequest(raw: "weave:image")
+        XCTAssertTrue(request.isImage)
+        XCTAssertEqual(request.mode, .weave)
+        XCTAssertFalse(request.isProject)
+        XCTAssertFalse(request.isReferencePhoto)
+        XCTAssertFalse(request.isPrintFile)
+        XCTAssertFalse(request.isPattern)
+        XCTAssertFalse(request.isGallery)
+        XCTAssertFalse(request.isDrawingPicker)
+        XCTAssertFalse(request.addsToOpenRecent)
+
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let picture = folder.appendingPathComponent("relief.psd")
+        XCTAssertTrue(FileManager.default.createFile(atPath: picture.path, contents: Data([0])))
+        XCTAssertFalse(request.awaitsThePage(picture))
+        XCTAssertFalse(request.notesOnPick(picture))
+
+        for raw in ["weave:", "weave:gcode", "weave:pattern", "weave:project", "tiles:reference-photo", "tiles:", "tiles:gallery", "weave:images", "weave:Image"] {
+            XCTAssertFalse(ClaylineOpenRequest(raw: raw).isImage, raw)
+        }
+        XCTAssertFalse(ClaylineOpenRequest(raw: nil).isImage)
+    }
+
+    func testTheImagePanelOffersEveryFormatTheEngineReads() {
+        XCTAssertEqual(ClaylineFileTypes.imagePanelTitle, "Choose an Image")
+        XCTAssertEqual(
+            Set(ClaylineFileTypes.imageTypes.map(\.identifier)),
+            [
+                "public.png", "public.jpeg", "public.tiff", "org.webmproject.webp",
+                "com.microsoft.bmp", "public.heic", "public.heif",
+                "com.adobe.photoshop-image",
+            ]
+        )
+        // The panel filters by these types, so each real file name has to
+        // land on one of them, the two TIFF and two JPEG spellings included.
+        for name in ["a.png", "a.jpg", "a.jpeg", "a.tif", "a.tiff", "a.webp", "a.bmp", "a.heic", "a.heif", "a.psd"] {
+            let type = UTType(filenameExtension: (name as NSString).pathExtension)
+            XCTAssertTrue(
+                ClaylineFileTypes.imageTypes.contains { type?.conforms(to: $0) == true },
+                name
+            )
+        }
+    }
+
+    /// Adding the image panel left every other panel's list as it was.
+    func testTheOtherPanelsOfferWhatTheyAlwaysDid() {
+        XCTAssertEqual(ClaylineFileTypes.allowedContentTypes(for: .tiles), [ClaylineFileTypes.svg])
+        XCTAssertEqual(
+            ClaylineFileTypes.allowedContentTypes(for: .weave),
+            ClaylineFileTypes.meshTypes + ClaylineFileTypes.projectTypes + ClaylineFileTypes.printFileTypes
+        )
+        XCTAssertEqual(ClaylineFileTypes.projectTypes, [ClaylineFileTypes.project])
+        XCTAssertEqual(ClaylineFileTypes.printFileTypes, [ClaylineFileTypes.gcode])
+        XCTAssertEqual(ClaylineFileTypes.patternTypes, [.json])
+        let photos = Set(ClaylineFileTypes.referencePhotoTypes.map(\.identifier))
+        XCTAssertEqual(
+            photos,
+            ["public.png", "public.jpeg", "org.webmproject.webp", "public.heic", "public.heif"]
+        )
+        for type in ClaylineFileTypes.imageTypes {
+            XCTAssertFalse(ClaylineFileTypes.allowedContentTypes(for: .weave).contains(type))
+        }
+    }
+
     /// Load pattern stamps its own one-shot marker, so the panel it opens
     /// offers saved pattern files instead of the Model box's meshes, projects
     /// and print files (where a pattern was greyed out), and a pattern never

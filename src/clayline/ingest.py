@@ -196,6 +196,30 @@ def _has_visible_stroke(element: Shape) -> bool:
     return stroke_opacity is None or float(stroke_opacity) > 0
 
 
+def _shows_as_filled_shape(
+    element: Shape,
+    tolerance: float,
+    provenance: Provenance,
+    transform: PointTransform,
+) -> bool:
+    """Whether a shape with no visible line still paints solid colour on screen.
+
+    A shape with no fill colour of its own defaults to black, but a fill only
+    paints what an outline encloses, so a bare straight line shows nothing.
+    """
+
+    fill = getattr(element, "fill", None)
+    if fill is None or getattr(fill, "value", None) is None:
+        return False
+    if float(getattr(fill, "opacity", 1.0)) <= 0:
+        return False
+    try:
+        outlines = flatten_path(element, tolerance, provenance, point_transform=transform)
+    except (TypeError, ValueError):
+        return False
+    return any(len(outline.points) > 2 for outline in outlines)
+
+
 def _element_tag(element: Shape) -> str:
     tag = getattr(element, "values", {}).get("tag")
     return str(tag) if tag else type(element).__name__.lower()
@@ -325,6 +349,7 @@ def ingest_svg(
         )
 
     polylines: list[Polyline] = []
+    without_line: list[tuple[Shape, Provenance]] = []
     source_name = str(source_path)
     for element_index, (element, use_id) in enumerate(graphics):
         tag = _element_tag(element)
@@ -354,6 +379,7 @@ def ingest_svg(
                     provenance=provenance,
                 )
             )
+            without_line.append((element, provenance))
             continue
         flattened = flatten_path(
             element,
@@ -377,6 +403,13 @@ def ingest_svg(
     fill_seeds, fill_warnings = _fill_seeds(svg, to_printer_point)
     warnings.extend(fill_warnings)
 
+    # Asked only of a file with no line at all, so a file that prints neither
+    # pays for this check nor can be changed by it.
+    only_filled_shapes = not polylines and any(
+        _shows_as_filled_shape(element, flatten_tol, provenance, to_printer_point)
+        for element, provenance in without_line
+    )
+
     return Design(
         id=source_path.stem,
         source_path=source_path,
@@ -391,6 +424,7 @@ def ingest_svg(
             viewport_height * coordinate_to_mm * total_scale,
         ),
         fill_seeds=fill_seeds,
+        only_filled_shapes=only_filled_shapes,
     )
 
 

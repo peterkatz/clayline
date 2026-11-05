@@ -60,12 +60,13 @@
           <div class="section-index">01</div>
           <div class="section-body">
             <h2>Design</h2>
-            <p class="section-copy">Centerline SVGs only — anything you draw here is a centerline by construction. Fill-only shapes are reported, never guessed.</p>
-            <label class="drop-zone" id="dropZone" for="fileInput" title="Add centerline SVG artwork. Drop files on this box or click to browse — each SVG becomes one printable pass, in the order you add them.">
+            <p class="section-copy">Drop in a drawing — lines, shapes or text. Shapes become lines you can check before slicing.</p>
+            <label class="drop-zone" id="dropZone" for="fileInput" title="Add a drawing. Each one becomes a pass, in the order you add them.">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg>
               <span><strong>Drop SVGs here</strong><small>or choose files</small></span>
               <input id="fileInput" type="file" accept="image/svg+xml,.svg" multiple>
             </label>
+            <div class="drop-notes" id="dropNotes" hidden></div>
             <div class="draw-new-row">
               <button class="secondary-button compact-button" id="newDrawingButton" type="button" title="Start an empty pass and draw it straight onto the bed, in millimetres, at coil width.">New drawing</button>
               <button class="secondary-button compact-button" id="galleryButton" type="button" title="Open one of the example drawings that come with Clayline — patterns from many traditions, ready to slice and print." hidden>Browse the gallery</button>
@@ -259,13 +260,18 @@
               <circle cx="70" cy="112" r="27"/><circle cx="110" cy="112" r="27"/>
             </svg>
             <h2 id="emptyTitle">Your bed is clear</h2>
-            <p id="emptyMessage">Draw straight onto the bed, or load centerline SVGs you already have. Nothing plans until you Slice.</p>
+            <p id="emptyMessage">Draw straight onto the bed, or add a drawing you already have. Nothing plans until you Slice.</p>
             <div class="empty-actions" id="emptyActions">
               <button class="primary-button" id="startDrawingButton" type="button" title="Open the bed as a drawing surface: tap points, drag to draw freely, pull a line to bend it. Nothing plans until you Slice.">Start a drawing</button>
-              <button class="secondary-button" id="addSvgsButton" type="button" title="Load centerline SVG artwork you already have. Each SVG becomes one printable page.">Add SVGs…</button>
+              <button class="secondary-button" id="addSvgsButton" type="button" title="Add a drawing you already have. Each one prints as its own pass.">Add SVGs…</button>
               <button class="secondary-button" id="emptyGalleryButton" type="button" title="Open one of the example drawings that come with Clayline — patterns from many traditions, ready to slice and print." hidden>Browse the gallery…</button>
               <button class="secondary-button" id="emptyOpenProjectButton" type="button" title="Open a project file saved by Clayline. It brings back the design and every setting.">Open project…</button>
             </div>
+          </div>
+          <div class="lines-preview" id="linesPreview" hidden>
+            <svg class="lines-preview-art" id="linesPreviewArt" aria-hidden="true"></svg>
+            <div class="clay-spinner lines-preview-spinner" id="linesPreviewSpinner" aria-hidden="true" hidden><span></span><span></span><span></span></div>
+            <p class="lines-preview-caption" id="linesPreviewCaption" title="The faded copy behind them is your drawing. It never prints.">These are the lines Clayline will print. Press Slice to build the print.</p>
           </div>
           <div class="loading-state" id="loadingState" role="status" aria-live="polite" hidden>
             <div class="clay-spinner" aria-hidden="true"><span></span><span></span><span></span></div>
@@ -275,6 +281,7 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v5m0 3.5v.5M4.7 19h14.6L12 5 4.7 19Z"/></svg>
             <h2>This design couldn't slice</h2>
             <p id="errorMessage"></p>
+            <p class="error-technical-line" id="errorTechnical" hidden></p>
             <div class="error-actions" id="errorActions" hidden></div>
           </div>
           <div class="plan-view" id="planView" role="tabpanel" aria-labelledby="planTab" hidden></div>
@@ -461,7 +468,15 @@
                 <button class="secondary-button compact-button" id="weaveSaveProjectButton" type="button" title="Load a mesh first" disabled>Save project…</button>
               </div>
               <p class="field-hint project-status" id="weaveProjectStatus" role="status" aria-live="polite" hidden></p>
-              <div class="file-summary" id="weaveFileSummary" aria-live="polite">No model loaded</div>
+              <div class="model-name-row">
+                <div class="file-summary" id="weaveFileSummary" aria-live="polite">No model loaded</div>
+                <button class="secondary-button compact-button" id="weaveLayFlat" type="button" aria-pressed="false" title="Pick a surface of the form and lay it on the bed. Its size stays as it is, and Undo puts it back." hidden>Lay flat…</button>
+                <button class="secondary-button compact-button" id="weaveRemoveModel" type="button" title="Take the model off the bed. Your settings stay as they are, and Undo brings it back." hidden>Remove</button>
+              </div>
+              <div class="base-line" id="weaveBaseLine" hidden>
+                <p class="field-hint" id="weaveBaseText" aria-live="polite"></p>
+                <button class="secondary-button compact-button" id="weaveFlattenBase" type="button" title="Sets the nearest flat base down on the bed without turning the form over. Its size stays as it is, and Undo puts it back." hidden>Flatten base</button>
+              </div>
               <div class="from-print-line" id="weaveFromPrint" hidden>
                 <p class="field-hint" id="weaveFromPrintText" aria-live="polite"></p>
                 <button class="secondary-button compact-button" id="weaveFromPrintChoose" type="button" title="Open the model this print file was sliced from, in place of the form made from it. It is placed as it printed." hidden>Choose the model…</button>
@@ -484,9 +499,9 @@
                   <label class="field" title="Stretches the placed form's height on top of Scale factor. If a height is typed above, that height wins and this resizes the footprint needed to reach it instead. 1 leaves it alone."><span>Height ×</span><input id="weaveScaleZ" type="number" value="1" min="0.0001" step="0.01"></label>
                   <label class="field" title="Nudge the placed mesh along the printer X axis."><span>X nudge (mm)</span><input id="weaveOffsetX" type="number" value="0" step="1"></label>
                   <label class="field" title="Nudge the placed mesh along the printer Y axis."><span>Y nudge (mm)</span><input id="weaveOffsetY" type="number" value="0" step="1"></label>
-                  <label class="field" title="Spin about the printer Z axis, in degrees. Real geometry; the sliced rings rotate, not just the picture."><span>Rotate Z (°)</span><input id="weaveRotate" type="number" value="0" step="1"></label>
-                  <label class="field" title="Spin about the printer X axis, in degrees. Applied before Rotate Z."><span>Rotate X (°)</span><input id="weaveRotateX" type="number" value="0" step="1"></label>
-                  <label class="field" title="Spin about the printer Y axis, in degrees. Applied before Rotate Z, after Rotate X."><span>Rotate Y (°)</span><input id="weaveRotateY" type="number" value="0" step="1"></label>
+                  <label class="field" title="Spin about the printer Z axis, in degrees. Real geometry; the sliced rings rotate, not just the picture."><span>Rotate Z (°)</span><input id="weaveRotate" type="number" value="0" step="any"></label>
+                  <label class="field" title="Spin about the printer X axis, in degrees. Applied before Rotate Z."><span>Rotate X (°)</span><input id="weaveRotateX" type="number" value="0" step="any"></label>
+                  <label class="field" title="Spin about the printer Y axis, in degrees. Applied before Rotate Z, after Rotate X."><span>Rotate Y (°)</span><input id="weaveRotateY" type="number" value="0" step="any"></label>
                 </div>
                 <button class="secondary-button compact-button" id="weaveResetPlacement" type="button" title="Zero every nudge and rotation and set every stretch back to 1 — back to the file's own placement.">Reset placement</button>
                 <input id="weaveFitHeight" type="hidden" data-unit="mm">
@@ -724,8 +739,8 @@
                     </div>
                     <div class="pattern-file-row image-source-actions">
                       <button type="button" class="secondary-button compact-button" id="weaveImageBrowse" aria-haspopup="dialog" aria-controls="weaveImageGalleryOverlay">Browse images…</button>
-                      <button type="button" class="secondary-button compact-button" id="weaveImageUpload">Upload image…</button>
-                      <input type="file" id="weaveImageFile" accept="image/png,image/jpeg,image/webp,image/tiff,image/bmp" hidden>
+                      <button type="button" class="secondary-button compact-button" id="weaveImageUpload" title="PNG, JPEG, TIFF, WebP, BMP, HEIC or Photoshop, up to 17 MB and 16 million pixels.">Upload image…</button>
+                      <input type="file" id="weaveImageFile" accept="image/png,image/jpeg,image/tiff,image/webp,image/bmp,image/heic,image/heif,image/vnd.adobe.photoshop,.png,.jpg,.jpeg,.tif,.tiff,.webp,.bmp,.heic,.heif,.psd" hidden>
                     </div>
                   </div>
                   <p class="field-hint" id="weaveImageSourceHint" aria-live="polite"></p>
@@ -945,6 +960,7 @@
           </div>
           <div class="weave-active-state" id="weaveActiveState" hidden>
             <div id="weaveToolpathHost" class="weave-toolpath-host" aria-label="Mesh Mode toolpath preview"></div>
+            <p class="surface-pick-hint" id="weaveSurfacePickHint" role="status" aria-live="polite" hidden>Click the surface that should sit on the bed. Esc cancels.</p>
             <div class="transient-stamp" id="weaveTransientStamp" role="status" aria-live="polite" aria-atomic="true" aria-busy="false" hidden title="A quick sketch of the change while you drag — release to rebuild the exact final path.">
               <span>Rough preview</span>
               <span class="transient-working" id="weaveTransientWorking" hidden>
@@ -1074,11 +1090,13 @@
     <script src="/static/studio-state.js" defer></script>
     <script src="/static/reference-store.js" defer></script>
     <script src="/static/project-file.js" defer></script>
+    <script src="/static/shape-lines.js" defer></script>
     <script src="/static/app.js" defer></script>
     <script src="/static/draw-core.js" defer></script>
     <script src="/static/draw-canvas.js" defer></script>
     <script src="/static/draw-input.js" defer></script>
     <script src="/static/draw.js" defer></script>
+    <script src="/static/lay-flat.js" defer></script>
     <script src="/static/viewport3d.js" defer></script>
     <script src="/static/weave.js" defer></script>
     <script src="/static/studio-controls.js" defer></script>

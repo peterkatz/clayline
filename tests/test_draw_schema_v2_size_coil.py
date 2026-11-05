@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from clayline.models import PageMode
@@ -235,6 +237,119 @@ def test_a_pass_with_nothing_to_print_is_named_by_its_row_in_potter_words(
     }
     for word in ("empty.svg", "page-", "centerline", "stroke", "measurable"):
         assert word not in str(caught.value)
+
+
+# As a tracing app writes a drawing: one solid black shape with openings cut in
+# it, its colour set on a group.  On screen it looks like lines.
+TRACED_SVG = """\
+<svg xmlns="http://www.w3.org/2000/svg" width="83.1pt" height="149.8pt" viewBox="0 0 831 1498">
+  <g transform="translate(0,1498) scale(0.1,-0.1)" fill="#000000" stroke="none">
+    <path d="M 1000 1000 L 7000 1000 L 7000 13000 L 1000 13000 Z
+             M 2000 2000 L 2000 12000 L 6000 12000 L 6000 2000 Z"/>
+  </g>
+</svg>
+"""
+ONLY_FILLED_SHAPES = (
+    "this file holds only filled shapes. Press Make lines again, or remove the pass."
+)
+
+
+def _shapes_svg(*shapes: str) -> str:
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="50mm" height="20mm" viewBox="0 0 50 20">'
+        + "".join(shapes)
+        + "</svg>"
+    )
+
+
+FILLED_SQUARE = '<path d="M 5 5 L 15 5 L 15 15 L 5 15 Z" fill="#000"/>'
+
+
+@pytest.mark.parametrize(
+    "svg",
+    (
+        TRACED_SVG,
+        _shapes_svg(FILLED_SQUARE),
+        # No colour named at all: a screen paints this black.
+        _shapes_svg('<path d="M 5 5 L 15 5 L 15 15 Z"/>'),
+        _shapes_svg('<circle cx="10" cy="10" r="5" style="fill:#123;stroke:none"/>'),
+        # A filled shape left over beside a line with no length to it.
+        _shapes_svg(FILLED_SQUARE, '<path d="M 30 5 L 30 5" fill="none" stroke="black"/>'),
+    ),
+    ids=("traced", "fill-attribute", "default-black", "style", "with-a-lengthless-line"),
+)
+def test_a_pass_of_only_filled_shapes_says_so_in_potter_words(svg: str) -> None:
+    files = [_file("line.svg", LINE_SVG), _file("traced.svg", svg), _file("line.svg", LINE_SVG)]
+    with pytest.raises(webui.UiRequestError) as caught:
+        webui._layout_check_payload(_schema_two_payload(files=files))
+
+    assert str(caught.value) == f"Pass 2 has nothing to print: {ONLY_FILLED_SHAPES}"
+    assert caught.value.detail == {
+        "message": str(caught.value),
+        "code": "pass_has_nothing_to_print",
+        "data": {"pass": 2},
+    }
+    for word in ("traced", "page-", "centerline", "stroke", "path", "engine", "svg", "element"):
+        assert word not in str(caught.value).lower()
+
+
+def test_the_layout_check_route_tells_the_potter_about_only_filled_shapes() -> None:
+    app = webui.create_app()
+
+    async def post() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post(
+                "/api/layout-check",
+                json=_schema_two_payload(TRACED_SVG, name="traced.svg"),
+                headers={"Origin": "http://testserver"},
+            )
+
+    response = asyncio.run(post())
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "message": f"Pass 1 has nothing to print: {ONLY_FILLED_SHAPES}",
+        "code": "pass_has_nothing_to_print",
+        "data": {"pass": 1},
+    }
+
+
+@pytest.mark.parametrize(
+    ("svg", "reason"),
+    (
+        (
+            _shapes_svg('<path d="M 5 5 L 15 5 L 15 15 Z" fill="none" stroke="none"/>'),
+            "it has no lines to follow",
+        ),
+        (
+            _shapes_svg('<path d="M 5 5 L 15 5 L 15 15 Z" fill="#000" fill-opacity="0"/>'),
+            "it has no lines to follow",
+        ),
+        # Black by default, yet a fill with no area paints nothing at all.
+        (_shapes_svg('<line x1="5" y1="5" x2="45" y2="15"/>'), "it has no lines to follow"),
+        (_shapes_svg('<path d="M 5 5 L 45 15"/>'), "it has no lines to follow"),
+        # Its lines are what stops this one; the filled shape is not the reason.
+        (
+            _shapes_svg(FILLED_SQUARE, '<path d="M 30 5 L 30.001 5" fill="none" stroke="black"/>'),
+            "its lines are too short to lay a coil",
+        ),
+    ),
+    ids=("invisible", "clear-fill", "bare-line-element", "bare-line-path", "filled-and-too-short"),
+)
+def test_a_pass_that_is_not_only_filled_shapes_keeps_its_own_reason(svg: str, reason: str) -> None:
+    with pytest.raises(webui.UiRequestError) as caught:
+        webui._layout_check_payload(_schema_two_payload(svg))
+
+    assert str(caught.value) == (
+        f"Pass 1 has nothing to print: {reason}. Draw on it, or remove the pass."
+    )
+
+
+def test_a_filled_shape_beside_a_line_still_prints_the_line() -> None:
+    svg = _shapes_svg(FILLED_SQUARE, '<path d="M 5 18 L 45 18" fill="none" stroke="black"/>')
+
+    assert webui._layout_check_payload(_schema_two_payload(svg))["pages"][0]["source_w_mm"] > 0
 
 
 def test_a_slice_that_reaches_a_pass_with_nothing_to_print_names_it_the_same_way() -> None:

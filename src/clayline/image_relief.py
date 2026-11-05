@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import binascii
 import io
+import struct
 from dataclasses import dataclass, field, fields
 from functools import lru_cache
 from importlib.resources import files
@@ -22,8 +23,27 @@ if TYPE_CHECKING:
     from clayline.weave_models import CurvePoint, WeaveSettings
 
 MAX_IMAGES = 3
-MAX_SOURCE_BYTES = 16 * 1024 * 1024
+# Three pictures this size are 68 MiB of base64, inside the 72 MiB limit on a
+# request (webui/app.py) and on a saved project's settings (project-file.js); 18 MiB
+# each would not be. It is not the memory limit, though. A file packed small can
+# still hold the 16 million pixels below, and those alone cost more.
+MAX_SOURCE_BYTES = 17 * 1024 * 1024
 MAX_SOURCE_PIXELS = 16 * 1024 * 1024
+SOURCE_TOO_LARGE = "Image artwork must be no larger than 17 MB"
+SOURCE_TOO_MANY_PIXELS = "Choose an image with at most 16 million pixels"
+SOURCE_UNREADABLE = (
+    "Image artwork could not be read; choose a PNG, JPEG, TIFF, WebP, BMP, HEIC or Photoshop file"
+)
+PHOTOSHOP_UNREADABLE = (
+    "This Photoshop file could not be read. Save it at 8 bits per channel, or as a TIFF."
+)
+PHOTOSHOP_WITHOUT_PICTURE = (
+    "This Photoshop file was saved without its flattened picture. "
+    "Save it again with Maximize Compatibility on."
+)
+# Photoshop's version-info image resource. Its fifth byte says whether the
+# flattened picture in the file is the real one.
+_PHOTOSHOP_VERSION_INFO = 1057
 
 
 def _flat_extrusion() -> tuple[CurvePoint, ...]:
@@ -269,13 +289,13 @@ def image_bytes(effect: ImageEffect) -> bytes:
                 raise ValueError("Upload an image as base64 artwork")
             data = data.split(";base64,", 1)[1]
         if len(data) > (MAX_SOURCE_BYTES + 2) // 3 * 4:
-            raise ValueError("Image artwork must be no larger than 16 MB")
+            raise ValueError(SOURCE_TOO_LARGE)
         try:
             result = base64.b64decode(data, validate=True)
         except (ValueError, binascii.Error) as exc:
             raise ValueError("Image artwork could not be read; choose the image again") from exc
         if len(result) > MAX_SOURCE_BYTES:
-            raise ValueError("Image artwork must be no larger than 16 MB")
+            raise ValueError(SOURCE_TOO_LARGE)
         return result
     return b""
 
@@ -283,6 +303,70 @@ def image_bytes(effect: ImageEffect) -> bytes:
 def _signed_scalar(values: NDArray[Any], maximum: float, neutral: float) -> NDArray[np.float64]:
     delta = np.asarray(values, dtype=np.float64) - neutral
     return np.where(delta >= 0, delta / (maximum - neutral), delta / neutral)
+
+
+def _photoshop_fourth_channel_is_transparency(raw: bytes) -> bool:
+    """Photoshop's mark for it, in Adobe's published layout.
+
+    A fourth channel on an RGB file is a saved selection unless the layer count
+    is negative, which says the first extra channel is the merged picture's
+    transparency. After the 26-byte header, the colour data and the image
+    resources each start with their length; then come the lengths of the layer
+    section and of its layer information, and then the count.
+    """
+    try:
+        at = 26
+        for _section in range(2):
+            at += 4 + struct.unpack_from(">I", raw, at)[0]
+        layer_section, layer_info = struct.unpack_from(">II", raw, at)
+        return bool(layer_section and layer_info) and struct.unpack_from(">h", raw, at + 8)[0] < 0
+    except struct.error:
+        return False
+
+
+def _photoshop_save_as_would_help(raw: bytes) -> bool:
+    """Pillow reads only Photoshop's 8-bit files of the ordinary kind.
+
+    A whole file of another depth or kind can be saved again as one it reads. A
+    file that is cut short or damaged can't be helped that way.
+    """
+    if raw[:4] != b"8BPS" or len(raw) < 24:
+        return False
+    version = struct.unpack_from(">H", raw, 4)[0]
+    depth = struct.unpack_from(">H", raw, 22)[0]
+    return version != 1 or depth not in {1, 8}
+
+
+def _refuse_photoshop_without_its_picture(im: Any, picture: Any) -> None:
+    """A layered Photoshop file saved without Maximize Compatibility.
+
+    It holds a placeholder where its flattened picture would be, and Clayline
+    reads only that picture, so the wall would silently take the placeholder.
+    Photoshop says which it is, and its word is final: re-saving a plain
+    one-colour picture could never answer a refusal. A file that does not say
+    is taken for a placeholder if it is layered and all one colour. With no
+    layers, one colour is a real, if dull, picture.
+    """
+    says_real = [
+        bool(data[4])
+        for number, _name, data in im.resources
+        if number == _PHOTOSHOP_VERSION_INFO and len(data) > 4
+    ]
+    if says_real:
+        if says_real[0]:
+            return
+    else:
+        extrema = picture.getextrema()
+        bands = extrema if isinstance(extrema[0], tuple) else (extrema,)
+        if any(low != high for low, high in bands):
+            return
+    try:
+        layered = bool(im.layers)
+    except (OSError, ValueError, IndexError, EOFError, struct.error):
+        # Damaged layer records do not spoil the flattened picture.
+        return
+    if layered:
+        raise ValueError(PHOTOSHOP_WITHOUT_PICTURE)
 
 
 @lru_cache(maxsize=12)
@@ -306,8 +390,14 @@ def _source_data(source_id: str | None, data_base64: str | None) -> tuple[NDArra
     try:
         with Image.open(io.BytesIO(raw)) as im:
             if im.width * im.height > MAX_SOURCE_PIXELS or min(im.size) < 1:
-                raise ValueError("Choose an image with at most 16 million pixels")
+                raise ValueError(SOURCE_TOO_MANY_PIXELS)
             im.load()
+            if im.format == "PSD":
+                picture = im
+                if im.mode == "RGBA" and not _photoshop_fourth_channel_is_transparency(raw):
+                    picture = im.convert("RGB")
+                _refuse_photoshop_without_its_picture(im, picture)
+                im = picture
             im = ImageOps.exif_transpose(im)
             if im.mode in {"I;16", "I;16B", "I;16L", "I"}:
                 pixels = np.asarray(im, dtype=np.float64)
@@ -337,11 +427,24 @@ def _source_data(source_id: str | None, data_base64: str | None) -> tuple[NDArra
             relief *= alpha
             if not np.isfinite(relief).all() or not np.isfinite(alpha).all():
                 raise ValueError("Image artwork contains unreadable pixel values")
-    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
-        raise ValueError("Image artwork could not be read; choose a PNG, JPEG, or WebP") from exc
+    except Image.DecompressionBombError as exc:
+        raise ValueError(SOURCE_TOO_MANY_PIXELS) from exc
+    except (UnidentifiedImageError, OSError, EOFError, SyntaxError, struct.error) as exc:
+        message = PHOTOSHOP_UNREADABLE if _photoshop_save_as_would_help(raw) else SOURCE_UNREADABLE
+        raise ValueError(message) from exc
     relief.setflags(write=False)
     alpha.setflags(write=False)
     return relief, alpha
+
+
+def image_is_blank(effect: ImageEffect) -> bool:
+    """Nothing to shape a wall with: an empty file, or a picture all see-through.
+
+    Asked of a new upload only. A saved pattern that already holds such a picture
+    still opens as it always did.
+    """
+    _, alpha = _source_data(effect.source_id, effect.data_base64)
+    return bool(alpha.max() == 0)
 
 
 def image_info(effect: ImageEffect) -> dict[str, Any]:

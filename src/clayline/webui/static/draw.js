@@ -55,8 +55,10 @@
   // Every string the artist reads lives here, so the charter's language is
   // checkable in one place instead of scattered through the wiring.
   const EDIT_TIP = "Edit on the bed — draw, bend and move this design's lines";
+  const EDIT_LINES_TIP = "Editing keeps your changes. Undo returns the lines Clayline made.";
+  const SAVE_LINES_TIP = "Saves the lines Clayline made as a new file. Your original file is not changed.";
   const FIRST_RUN_MESSAGE =
-    "Draw straight onto the bed, or load centerline SVGs you already have. Nothing plans until you Slice.";
+    "Draw straight onto the bed, or add a drawing you already have. Nothing plans until you Slice.";
   const DIRTY_MESSAGE = "Design changed. Slice again before export.";
 
   // What a control that cannot act right now says INSTEAD of going quietly
@@ -713,6 +715,16 @@
     return svg.replace("<svg ", `<svg ${ORIGIN_ATTR}="${origin}" `);
   }
 
+  // toSVG writes no such mark, so each commit puts it back. It is what keeps a
+  // save from ever writing over the file these lines came from.
+  function isConverted(svg) {
+    return Boolean(window.ClaylineShapeLines?.isConverted(svg));
+  }
+
+  function withConverted(svg) {
+    return svg.replace("<svg ", '<svg data-clayline-converted="1" ');
+  }
+
   function nextDrawingName(files) {
     let highest = 0;
     for (const file of files) {
@@ -1025,10 +1037,11 @@
       session.doc.fills = core.followFills(session.doc, session.fillBase, fillOptions(feel));
     }
     session.fillBase = core.fillSnapshot(session.doc, fillOptions(feel));
-    const svg = withOrigin(
+    const written = withOrigin(
       core.toSVG(session.doc, { width: box.width, height: box.height, bead: feel.bead }),
       session.created ? "drawn" : "edited",
     );
+    const svg = session.keepsOffSource || isConverted(file.svg) ? withConverted(written) : written;
 
     // The pin.  An edit that moves the design's bounding-box centre would slide
     // the whole page on the bed, because layout re-anchors every page on that
@@ -1085,9 +1098,11 @@
 
   /* ---------- open and close --------------------------------------------- */
 
-  function openFile(index, { fresh = false } = {}) {
+  function openFile(index, { fresh = false, replaced = null } = {}) {
     const file = host.files()[index];
     if (!file) return false;
+    // Its lines are on their way, or it has none: the row says what to do instead.
+    if (host.passHeld?.(file)) return false;
     if (!mount()) return false;
     if (session && session.index === index) {
       syncVisibility();
@@ -1106,6 +1121,10 @@
       // emptied out stays a page, because deleting it under them would be a
       // surprise, while an untouched "Start a drawing" is just a change of mind.
       fresh,
+      // The pass a Trace over it took the place of, for the same change of mind.
+      replaced,
+      // Everything drawn here stays off the file on disk, whatever undo brings back.
+      keepsOffSource: isConverted(file.svg),
       // An empty page anchors on its own nudge, so its placement is the origin
       // and the first stroke is drawn straight into bed coordinates.
       anchor: placedAnchor(doc, file, feel)
@@ -1154,6 +1173,49 @@
     return openFile(host.files().length - 1, { fresh: true });
   }
 
+  // Trace over it: a fresh page with the picture underneath as its reference, the
+  // same photo layer Reference places. The new page takes the place of the pass it
+  // replaces, so Undo brings that back, and carries the mark that keeps a save off
+  // the file it came from. Left undrawn, the pass it replaced comes back.
+  async function traceOver(picture, { name, replacing = null } = {}) {
+    const store = window.ClaylineReferenceStore;
+    if (!store || !mount()) return false;
+    const imported = await store.importImage(picture);
+    const files = host.files();
+    if (replacing && !files.includes(replacing)) return false;
+    host.holdLayoutCheck(true);
+    const feel = settings();
+    const box = bedSize();
+    const doc = core.createDocument({ width: box.width, height: box.height });
+    const svg = withConverted(withOrigin(
+      core.toSVG(doc, { width: box.width, height: box.height, bead: feel.bead }),
+      "drawn",
+    ));
+    const room = 0.9;
+    const aspect = imported.width / Math.max(1, imported.height);
+    const page = {
+      name,
+      svg,
+      nudgeX: 0,
+      nudgeY: 0,
+      rotation: 0,
+      sizeMm: null,
+      sizePinned: false,
+      measurementStatus: "pending",
+      reference: {
+        image_id: imported.imageId,
+        x: round3(box.width / 2),
+        y: round3(box.height / 2),
+        width_mm: round3(Math.min(box.width * room, box.height * room * aspect)),
+        rotation_deg: 0,
+        opacity: 0.4,
+      },
+    };
+    if (replacing) host.replaceFile(replacing, page);
+    else host.addFile(page);
+    return openFile(host.files().indexOf(page), { fresh: true, replaced: replacing });
+  }
+
   // Ends the edit session.  input.destroy() finishes any open chain first, so a
   // dangling start point cannot outlive the surface, and that finish commits
   // through the ordinary path.
@@ -1167,11 +1229,13 @@
     fillTally = null;
     const index = session.index;
     const abandoned = session.fresh && session.doc.strokes.length === 0;
+    const replaced = session.replaced;
     session = null;
     cursor = null;
     // A drawing nobody drew on is not a page: leaving it would slice into "no
     // geometry" and read as a broken export rather than a change of mind.
-    if (abandoned) host.removeFile(index);
+    if (abandoned && replaced) host.replaceFile(host.files()[index], replaced);
+    else if (abandoned) host.removeFile(index);
     if (!keepView) {
       if (view) view.destroy();
       view = null;
@@ -1205,7 +1269,7 @@
     const open = Boolean(session);
     drawView.hidden = !open;
     if (!open) return;
-    ["#emptyState", "#loadingState", "#errorState", "#planView", "#toolpathView"].forEach((selector) => {
+    ["#emptyState", "#linesPreview", "#loadingState", "#errorState", "#planView", "#toolpathView"].forEach((selector) => {
       const el = $(selector);
       if (el) el.hidden = true;
     });
@@ -1492,7 +1556,7 @@
     const origin = originOf(file && file.svg);
     if (origin === "drawn") return "drawn here";
     if (origin === "edited") return "edited here";
-    return "";
+    return isConverted(file && file.svg) ? "lines made from your drawing" : "";
   }
 
   /* ---------- saving a design to disk ------------------------------------ */
@@ -1509,10 +1573,12 @@
   let pendingSave = null;
 
   function saveLabel(file) {
+    if (isConverted(file && file.svg)) return "Save SVG…";
     return nativeSave() && originOf(file && file.svg) === "edited" ? "Save over original" : "Save SVG…";
   }
 
   function saveTip(file) {
+    if (isConverted(file && file.svg)) return SAVE_LINES_TIP;
     return saveLabel(file) === "Save over original"
       ? "Write this design back over the file you opened, replacing it."
       : "Save this design as an SVG file you can open anywhere.";
@@ -1521,6 +1587,10 @@
   function saveSVG(index) {
     const file = host.files()[index];
     if (!file || !file.svg) return false;
+    // Lines Clayline made always ask where to go, edited or not, and so does a file
+    // that wants lines or hasn't been sorted yet. The shell's save writes back over
+    // the file a name was opened from, and that must never happen to any of them.
+    if (isConverted(file.svg) || host.saveMustAsk(file)) return downloadSVG(file);
     const bridge = nativeSave();
     if (bridge) {
       pendingSave = { index, name: file.name };
@@ -1534,15 +1604,16 @@
     return downloadSVG(file);
   }
 
-  // The plain path: hand the browser a file. In the app this lands in the same
-  // native save panel the G-code export uses, which is where an artist replaces
-  // a file it does not know the origin of.
+  // The plain path: hand the browser a file. In the app this lands in a native
+  // save panel for drawings, which is where an artist replaces a file it does not
+  // know the origin of.
   function downloadSVG(file) {
     const blob = new Blob([file.svg], { type: "image/svg+xml" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = file.name.replace(/\.svg$/i, "") + ".svg";
+    const stem = file.name.replace(/\.svg$/i, "");
+    link.download = isConverted(file.svg) && !stem.endsWith("-lines") ? `${stem}-lines.svg` : `${stem}.svg`;
     document.body.append(link);
     link.click();
     link.remove();
@@ -1599,7 +1670,11 @@
           return;
         }
         const selected = host.selectedFile();
-        openFile(selected !== null && files[selected] ? selected : 0);
+        if (openFile(selected !== null && files[selected] ? selected : 0)) return;
+        // That pass has no lines to open. One that does comes next, then a new page.
+        const open = files.findIndex((file) => !host.passHeld?.(file));
+        if (open >= 0) openFile(open);
+        else openNew();
       });
     });
     document.querySelectorAll("[data-draw-tool]").forEach((button) => {
@@ -1927,6 +2002,7 @@
   window.claylineDraw = Object.freeze({
     openFile,
     openNew,
+    traceOver,
     close,
     isOpen: () => Boolean(session),
     activeFileIndex: () => (session ? session.index : null),
@@ -1935,7 +2011,7 @@
     noteFilesChanged,
     noteProfileChanged,
     pageMark,
-    editTip: () => EDIT_TIP,
+    editTip: (file) => (isConverted(file && file.svg) ? EDIT_LINES_TIP : EDIT_TIP),
     saveLabel,
     saveTip,
     saveSVG,

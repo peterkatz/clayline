@@ -56,6 +56,12 @@ Twist is typed in cycles with degrees alongside.
 
 Drop a mesh file on the box: STL, OBJ, PLY, or 3MF, in millimetres. The same box also takes a saved project, a saved pattern, or a print file; what each brings back is below.
 
+**Lay flat…**, beside the model's name, sets any surface of the form on the bed. Press it and the print path steps aside. Turn the view until you can see the surface, and rest the pointer on it: the connected flat area lights up. Click to lay it down, or press Esc to leave everything as it was. The form keeps its size, and Undo puts it back. Clicking the top turns the form over, because that is what you asked for.
+
+When the base isn't sitting flat, a line under the name says so: "Base is tilted 3.0° — one side lifts 4.2 mm." **Flatten base**, beside that line, sets the nearest flat base down without turning the form over. If there is no flat base within 30° of the bottom, the line sends you to Lay flat. If the form only touches the bed at a small spot, under four coil widths across, the line warns that its first ring may not hold.
+
+**Remove**, beside the model's name, takes it off the bed. Your settings stay as they are, except its rotations, nudges and stretches, so the next model doesn't arrive tilted. Undo brings the model back, placed as it was.
+
 The size line shows the model's footprint and height. Type a height there to scale the whole form to an exact size. Under it, Clayline reports the triangle count, whether the form is watertight or has holes, and the unit it assumed. A model that comes in suspiciously small gets a note asking whether it was modelled in inches, with a one-click fix that scales it by 25.4.
 
 Click the form in the preview to move, turn or resize it: drag the form to slide it, a ring to rotate it, the corner cube to resize it. Empty space orbits the view. The exact numbers live under **Advanced**: a size multiplier, **Width ×**, **Depth ×** and **Height ×** to stretch the placed form along the bed's own axes on top of that, nudges along X and Y, rotations about each axis, and **Reset placement** to go back to the file's own position. A stretch is real geometry: the sliced rings stretch with it, and the size line shows the result. With a height typed on the size line, though, that height wins: Height × then resizes the footprint needed to reach it rather than the height itself.
@@ -137,6 +143,12 @@ set together. Choosing a design keeps the Image's placement, depth, clay flow,
 and other settings. Click an Image tab to edit it. **Use this Image** switches
 its contribution off while keeping its settings; **Remove** takes it out, and
 Undo brings it back. Three Images can sit alongside the three Weaves.
+
+**Upload image…** takes a PNG, JPEG, TIFF, WebP, BMP, HEIC or Photoshop file, up
+to 17 MB and 16 million pixels. From a Photoshop file Clayline reads the flattened
+picture, so save it with **Maximize Compatibility** on. A 16-bit Photoshop file
+won't open; save it at 8 bits per channel, or as a TIFF, which keeps a grayscale
+image's full 16 bits.
 
 ![The Image gallery showing thumbnail previews, names, search, and the Paisleys filter](images/clayline-image-gallery.png)
 

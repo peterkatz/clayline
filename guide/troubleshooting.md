@@ -23,7 +23,7 @@ Clay flow. See [Calibration](calibration.md).
 Press **Browse the gallery** under 01 Design, or choose **File → Open from Gallery…**. Once you've opened a drawing from a folder of your own, choosing files starts there instead, but those two always go to the gallery.
 
 **My drawing loads but parts of it are missing.**
-Those parts were filled shapes, not lines. Clayline reads lines only and lists what it dropped in Warnings. Redraw them as lines.
+Read the note under its pass. Specks smaller than your coil are left out, and so is a photo placed among your lines. If you pressed **Use original**, only the lines in your file print: press **Make lines again** to get the rest back.
 
 **The design is tiny or enormous on the bed.**
 The file wasn't saved at real size in millimetres. Set **Size** in its row under 02 Passes, or fix the drawing and load it again.

@@ -35,7 +35,8 @@ struct ClaylineImportSelection: Equatable {
 
 /// One file-picker request from the web layer: the document mode the page is
 /// in, plus whether the picker was opened for a reference photo, for a
-/// project, for a print file, or for the gallery of example drawings. draw.js,
+/// project, for a print file, for an Image's artwork, or for the gallery of
+/// example drawings. draw.js,
 /// app.js and weave.js stamp `body.dataset.claylineFileRequest` right before
 /// clicking their file inputs, and the delegate's read script clears the
 /// one-shot marker so a later SVG picker can never inherit it.
@@ -49,17 +50,22 @@ struct ClaylineOpenRequest: Equatable {
     /// The Weave pattern section's Load pattern asked for a saved pattern
     /// file. It loads onto the form already on the table; it is not a job.
     let isPattern: Bool
+    /// Upload image… asked for a picture to shape the wall with. Like a
+    /// reference photo it is no document, so it goes nowhere the shell keeps
+    /// documents: not on File → Open Recent, and not as the last model.
+    let isImage: Bool
     /// The page asked for the example drawings rather than the artist's own
     /// folder. It only changes where the drawing picker starts.
     let isGallery: Bool
 
     /// Whether what this panel opens goes on File → Open Recent as soon as it
-    /// is chosen. A photo to trace over is not a document, and a print file
-    /// chosen for its pattern alone would come back from the menu as a whole
-    /// job. The Open Project panel's file is noted once the page has opened
-    /// it, through `WebActions.projectWasOpened(at:)`.
+    /// is chosen. A photo to trace over and a picture for an Image are not
+    /// documents, and a print file chosen for its pattern alone would come
+    /// back from the menu as a whole job. The Open Project panel's file is
+    /// noted once the page has opened it, through
+    /// `WebActions.projectWasOpened(at:)`.
     var addsToOpenRecent: Bool {
-        !isProject && !isReferencePhoto && !isPrintFile && !isPattern
+        !isProject && !isReferencePhoto && !isPrintFile && !isPattern && !isImage
     }
 
     /// A project chosen here waits for the page, whichever panel it was
@@ -86,7 +92,7 @@ struct ClaylineOpenRequest: Equatable {
     /// picker, the print-file picker and the reference-photo picker are none
     /// of its business.
     var isDrawingPicker: Bool {
-        mode == .tiles && !isProject && !isReferencePhoto && !isPrintFile && !isPattern
+        mode == .tiles && !isProject && !isReferencePhoto && !isPrintFile && !isPattern && !isImage
     }
 
     init(raw: String?) {
@@ -100,6 +106,7 @@ struct ClaylineOpenRequest: Equatable {
         isProject = requestToken == "project"
         isPrintFile = requestToken == "gcode"
         isPattern = requestToken == "pattern"
+        isImage = requestToken == "image"
         isGallery = requestToken == "gallery"
     }
 }
@@ -134,6 +141,19 @@ enum ClaylineFileTypes {
         var types: [UTType] = [.png, .jpeg, .webP, .heic]
         if let heif = UTType("public.heif") {
             types.append(heif)
+        }
+        return types
+    }()
+
+    /// What Upload image… offers, matching the formats `image_relief.py` reads
+    /// and the accept list on the page's `#weaveImageFile`.
+    static let imagePanelTitle = "Choose an Image"
+    static let imageTypes: [UTType] = {
+        var types: [UTType] = [.png, .jpeg, .tiff, .webP, .bmp, .heic]
+        for identifier in ["public.heif", "com.adobe.photoshop-image"] {
+            if let type = UTType(identifier) {
+                types.append(type)
+            }
         }
         return types
     }()

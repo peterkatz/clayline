@@ -270,6 +270,30 @@ def test_browser_bridge_routes_open_export_and_finder_import_by_active_mode() ->
     assert "static let patternTypes: [UTType] = [.json]" in file_types
     assert "request.isPattern" in web_view
     assert "ClaylineFileTypes.patternTypes" in web_view
+    # Upload image… opens a panel of images: without its own marker it opened
+    # the Model box's panel, where every image was greyed out.
+    assert 'document.body.dataset.claylineFileRequest = "image"' in weave
+    assert weave.index('claylineFileRequest = "image"') < weave.index(
+        '$("#weaveImageFile").click()'
+    )
+    assert 'isImage = requestToken == "image"' in file_types
+    assert 'imagePanelTitle = "Choose an Image"' in file_types
+    assert "panel.title = ClaylineFileTypes.imagePanelTitle" in web_view
+    assert "panel.allowedContentTypes = ClaylineFileTypes.imageTypes" in web_view
+    # A picture is not a model, so it never becomes the remembered model.
+    assert "!request.isPattern, !request.isImage {" in web_view
+    # And the panels already there keep their own titles and lists.
+    for title, types in (
+        ("Open a Clayline Project", "projectTypes"),
+        ("Open a Reference Photo", "referencePhotoTypes"),
+        ("Open a Clayline Print File", "printFileTypes"),
+        ("Load a Saved Pattern", "patternTypes"),
+    ):
+        assert (
+            f'panel.title = "{title}"\n'
+            f"                panel.allowedContentTypes = ClaylineFileTypes.{types}"
+        ) in web_view
+    assert '"Open One Mesh, Project, or Print File"' in web_view
     assert 'panel.title = "Open a Clayline Print File"' in web_view
     assert "ClaylineFileTypes.printFileTypes" in web_view
 

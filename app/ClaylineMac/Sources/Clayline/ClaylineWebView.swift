@@ -427,6 +427,10 @@ struct ClaylineWebView: NSViewRepresentable {
                 panel.title = "Load a Saved Pattern"
                 panel.allowedContentTypes = ClaylineFileTypes.patternTypes
                 panel.allowsMultipleSelection = false
+            } else if request.isImage {
+                panel.title = ClaylineFileTypes.imagePanelTitle
+                panel.allowedContentTypes = ClaylineFileTypes.imageTypes
+                panel.allowsMultipleSelection = false
             } else {
                 panel.title = mode == .weave
                     ? "Open One Mesh, Project, or Print File"
@@ -494,7 +498,7 @@ struct ClaylineWebView: NSViewRepresentable {
                 projectAwaitingThePage = url
                 return
             }
-            if request.mode == .weave, !request.isReferencePhoto, !request.isPattern {
+            if request.mode == .weave, !request.isReferencePhoto, !request.isPattern, !request.isImage {
                 settingsStore.rememberMeshURL(url)
             } else if request.isDrawingPicker {
                 settingsStore.rememberDrawingFolder(
@@ -531,15 +535,21 @@ struct ClaylineWebView: NSViewRepresentable {
             let isPattern = lowered.hasSuffix(".json")
             // Export Mesh: the printed coils as an OBJ.
             let isMesh = lowered.hasSuffix(".obj")
+            // Save SVG on a pass with no file to go back to, and always on lines
+            // Clayline made: it comes back as a drawing, so it stays one.
+            let isDrawing = lowered.hasSuffix(".svg")
             let panel = NSSavePanel()
             panel.title = isProject
                 ? "Save Clayline Project"
                 : (isPattern ? "Save Clayline pattern"
-                    : (isMesh ? "Save Clayline mesh" : "Save Clayline G-code"))
+                    : (isMesh ? "Save Clayline mesh"
+                        : (isDrawing ? "Save Clayline drawing" : "Save Clayline G-code")))
             panel.prompt = "Save"
             panel.allowedContentTypes = isProject
                 ? ClaylineFileTypes.projectTypes
-                : (isPattern ? [.json] : (isMesh ? [ClaylineFileTypes.obj] : [ClaylineFileTypes.gcode]))
+                : (isPattern ? [.json]
+                    : (isMesh ? [ClaylineFileTypes.obj]
+                        : (isDrawing ? [ClaylineFileTypes.svg] : [ClaylineFileTypes.gcode])))
             panel.allowsOtherFileTypes = false
             panel.canCreateDirectories = true
             panel.isExtensionHidden = false

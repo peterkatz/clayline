@@ -71,6 +71,9 @@ def test_built_wheel_contains_runtime_profiles_offline_ui_and_license(
             "clayline/webui/static/favicon.svg",
             "clayline/webui/static/three.min.js",
             "clayline/webui/static/viewport3d.js",
+            "clayline/webui/static/lay-flat.js",
+            "clayline/webui/static/shape-lines.js",
+            "clayline/shape_lines.py",
         }
         assert required_package_files <= names
         assert archive.getinfo("clayline/webui/static/three.min.js").file_size > 400_000

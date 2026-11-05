@@ -50,6 +50,11 @@ REQUIRED_RESOURCE_NAMES = {
     "draw.js",
     "favicon.svg",
     "generic-marlin-paste.toml",
+    # Lay flat and Flatten base. Without it Mesh Mode still slices, and both
+    # buttons quietly do nothing.
+    "lay-flat.js",
+    # Lines from a filled drawing. Without it the page never starts.
+    "shape-lines.js",
     "generic-reprap-paste.toml",
     "index.html",
     "three.min.js",

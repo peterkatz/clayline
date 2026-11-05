@@ -1216,7 +1216,10 @@
       return;
     }
     const move = S.moves[cursor];
-    const element = typeof move[7] === "string" && move[7] ? move[7] : "—";
+    // A line Clayline made has an id only for the warnings to go by.
+    const element = typeof move[7] === "string" && move[7] && !move[7].startsWith("from-shape-")
+      ? move[7]
+      : "—";
     const at = cursor === S.hi ? hiEndpoint3() : [S.X[cursor], S.Y[cursor], S.Z[cursor]];
     dom.readout.textContent = [
       `Move ${(cursor + 1).toLocaleString()} / ${S.n.toLocaleString()}`,

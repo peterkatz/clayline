@@ -7,12 +7,15 @@ bind address: paste-printer files and artwork stay on this machine.
 """
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import hmac
 import json
 import math
 import re
 import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,11 +31,13 @@ _STATIC = Path(__file__).with_name("static")
 _REPO_EXAMPLES = Path(__file__).resolve().parents[3] / "examples"
 _DEMO_FIXTURE_DIRS = ("gallery",)
 _DEMO_FIXTURE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+# The page queues its passes, so nothing should wait here.  This is the backstop.
+_SHAPE_LINES_LOCK = threading.Lock()
 _MAX_FILES = 32
 _MAX_SVG_BYTES = 8 * 1024 * 1024
 _MAX_TOTAL_BYTES = 24 * 1024 * 1024
-# A portable pattern can contain three original raster uploads (16 MiB each),
-# expanded to base64 alongside the mesh controls.
+# A portable pattern carries its original raster uploads in base64 alongside the
+# mesh controls. This holds three at the 17 MiB upload limit.
 _MAX_REQUEST_BYTES = 72 * 1024 * 1024
 # The server is localhost-only, so these bounds exist to catch nonsense —
 # never to refuse an artist's real file. Scanned meshes routinely run
@@ -309,10 +314,13 @@ def create_app(
     @app.post("/api/images/upload", include_in_schema=False)
     async def images_upload(request: Request) -> Any:
         from clayline.image_relief import (
+            SOURCE_TOO_LARGE,
+            SOURCE_UNREADABLE,
             image_bytes,
             image_edge_mismatch,
             image_from_payload,
             image_info,
+            image_is_blank,
             image_to_payload,
         )
 
@@ -328,6 +336,8 @@ def create_app(
                 }
             )
             await asyncio.to_thread(image_bytes, image)
+            if await asyncio.to_thread(image_is_blank, image):
+                raise ValueError(SOURCE_UNREADABLE)
             mismatch = await asyncio.to_thread(image_edge_mismatch, image)
             return {
                 "image": image_to_payload(image),
@@ -335,7 +345,9 @@ def create_app(
                 "info": await asyncio.to_thread(image_info, image),
             }
         except UiRequestError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+            # The request limit's own words are about a slice request.
+            detail = SOURCE_TOO_LARGE if exc.status_code == 413 else exc.detail
+            raise HTTPException(status_code=exc.status_code, detail=detail) from exc
         except (OSError, ValueError, TypeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -420,6 +432,40 @@ def create_app(
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/svg/examine", include_in_schema=False)
+    async def svg_examine(request: Request) -> Any:
+        """Sort a file: leave it as it is, or hand back a copy for the page to paint."""
+
+        try:
+            payload = await _read_json_request(request, required_origin=desktop_origin)
+            if not isinstance(payload, dict):
+                raise UiRequestError("request body must be a JSON object")
+            content = await asyncio.to_thread(_svg_examine_response_bytes, payload)
+            return Response(content=content, media_type="application/json")
+        except UiRequestError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=_MAKE_LINES_FAILED) from exc
+
+    @app.post("/api/svg/make-lines", include_in_schema=False)
+    async def svg_make_lines(request: Request) -> Any:
+        """Lines from a file and the page's painting of it, as an ordinary SVG."""
+
+        try:
+            payload = await _read_json_request(request, required_origin=desktop_origin)
+            if not isinstance(payload, dict):
+                raise UiRequestError("request body must be a JSON object")
+            content = await asyncio.to_thread(_svg_make_lines_response_bytes, payload)
+            return Response(content=content, media_type="application/json")
+        except UiRequestError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=_MAKE_LINES_FAILED) from exc
 
     @app.post("/api/convert-image", include_in_schema=False)
     async def convert_image(request: Request) -> Any:
@@ -998,6 +1044,14 @@ def _slice_payload(payload: dict[str, Any]) -> dict[str, Any]:
                     )
                 except UiRequestError as refusal:
                     raise refusal from exc
+            # The raw finding is not the potter's language.  It rides along for the
+            # page's small print, the way Mesh Mode's final check does.
+            if "failed independent G-code lint" in str(exc):
+                raise UiRequestError(
+                    _FINAL_CHECK_FAILED,
+                    code="emission_lint_failed",
+                    data={"technical": {"message": str(exc)}},
+                ) from exc
             raise
 
     options = PreviewOptions(
@@ -2440,6 +2494,61 @@ def _milliseconds(seconds: float) -> float:
 _DRAW_COIL_CACHE: dict[str, tuple[Any, str]] = {}
 
 
+_MAKE_LINES_FAILED = "Clayline couldn't make lines from this drawing."
+_FINAL_CHECK_FAILED = (
+    "Clayline's final check found a problem it could not repair, so nothing was exported. "
+    "Try a different size or coil width."
+)
+
+
+def _svg_text(payload: dict[str, Any]) -> str:
+    svg = payload.get("svg")
+    if not isinstance(svg, str):
+        raise UiRequestError("svg must be the file's text")
+    return svg
+
+
+def _svg_examine_response_bytes(payload: dict[str, Any]) -> bytes:
+    from clayline.shape_lines import examine
+
+    with _SHAPE_LINES_LOCK:
+        answer = examine(_svg_text(payload))
+    return json.dumps(answer, allow_nan=False, ensure_ascii=False).encode("utf-8")
+
+
+def _svg_make_lines_response_bytes(payload: dict[str, Any]) -> bytes:
+    from clayline.shape_lines import LARGEST_SIZE_MM, make_lines
+
+    svg = _svg_text(payload)
+    picture = payload.get("png")
+    if not isinstance(picture, str):
+        raise UiRequestError("png must be the painted picture as base64")
+    try:
+        png = base64.b64decode(picture.removeprefix("data:image/png;base64,"), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise UiRequestError("png must be the painted picture as base64") from exc
+    bed = payload.get("bed_mm")
+    if bed is not None and not (
+        isinstance(bed, list)
+        and len(bed) == 2
+        and all(
+            isinstance(side, int | float) and math.isfinite(side) and 0 < side <= LARGEST_SIZE_MM
+            for side in bed
+        )
+    ):
+        raise UiRequestError("bed_mm must be two positive numbers")
+    with _SHAPE_LINES_LOCK:
+        answer = make_lines(
+            svg,
+            png,
+            bead=_finite(payload, "coil_width_mm", 5.0, minimum=0.1, maximum=100.0),
+            join=_finite(payload, "join", 0.2, minimum=0.0, maximum=0.9),
+            target_mm=_optional_finite(payload, "target_mm", minimum=1.0, maximum=LARGEST_SIZE_MM),
+            bed_mm=None if bed is None else (float(bed[0]), float(bed[1])),
+        )
+    return json.dumps(answer, allow_nan=False, ensure_ascii=False).encode("utf-8")
+
+
 def _slice_response_bytes(payload: dict[str, Any]) -> bytes:
     return json.dumps(
         _slice_payload(payload),
@@ -2564,21 +2673,36 @@ def _planned_source_sizes(
             raise _nothing_to_print(
                 expanded_sources.index(source) + 1,
                 has_lines=bool(plan.strokes),
+                only_filled_shapes=design.only_filled_shapes,
             )
         sizes_by_path[source] = (width, height)
     return tuple(sizes_by_path[source] for source in expanded_sources)
 
 
-def _nothing_to_print(pass_number: int, *, has_lines: bool) -> UiRequestError:
+def _nothing_to_print(
+    pass_number: int,
+    *,
+    has_lines: bool,
+    only_filled_shapes: bool = False,
+) -> UiRequestError:
     """A Draw pass the planner leaves nothing on, named by its row.
 
     The live size check stops on it before Slice can run, and a slice that
     reaches one anyway says the same, never the engine's page id.
+
+    A file of filled shapes normally gets lines when it is added, so this is
+    reached only after Use original or a failed conversion.  The row offers Make
+    lines again on such a pass, so that is what the sentence asks for.
     """
 
-    reason = "its lines are too short to lay a coil" if has_lines else "it has no lines to follow"
+    if has_lines:
+        reason = "its lines are too short to lay a coil. Draw on it, or remove the pass."
+    elif only_filled_shapes:
+        reason = "this file holds only filled shapes. Press Make lines again, or remove the pass."
+    else:
+        reason = "it has no lines to follow. Draw on it, or remove the pass."
     return UiRequestError(
-        f"Pass {pass_number} has nothing to print: {reason}. Draw on it, or remove the pass.",
+        f"Pass {pass_number} has nothing to print: {reason}",
         code="pass_has_nothing_to_print",
         data={"pass": pass_number},
     )

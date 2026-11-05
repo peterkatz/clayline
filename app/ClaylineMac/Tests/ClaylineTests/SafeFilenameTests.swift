@@ -31,8 +31,15 @@ final class SafeFilenameTests: XCTestCase {
     }
 
     func testDownloadFilenameNeverAcceptsAnUnknownExtension() {
-        XCTAssertEqual(SafeFilename.download("job.svg"), "job.svg.gcode")
+        XCTAssertEqual(SafeFilename.download("job.png"), "job.png.gcode")
         XCTAssertEqual(SafeFilename.download("job.gcode.exe"), "job.gcode.exe.gcode")
+    }
+
+    func testSavedDrawingsKeepTheirSvgName() {
+        // Lines Clayline made are saved as a drawing, to be opened as one again.
+        XCTAssertEqual(SafeFilename.download("cat-lines.svg"), "cat-lines.svg")
+        XCTAssertEqual(SafeFilename.download("Mum Flat Vase.SVG"), "Mum-Flat-Vase.svg")
+        XCTAssertEqual(SafeFilename.download("...svg"), "clayline-drawing.svg")
     }
 
     func testSavedPatternsKeepTheirJsonNameIntact() {

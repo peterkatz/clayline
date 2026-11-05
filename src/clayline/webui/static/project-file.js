@@ -59,7 +59,7 @@
 
   // The whole file is bounded by the same rule the mesh upload already uses.
   const MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024;
-  // Three portable Images may each carry a 16 MiB original as base64.
+  // Three portable Images may each carry a 17 MiB original as base64.
   const MAX_MANIFEST_BYTES = 72 * 1024 * 1024;
   const MAX_REFERENCE_BYTES = 64 * 1024 * 1024;
 
