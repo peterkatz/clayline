@@ -10,9 +10,11 @@ from __future__ import annotations
 import bisect
 import math
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from pathlib import Path
+from typing import Any
 
 from shapely.geometry import LineString
 from shapely.ops import unary_union
@@ -170,6 +172,12 @@ _SETTLE_MAX_REVALIDATION_STEPS = 8
 # most three selective retries, then the proven Settle-Off fallback. Maximum
 # emission attempts is therefore 1 + 3 + 1.
 _MAX_SETTLE_FINAL_LINT_RETRIES = 3
+# A refused line can be lifted over the contact the final check names.  Each
+# lift moves where the emitted segments break, which can expose one more
+# contact on that line, so this is bounded the same way.
+_MAX_CLEARANCE_REPAIR_RETRIES = 3
+_RunKey = tuple[int, int, str]  # page, layer, stroke id
+_ArcSpan = tuple[float, float]  # along the line, in mm of XY path
 _VALLEY_SETTLE_MAX_SLOPE = 1.0
 _COLLISION_LIFT_SLOPE = 0.5
 
@@ -1270,6 +1278,7 @@ def emit_job(
     end_early_mm: float | None = None,
     stem: str | None = None,
     start_charge_e: float | None = None,
+    clearance_repairs: Mapping[_RunKey, tuple[_ArcSpan, ...]] | None = None,
 ) -> JobEmission:
     """Emit a job, dropping optional valley settlement if it cannot stay safe.
 
@@ -1280,6 +1289,8 @@ def emit_job(
     are excluded, up to ``_MAX_SETTLE_FINAL_LINT_RETRIES`` bounded retries.
     An unscoped or unattributable failure — and an exhausted retry budget —
     takes the proven Settle-Off fallback instead of refusing a printable SVG.
+    ``clearance_repairs`` are spans of lines to lift on every attempt: see
+    ``emit_job_with_clearance_repair``.
     """
 
     settle_active = (
@@ -1305,6 +1316,7 @@ def emit_job(
                 start_charge_e=start_charge_e,
                 stem=stem,
                 settle_exclusions=exclusions,
+                clearance_repairs=clearance_repairs,
             )
         except ValueError as exc:
             failure = exc
@@ -1365,6 +1377,7 @@ def emit_job(
         end_early_mm=end_early_mm,
         start_charge_e=start_charge_e,
         stem=stem,
+        clearance_repairs=clearance_repairs,
     )
     attempted = failure.outcome if isinstance(failure, _OptionalSettleRejected) else None
     proposed_mm = 0.0 if attempted is None else attempted.proposed_mm
@@ -1395,6 +1408,77 @@ def emit_job(
             fallback_reason=reason,
         ),
     )
+
+
+def emit_job_with_clearance_repair(
+    job: Job,
+    profile: Profile,
+    **options: Any,
+) -> JobEmission:
+    """Emit a job; if the final check refuses it, lift the lines it names and ask again.
+
+    The planner and the final check judge a line's return to its own bead on
+    different evidence: the planner on the segments it planned and the crossing
+    kinds it classified, the check on the emitted file alone, whose segments
+    the prime ramp has cut shorter.  So the check can find a contact the
+    planner accepted.  It names the motion, so only those spans are lifted, up
+    to the clearance ceiling that any such contact needs.  The check itself is
+    untouched and has the last word: a job it accepts first time never reaches
+    this code, and a job it still refuses gets the original refusal.
+    """
+
+    try:
+        return emit_job(job, profile, **options)
+    except StackError as refusal:
+        report = refusal.lint_report
+        if job.z_mode is not ZMode.CALIBRATED or job.page_mode is not PageMode.STACK:
+            raise
+        repairs: dict[_RunKey, tuple[_ArcSpan, ...]] = {}
+        for _ in range(_MAX_CLEARANCE_REPAIR_RETRIES):
+            grown = None if report is None else _clearance_repairs(report, repairs)
+            if grown is None:
+                raise refusal from None
+            repairs = grown
+            try:
+                return emit_job(job, profile, clearance_repairs=repairs, **options)
+            except ValueError as again:
+                report = again.lint_report if isinstance(again, StackError) else None
+        raise refusal from None
+
+
+def clearance_repair_could_answer(refusal: StackError) -> bool:
+    """Whether lifting the motions this refusal names is worth an attempt."""
+
+    report = refusal.lint_report
+    return report is not None and _clearance_repairs(report, {}) is not None
+
+
+def _clearance_repairs(
+    report: LintReport,
+    current: Mapping[_RunKey, tuple[_ArcSpan, ...]],
+) -> dict[_RunKey, tuple[_ArcSpan, ...]] | None:
+    """The spans to lift for a refusal, or ``None`` when lifting cannot answer it."""
+
+    spans = {key: set(value) for key, value in current.items()}
+    for issue in report.errors:
+        if issue.code != "no_plow" or not issue.scopes:
+            return None
+        for scope in issue.scopes:
+            if scope.role != "current":
+                continue
+            if (
+                scope.page_index is None
+                or scope.layer_index is None
+                or scope.stroke_id is None
+                or scope.arc_start_mm is None
+                or scope.arc_end_mm is None
+            ):
+                return None
+            key = (scope.page_index, scope.layer_index, scope.stroke_id)
+            spans.setdefault(key, set()).add((scope.arc_start_mm, scope.arc_end_mm))
+    grown = {key: tuple(sorted(value)) for key, value in spans.items()}
+    # Nothing new to lift means another attempt would repeat this one.
+    return None if grown == dict(current) else grown
 
 
 def _rejection_codes(rejection: _OptionalSettleRejected | None) -> tuple[str, ...]:
@@ -1505,6 +1589,7 @@ def _emit_job_once(
     stem: str | None = None,
     settle_exclusions: frozenset[tuple[int, int, str, int]] = frozenset(),
     start_charge_e: float | None = None,
+    clearance_repairs: Mapping[_RunKey, tuple[_ArcSpan, ...]] | None = None,
 ) -> tuple[JobEmission, _SettleEvidence]:
     """Lay out, stack, emit, and independently lint one exact geometry choice."""
 
@@ -1523,8 +1608,10 @@ def _emit_job_once(
         laid_out,
         profile,
         boost_prime_mm=boost_prime_mm,
+        end_early_mm=end_early_mm,
         settle_exclusions=settle_exclusions,
         settle_ledger=ledger,
+        clearance_repairs=clearance_repairs,
     )
     evidence = _SettleEvidence(tuple(ledger), {}, {})
     try:
@@ -1589,7 +1676,12 @@ def _emit_job_once(
                 z_mode=job.z_mode,
                 pass_model=job.pass_model,
             )
-            page_stream = _stack_laid_out_job(page_job, profile, boost_prime_mm=boost_prime_mm)
+            page_stream = _stack_laid_out_job(
+                page_job,
+                profile,
+                boost_prime_mm=boost_prime_mm,
+                end_early_mm=end_early_mm,
+            )
             page_settings = _emission_settings(
                 page_job,
                 profile,
@@ -1760,14 +1852,18 @@ def _stack_laid_out_job(
     profile: Profile,
     *,
     boost_prime_mm: float | None = None,
+    end_early_mm: float | None = None,
     settle_exclusions: frozenset[tuple[int, int, str, int]] = frozenset(),
     settle_ledger: list[_SettleLedgerEntry] | None = None,
+    clearance_repairs: Mapping[_RunKey, tuple[_ArcSpan, ...]] | None = None,
 ) -> MoveStream:
     _validate_job(job, profile)
     if boost_prime_mm is None:
         # Mirror the emission-side resolution so reinforcement zones always
         # match the prime ramp the emitter will actually apply.
         boost_prime_mm = 0.0 if job.z_mode is ZMode.DRAPE else emission_defaults(profile).prime_mm
+    if end_early_mm is None:
+        end_early_mm = emission_defaults(profile).end_early_mm
     layout_errors = [
         warning
         for page in job.pages
@@ -1787,6 +1883,10 @@ def _stack_laid_out_job(
         is ThreadProtectionModel.EXTRA_CLAY_SLOWDOWN_V1
     )
     requested_page_pause = _requested_page_pause_seconds(job)
+    # A corrected thread-protection tail still lays clay, so only the plain
+    # end-early tail can leave a whole line with none.
+    clay_free_tail_mm = 0.0 if corrected_thread_protection else end_early_mm
+    last_clay_z: float | None = None
     current: _StackPoint | None = None
     tallest_completed = -math.inf
     previous_stack_max: float | None = None
@@ -1873,6 +1973,11 @@ def _stack_laid_out_job(
                     intersections=page.plan.intersections,
                     settle_accumulator=settle_accumulator,
                     settle_specs=settle_proposals[run_index].specs,
+                    repair_spans=(
+                        ()
+                        if clearance_repairs is None
+                        else clearance_repairs.get((page_index, run.layer, run.stroke_id), ())
+                    ),
                     settle_excluded_ids=frozenset(
                         spec_id
                         for excluded_page, excluded_layer, excluded_stroke, spec_id in (
@@ -2073,6 +2178,7 @@ def _stack_laid_out_job(
                         travel_lift,
                         profile,
                         carry=job.z_mode is ZMode.DRAPE,
+                        last_clay_z=last_clay_z,
                     )
                 )
                 current = target
@@ -2127,6 +2233,9 @@ def _stack_laid_out_job(
                 current = point
                 previous_run_point = point
                 page_top = max(page_top, point.z)
+            run_clay_z = _run_last_clay_z(run, clay_free_tail_mm)
+            if run_clay_z is not None:
+                last_clay_z = run_clay_z
         continues_next_run = (
             explicit_pass_stack
             and job.z_mode is ZMode.DRAPE
@@ -2407,6 +2516,7 @@ def _lift_over_deposits(
     settle_accumulator: _SettleAccumulator | None = None,
     settle_specs: tuple[_ValleySettleSpec, ...] = (),
     settle_excluded_ids: frozenset[int] = frozenset(),
+    repair_spans: tuple[_ArcSpan, ...] = (),
 ) -> _Run:
     """Lift over effective material, then retain only safe optional descent."""
 
@@ -2432,6 +2542,22 @@ def _lift_over_deposits(
         bead_width=bead_width,
         helical=helical,
     )
+    if repair_spans:
+        peak = _CLEARANCE_LIFT_CAP_LAYERS * layer_height
+        base = _propagate_self_lap_heights(
+            _apply_lift_profiles(
+                base,
+                [_LiftProfile(start, end, peak, peak) for start, end in repair_spans],
+                helical=helical,
+                nominal_run=reference_run,
+                layer_height=layer_height,
+            ),
+            nominal_run=reference_run,
+            intersection_index=intersection_index,
+            layer_height=layer_height,
+            bead_width=bead_width,
+            helical=helical,
+        )
     if not settle_specs:
         return base
     return _resolve_optional_settle_specs(
@@ -3830,6 +3956,7 @@ def _intra_page_transition(
     lift: float,
     profile: Profile,
     carry: bool = False,
+    last_clay_z: float | None = None,
 ) -> tuple[Move, ...]:
     if carry:
         # Drape mode: the clay thread stays attached across every gap. One
@@ -3865,6 +3992,10 @@ def _intra_page_transition(
             ),
         )
     lift_z = max(current.z, target.z) + lift
+    if last_clay_z is not None and round(lift_z, 6) <= round(last_clay_z, 6):
+        # A line too short to lay clay can sit far below the clay before it,
+        # and a dry move must begin above the last height clay was laid at.
+        lift_z = last_clay_z + lift
     _validate_z(lift_z, profile, "intra-page travel lift")
     return (
         _travel_move(
@@ -3901,6 +4032,27 @@ def _intra_page_transition(
             "intra-page approach",
         ),
     )
+
+
+def _run_last_clay_z(run: _Run, clay_free_tail_mm: float) -> float | None:
+    """Height where this line stops laying clay; ``None`` if it never lays any.
+
+    The tail is measured as emission measures it, along the path in 3D.
+    """
+
+    lengths = [
+        math.dist((start.x, start.y, start.z), (end.x, end.y, end.z))
+        for start, end in pairwise(run.points)
+    ]
+    clay_length = sum(lengths) - clay_free_tail_mm
+    if clay_length <= 0.0:
+        return None
+    walked = 0.0
+    for (start, end), length in zip(pairwise(run.points), lengths, strict=True):
+        if length > 0.0 and walked + length >= clay_length:
+            return start.z + (end.z - start.z) * (clay_length - walked) / length
+        walked += length
+    return run.points[-1].z
 
 
 def _travel_move(
@@ -4714,7 +4866,9 @@ __all__ = [
     "SplitEmission",
     "StackError",
     "check_layout",
+    "clearance_repair_could_answer",
     "emit_job",
+    "emit_job_with_clearance_repair",
     "layout_job",
     "stack_job",
     "write_job_gcode",

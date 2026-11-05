@@ -41,7 +41,9 @@ from clayline.stack import (
     PROVISIONAL_OVERLAP_FRACTION,
     JobEmission,
     StackError,
+    clearance_repair_could_answer,
     emit_job,
+    emit_job_with_clearance_repair,
 )
 
 _DEFAULT_PAGE_MODE_ENUM = PageMode(_defaults.DEFAULT_PAGE_MODE)
@@ -403,6 +405,8 @@ def _pipeline_from_plans(
     expanded_sources: tuple[Path, ...],
     designs: tuple[DesignFacade, ...],
     plans: tuple[PlanFacade, ...],
+    *,
+    repair_clearance: bool = True,
 ) -> PipelineResult:
     """Lay out, emit, lint and report the pages of already planned passes."""
 
@@ -490,6 +494,7 @@ def _pipeline_from_plans(
         end_early_mm=request.end_early_mm,
         artifact_stem=request.artifact_stem,
         start_charge_e=request.start_charge_e,
+        repair_clearance=repair_clearance,
     )
 
 
@@ -661,8 +666,10 @@ def _finish_pipeline(
     end_early_mm: float | None,
     artifact_stem: str | None,
     start_charge_e: float | None = None,
+    repair_clearance: bool = True,
 ) -> PipelineResult:
-    emission = emit_job(
+    emit = emit_job_with_clearance_repair if repair_clearance else emit_job
+    emission = emit(
         job,
         profile,
         reproducible=reproducible,
@@ -694,7 +701,7 @@ def _finish_pipeline(
         # report/preview/emission classes are caught: an arbitrary ValueError
         # could be any base-path defect and must not be retried away.
         fallback_job = replace(job, settings=replace(job.settings, settle_valleys=False))
-        safe = emit_job(
+        safe = emit(
             fallback_job,
             profile,
             reproducible=reproducible,
@@ -760,12 +767,16 @@ def _pipeline_with_area_fills(
     names is left out of that pass with a placed warning, and the slice runs
     again.  A fill named only as part of the first line it ran on into is
     first given its own stroke, so the next run can name it.  A failure that
-    names no fill is the lines' own, and is raised as it is.
+    names no fill is the lines' own: they get the repair any drawing's lines
+    get, and what that can't answer is raised as it is.
     """
 
     memo: FillMemo = {}
     left_out: dict[int, dict[int, str]] = {}
     no_run_on: set[int] = set()
+    # A refused line is only lifted once there is no fill left to take back, so
+    # a drawing that printed with a fill left out still prints exactly that way.
+    repair_clearance = False
     while True:
         filled = _with_area_fills(
             request,
@@ -779,10 +790,20 @@ def _pipeline_with_area_fills(
             no_run_on=no_run_on,
         )
         try:
-            return _pipeline_from_plans(request, profile, expanded_sources, designs, filled)
+            return _pipeline_from_plans(
+                request,
+                profile,
+                expanded_sources,
+                designs,
+                filled,
+                repair_clearance=repair_clearance,
+            )
         except StackError as exc:
-            if not _take_back_fills(exc, plans, filled, left_out, no_run_on):
+            if _take_back_fills(exc, plans, filled, left_out, no_run_on):
+                continue
+            if repair_clearance or not clearance_repair_could_answer(exc):
                 raise
+            repair_clearance = True
 
 
 def _with_area_fills(

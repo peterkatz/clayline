@@ -10,6 +10,10 @@
 //   originalOf, withoutOriginal
 //        The file the lines were made from, kept as escaped text in <metadata>.
 //        It never goes to the engine to measure or slice, and never prints.
+//   withLinesHash, changedElsewhere, asHandEdited
+//        Lines changed in another app can't be made again from the kept file without
+//        losing that change.  The hash covers everything but the kept file and itself,
+//        so any save from outside shows, edit or not.  A file with no hash has no say.
 //   answerOf, withAnswer, withoutAnswer
 //        Only making lines can tell a photo, and a reopened project must not make
 //        lines to find out, so that answer rides on the file's root tag.  It comes
@@ -34,7 +38,11 @@
   const ROOT_TAG = /<svg\b[^>]*>/;
   const ORIGINAL = /<metadata id="clayline-original">([\s\S]*?)<\/metadata>\n?/;
   const ORIGINAL_OPENS = '<metadata id="clayline-original">';
+  // Another app may lay this tag out its own way, so this one doesn't ask for the
+  // exact spelling the page reads back.
+  const ORIGINAL_ANY_LAYOUT = /<metadata\b[^>]*\bid="clayline-original"[^>]*>[\s\S]*?<\/metadata>\s*/;
   const NO_LINES_MARK = /\sdata-clayline-no-lines="[^"]*"/;
+  const LINES_HASH_MARK = /\sdata-clayline-lines-hash="[^"]*"/;
   const LINE_ID = "from-shape-";
   const MEETING_CODES = new Set(["tight_radius", "under_spaced", "crossing", "lap", "fuse"]);
 
@@ -118,23 +126,51 @@
     }
   }
 
-  function withoutAnswer(svg) {
+  function withoutRootMark(svg, pattern) {
     const tag = rootTag(svg);
-    const mark = NO_LINES_MARK.exec(tag);
+    const mark = pattern.exec(tag);
     if (!mark) return svg;
     const at = svg.indexOf(tag) + mark.index;
     return svg.slice(0, at) + svg.slice(at + mark[0].length);
   }
 
+  function withRootMark(svg, name, value) {
+    const tag = rootTag(svg);
+    if (!tag) return svg;
+    const at = svg.indexOf(tag) + "<svg".length;
+    return `${svg.slice(0, at)} data-clayline-${name}="${value}"${svg.slice(at)}`;
+  }
+
+  function withoutAnswer(svg) {
+    return withoutRootMark(svg, NO_LINES_MARK);
+  }
+
   function withAnswer(svg, answer) {
-    const file = withoutAnswer(svg);
-    const tag = rootTag(file);
-    if (!tag) return file;
     const kept = JSON.stringify(answer).replace(/[&"<>]/g, (one) => (
       one === "&" ? "&amp;" : one === '"' ? "&quot;" : one === "<" ? "&lt;" : "&gt;"
     ));
-    const at = file.indexOf(tag) + "<svg".length;
-    return `${file.slice(0, at)} data-clayline-no-lines="${kept}"${file.slice(at)}`;
+    return withRootMark(withoutAnswer(svg), "no-lines", kept);
+  }
+
+  function linesHashOf(svg) {
+    return hashOf(withoutRootMark(withoutOriginal(svg), LINES_HASH_MARK));
+  }
+
+  // Anything else comes straight back as the identical string.
+  function withLinesHash(svg) {
+    if (!isConverted(svg)) return svg;
+    return withRootMark(withoutRootMark(svg, LINES_HASH_MARK), "lines-hash", linesHashOf(svg));
+  }
+
+  function changedElsewhere(svg) {
+    const kept = rootMark(svg, "lines-hash");
+    return kept !== null && isConverted(svg) && kept !== linesHashOf(svg);
+  }
+
+  // The same as a pass edited in Draw: a drawing the potter owns, never made again.
+  function asHandEdited(svg) {
+    const file = withoutRootMark(String(svg).replace(ORIGINAL_ANY_LAYOUT, ""), LINES_HASH_MARK);
+    return originOf(file) ? file : withRootMark(file, "origin", "edited");
   }
 
   function hashOf(text) {
@@ -263,6 +299,9 @@
     marksOf,
     originalOf,
     withoutOriginal,
+    withLinesHash,
+    changedElsewhere,
+    asHandEdited,
     answerOf,
     withAnswer,
     withoutAnswer,

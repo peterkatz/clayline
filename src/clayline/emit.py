@@ -1418,9 +1418,19 @@ def _print_run(
             distance_before = segment_end
             continue
         breaks = {distance_before, segment_end}
-        for boundary in (*ramp_breaks, deposit_until):
+        for boundary in ramp_breaks:
             if distance_before < boundary < segment_end:
                 breaks.add(boundary)
+        # ``total_length`` (``sum``, compensated since Python 3.12) and this
+        # plain running total part by rounding over a long thread: 1e-8 mm on
+        # a 30 m one.  A flowing job has no tail, so past its ``deposit_until``
+        # lies only that gap, which laid as a part of its own would be a line
+        # that stops pushing clay.  A gap the part skip below swallows keeps
+        # its split, so every job that passed before writes the same bytes.
+        if distance_before < deposit_until < segment_end and not (
+            settings.keep_clay_flowing and segment_end - deposit_until > 1e-9
+        ):
+            breaks.add(deposit_until)
         ordered = sorted(breaks)
         for part_start, part_end in pairwise(ordered):
             if part_end - part_start <= 1e-9:
@@ -1430,7 +1440,7 @@ def _print_run(
                 continue
             fraction = (part_end - distance_before) / distance
             endpoint = start.interpolate(destination, fraction)
-            extrude_before_cutoff = part_start < deposit_until - 1e-12
+            extrude_before_cutoff = settings.keep_clay_flowing or part_start < deposit_until - 1e-12
             ratio = _corrected_thread_protection_ratio(settings)
             attached_tail = ratio is not None and end_early_mm > 0.0 and not extrude_before_cutoff
             extrude = extrude_before_cutoff or attached_tail

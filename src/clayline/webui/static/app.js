@@ -836,13 +836,16 @@ function setFiles(files) {
  * opening, undo, redo and Repeat also reach setFiles, and they never convert.
  *
  * What the pass is made of lives on the drawing's own root (Lines.marksOf), so
- * it survives undo and reopen.  file.makingLines, file.linesFailed and
- * file.linesProblem are transient, and they stay off the pass's snapshot.
+ * it survives undo and reopen.  file.makingLines, file.linesFailed,
+ * file.linesWantCoil and file.linesProblem are transient, and they stay off the
+ * pass's snapshot.
  */
 
 const LINES_MAKING = "Making lines from your drawing…";
 const LINES_STILL_MAKING = "Still working — big drawings take longer.";
 const LINES_COULD_NOT = "Clayline couldn't make lines from this drawing.";
+const LINES_WANT_COIL = "Type a coil width to make lines from this drawing.";
+const COIL_WANTED_FOOTNOTE = "Type a coil width before Slice.";
 const LINES_SIZE_TOO_BIG = "That size is too big for this drawing. Type a smaller size.";
 const LINES_MADE_TIP = "Clayline drew these lines from what your file shows.";
 const SIZE_TIP = "The longest side of this pass. It follows the drawing until you type a size.";
@@ -851,6 +854,8 @@ const LINES_TYPING_PAUSE_MS = 400;
 const LINES_REQUEST_LIMIT_MS = 120000;
 const LINES_SMALLEST_SIZE_MM = 1;
 const LINES_LARGEST_SIZE_MM = 10000;
+// The Width box's own smallest, and the smallest coil lines can be made for.
+const SMALLEST_COIL_MM = 0.1;
 const LINES_NO_LINES = new Set([
   "photo", "nothing", "linked_picture", "too_large", "too_small", "unreadable",
 ]);
@@ -873,6 +878,7 @@ const LINES_TIPS = Object.freeze({
   too_many_repeats: "It repeats its shapes so many times that it may never finish showing.",
   size_too_big: "This drawing doesn't hold enough detail to be made that big.",
   failed: "Try again makes the lines once more. Use original puts your file back.",
+  want_coil: "Lines are made to suit your coil. Measured coil width is in Layers, under Advanced. These start as soon as it has a number.",
 });
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -920,7 +926,7 @@ function linesProblemOf(file) {
 }
 
 function passHeldByLines(file) {
-  return Boolean(file.makingLines || file.linesFailed || linesProblemOf(file));
+  return Boolean(file.makingLines || file.linesFailed || file.linesWantCoil || linesProblemOf(file));
 }
 
 // The passes the bed-fit check can measure. Each of these answers by its place in
@@ -948,7 +954,7 @@ function passSizeStaysOpen(file) {
   if (file.makingLines) return false;
   const problem = linesProblemOf(file);
   if (problem) return Boolean(problem.asked);
-  return Boolean(file.linesFailed && Lines.hasOriginal(file.svg));
+  return Boolean((file.linesFailed || file.linesWantCoil) && Lines.hasOriginal(file.svg));
 }
 
 function passScaledToFit(file) {
@@ -986,10 +992,14 @@ function linesDiffer(left, right) {
   return !Number.isFinite(left) || !Number.isFinite(right) || Math.abs(left - right) > 0.0011;
 }
 
+function coilWidthIsSet(width = effectiveBeadWidth()) {
+  return width >= SMALLEST_COIL_MM;
+}
+
 // A box left empty hasn't moved anywhere yet. Slice is off on its own account until
 // it holds a number, and nothing can be made for a coil of no width.
 function linesCoilAndJoinAreSet() {
-  return effectiveBeadWidth() > 0 && Number.isFinite(overlapFraction());
+  return coilWidthIsSet() && Number.isFinite(overlapFraction());
 }
 
 function linesCoilOrJoinMoved(coil, join) {
@@ -1103,6 +1113,7 @@ function enterMakingPhase(file) {
 function readyLinesJob(file, kind) {
   stopMaking(file);
   file.linesFailed = false;
+  file.linesWantCoil = false;
   file.linesProblem = null;
   const job = newLinesJob(file, kind);
   file.makingLines = { job, phase: "sorting", slow: false, slowTimer: 0 };
@@ -1134,6 +1145,9 @@ function addDrawings(loaded) {
       jobs.push(readyLinesJob(file, "load"));
       return;
     }
+    // Changed in another app since Clayline made them. Making them again from the
+    // kept file would quietly lose that change.
+    if (Lines.changedElsewhere(file.svg)) file.svg = Lines.asHandEdited(file.svg);
     // A size the potter typed still wins when the saved lines come back.
     const marks = Lines.marksOf(file.svg);
     if (Lines.hasOriginal(file.svg) && marks.basis === "typed" && marks.target > 0) {
@@ -1149,6 +1163,18 @@ function addDrawings(loaded) {
 // rebuild when that hands back the same drawing at the same size, and otherwise
 // its answer has nowhere left to land.
 function carryLinesJobs(files) {
+  // Still waiting for a coil, unless the rebuild put a number back. Undo makes no
+  // lines of its own, so then the row offers them.
+  state.files.forEach((file) => {
+    if (!file.linesWantCoil || files.includes(file) || linesCoilAndJoinAreSet()) return;
+    const heir = files.find((candidate) => (
+      !candidate.makingLines
+      && candidate.name === file.name
+      && candidate.svg === file.svg
+      && typedLinesSize(candidate) === typedLinesSize(file)
+    ));
+    if (heir) heir.linesWantCoil = true;
+  });
   linesQueue.jobs().forEach((job) => {
     if (job.dropped || job.kind === "sort" || files.includes(job.file)) return;
     const heir = files.find((candidate) => (
@@ -1195,6 +1221,11 @@ async function runLinesJob(job) {
   rememberLinesAnswer(job.source, sort);
   // Sorting asks about no size, so what it finds doesn't change with one.
   if (job.kind === "sort" || sort.verdict !== "convert" || job.dropped) return { ...sort, sorted: true };
+  // Sorting asks for no coil, and making lines can't go without one. The pass waits
+  // for the box, and the number starts it (noteCoilOrJoinChanged).
+  if (!coilWidthIsSet(job.coil) || !Number.isFinite(job.join) || !linesCoilAndJoinAreSet()) {
+    return { wantsCoil: true };
+  }
   // A new file goes to the back of the line once it is known to want lines, so
   // every waiting row is sorted first and each can say what it is waiting for.
   if (!job.sort && job.kind === "load") return { requeue: sort };
@@ -1280,6 +1311,14 @@ function landLines(job, { answer, error }) {
     refreshAfterLines();
     return;
   }
+  if (answer?.wantsCoil) {
+    // The number may have come while this was being sorted.
+    if (linesCoilAndJoinAreSet()) startLinesJob(file, "remake");
+    else file.linesWantCoil = true;
+    refreshAfterLines();
+    showPassRow(file);
+    return;
+  }
   if (stale) {
     // Undo put back another coil while these were being made. Lines already there
     // match it. A file with none still has its answer to come.
@@ -1295,6 +1334,7 @@ function landLines(job, { answer, error }) {
       };
     } else {
       file.linesFailed = job.kind;
+      file.linesFailedFor = asked;
     }
     refreshAfterLines();
     showPassRow(file);
@@ -1310,7 +1350,7 @@ function landLines(job, { answer, error }) {
   }
   if (answer.verdict === "lines") {
     const held = file.svg;
-    replacePassSvg(file, answer.svg);
+    replacePassSvg(file, Lines.withLinesHash(answer.svg));
     if (job.kind !== "again") amendLinesIntoHistory(file, held, job);
     markDirty("Your lines are ready. Press Slice to build the print.");
     renderPages();
@@ -1346,6 +1386,9 @@ function remakeLinesIfStale(file) {
 function linesWantOtherCoil(file) {
   const job = file.makingLines?.job;
   if (job) return linesCoilOrJoinMoved(job.coil, job.join);
+  if (file.linesWantCoil) return linesCoilAndJoinAreSet();
+  // A coil the engine turned down may be all that was wrong.
+  if (file.linesFailed) return linesCoilOrJoinMoved(file.linesFailedFor?.coil, file.linesFailedFor?.join);
   const problem = linesProblemOf(file);
   if (problem) return Boolean(problem.asked) && linesCoilOrJoinMoved(problem.asked.coil, problem.asked.join);
   if (!Lines.hasOriginal(file.svg)) return false;
@@ -1422,6 +1465,7 @@ function setLinesSize(file, sizeMm) {
 function useOriginal(file) {
   const original = Lines.originalOf(file.svg);
   file.linesFailed = false;
+  file.linesWantCoil = false;
   file.linesProblem = null;
   if (original !== null) {
     replacePassSvg(file, original);
@@ -1504,7 +1548,7 @@ function makeLinesAgainButton(file) {
 }
 
 function linesRowActions(file) {
-  if (file.makingLines || file.linesFailed) return [];
+  if (file.makingLines || file.linesFailed || file.linesWantCoil) return [];
   const buttons = [];
   if (Lines.hasOriginal(file.svg)) {
     buttons.push(useOriginalButton(file));
@@ -1563,6 +1607,14 @@ function linesNoteContent(file) {
       tip: LINES_TIPS.failed,
       role: "alert",
       buttons: [retry, useOriginalButton(file)],
+    };
+  }
+  if (file.linesWantCoil) {
+    return {
+      text: LINES_WANT_COIL,
+      tip: LINES_TIPS.want_coil,
+      role: "status",
+      buttons: Lines.hasOriginal(file.svg) ? [useOriginalButton(file)] : [],
     };
   }
   const problem = linesProblemOf(file);
@@ -1640,6 +1692,7 @@ function linesSliceFootnote() {
   }
   const failed = state.files.find((file) => file.linesFailed);
   if (failed) return `Clayline couldn't make lines from ${failed.name} — try again, or use the original.`;
+  if (state.files.some((file) => file.linesWantCoil)) return COIL_WANTED_FOOTNOTE;
   const stuck = state.files.find(linesProblemOf);
   if (stuck) {
     const problem = linesProblemOf(stuck);
@@ -1846,7 +1899,7 @@ function syncLinesPreview() {
   }
   // Nothing of the last pass stays held once it has gone.
   if (!passes.length) drawLinesPreview(passes);
-  if (empty && state.files.some((file) => file.linesFailed || linesProblemOf(file))) {
+  if (empty && state.files.some((file) => file.linesFailed || file.linesWantCoil || linesProblemOf(file))) {
     // "Slice" isn't the next step here, so the usual empty words would be wrong.
     $("#emptyTitle").textContent = "Nothing to print yet";
     $("#emptyMessage").textContent = "See the note under this pass in Passes.";
@@ -2461,7 +2514,8 @@ async function runLayoutCheck() {
     layer_height: numberValue("#layerHeight"),
     z_mode: selectedZMode(),
   };
-  if (selectedBeadWidthMode() === "measured") body.bead_width = numberValue("#beadWidth");
+  // An empty Width box still has a size to measure. Slice's footnote asks for the number.
+  if (selectedBeadWidthMode() === "measured" && coilWidthIsSet()) body.bead_width = numberValue("#beadWidth");
   try {
     const response = await fetch("/api/layout-check", {
       method: "POST",
@@ -3255,8 +3309,7 @@ function updateDependencies() {
     && Number.isFinite(overlapPercent)
     && overlapPercent >= 0
     && overlapPercent <= 100
-    && Number.isFinite(effectiveBeadWidth())
-    && effectiveBeadWidth() > 0
+    && coilWidthIsSet()
     && !rippleTooDeep;
   $("#sliceButton").disabled = !canSlice || state.isSlicing;
   syncLinesCaption();
@@ -3266,15 +3319,17 @@ function updateDependencies() {
       ? "Add or draw a design to begin."
       : linesFootnote
         ? linesFootnote
-        : !allPassMeasurementsReady()
-          ? passMeasurementFailure() || "Measuring every pass before Slice can run."
-          : rippleTooDeep
-            ? `The height ripple is deeper than the ${rippleFloorLabel} — see Character.`
-            : canSlice
-              ? anyPassSaysSomething()
-                ? "Press Slice when you're ready."
-                : `${pages} ${passWord} · nothing slices until you ask.`
-              : "Correct the highlighted numeric setting before slicing.";
+        : !coilWidthIsSet()
+          ? COIL_WANTED_FOOTNOTE
+          : !allPassMeasurementsReady()
+            ? passMeasurementFailure() || "Measuring every pass before Slice can run."
+            : rippleTooDeep
+              ? `The height ripple is deeper than the ${rippleFloorLabel} — see Character.`
+              : canSlice
+                ? anyPassSaysSomething()
+                  ? "Press Slice when you're ready."
+                  : `${pages} ${passWord} · nothing slices until you ask.`
+                : "Correct the highlighted numeric setting before slicing.";
   $("#flattenOutput").textContent = `${numberValue("#flattenTol").toFixed(2)} mm`;
   $("#flowOutput").textContent = `${numberValue("#flow").toFixed(2)}×`;
 

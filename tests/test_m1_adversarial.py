@@ -110,7 +110,29 @@ def test_filled_only_geometry_is_not_silently_treated_as_a_centerline() -> None:
     assert warning.provenance.element_id == "must-be-dropped"
     assert warning.point is not None
     assert warning.point.distance_to(Point(40.0, 40.0)) <= 0.02
-    assert "without a visible stroke" in warning.message
+    assert warning.message == "To print this circle, give it a line in your drawing program."
+
+
+@pytest.mark.parametrize(
+    ("element", "name"),
+    [
+        ('<circle cx="9" cy="9" r="5" fill="#fff"/>', "circle"),
+        ('<ellipse cx="9" cy="9" rx="5" ry="3" fill="#fff"/>', "oval"),
+        ('<rect x="2" y="2" width="9" height="5" fill="#fff"/>', "rectangle"),
+        ('<path d="M1 1L9 9L1 9Z" fill="#fff"/>', "shape"),
+        ('<polygon points="1,1 9,9 1,9" fill="#fff"/>', "shape"),
+    ],
+)
+def test_a_skipped_shape_is_named_in_plain_words(tmp_path, element: str, name: str) -> None:
+    drawing = tmp_path / "shape.svg"
+    drawing.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="20mm" viewBox="0 0 20 20">'
+        f"{element}</svg>",
+        encoding="utf-8",
+    )
+    warning = ingest_svg(drawing).warnings[0]
+    assert warning.code is WarningCode.DROPPED_ELEMENT
+    assert warning.message == f"To print this {name}, give it a line in your drawing program."
 
 
 def test_nested_transforms_and_both_use_reference_forms_are_resolved() -> None:

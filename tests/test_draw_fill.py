@@ -1206,6 +1206,37 @@ def test_a_refused_slice_naming_a_line_no_fill_ran_on_into_is_raised_as_it_is(
     assert refused.value.lint_report is not None
 
 
+def test_a_refused_line_with_no_fill_to_take_back_gets_the_repair_any_line_gets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fill stays, and the check is asked again with the named span lifted."""
+
+    lifted: list[object] = []
+    real_emit = stack.emit_job
+
+    def emit(*args: Any, **values: Any) -> Any:
+        lifted.append(values.get("clearance_repairs"))
+        return real_emit(*args, **values)
+
+    monkeypatch.setattr(stack, "emit_job", emit)
+    named = LintScope(
+        role="current",
+        page_index=0,
+        layer_index=0,
+        stroke_id="stroke-0000",
+        arc_start_mm=1.0,
+        arc_end_mm=2.0,
+    )
+    calls = _failing_lint(monkeypatch, (named,), (named,))
+
+    result = _slice("triangle.svg")
+
+    assert len(calls) == 3
+    assert lifted[-1] == {(0, 0, "stroke-0000"): ((1.0, 2.0),)}
+    assert result.emission.lint_report.ok
+    assert _fills(result.plans[0])
+
+
 # --- a plan of the lines alone -------------------------------------------------------
 
 
