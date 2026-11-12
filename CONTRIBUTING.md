@@ -116,15 +116,25 @@ other material) you agree that:
 
 1. you wrote it, or otherwise have the right to submit it under these terms;
 2. you license it to the project under GPL-3.0; and
-3. you additionally grant Pete Katz a perpetual, worldwide, non-exclusive,
-   royalty-free licence to use, reproduce, modify, sublicense, and distribute
-   your contribution under any licence, including proprietary and commercial
-   licences, as part of Clayline or works derived from it.
+3. you additionally grant Pete Katz a perpetual, irrevocable, worldwide,
+   non-exclusive, royalty-free licence to use, reproduce, modify, sublicense,
+   and distribute your contribution under any licence, including proprietary
+   and commercial licences, as part of Clayline or works derived from it.
 
 You keep your copyright; this is a licence grant, not an assignment. It keeps
 Clayline free under the GPL while leaving the maintainer able to offer it under
-other terms later. Record your agreement by adding a
-`Signed-off-by: Your Name <email>` line to each commit (`git commit -s`).
+other terms later.
+
+You sign this agreement once, on your first pull request. A bot comments on
+the pull request and asks you to sign; reply with a comment that says exactly:
+
+```text
+I have read the licence and contributor agreement in CONTRIBUTING.md and I agree to its terms.
+```
+
+The bot records your signature, and the pull request cannot be merged until
+it has. Your later pull requests pass without asking again. If the check
+does not update after you sign, comment `recheck`.
 
 Keep dependencies GPL-compatible or permissively licensed. Do not copy code from
 Cura, CuraEngine, or other slicers. Implement behavior from documented
