@@ -1166,7 +1166,8 @@ def test_a_layer_height_typed_while_the_final_path_answers_stops_it(path: str) -
         PATH=path,
     )
     assert out["heldCount"] == 1
-    assert out["during"] == ["Checking…", True]
+    phase = "Building path…" if path.endswith("modulate") else "Checking final path…"
+    assert out["during"] == [phase, True]
     assert out["stopped"] == _STOPPED
     assert out["afterTheOldAnswer"] == _STOPPED
     _assert_a_way_out(out, 2)

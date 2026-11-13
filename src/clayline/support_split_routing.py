@@ -126,6 +126,7 @@ def route_split_supports(
     foot_variant: int = 0,
     reference_stream: MoveStream | None = None,
     reference_helical_stream: MoveStream | None = None,
+    flow_multiplier: float = 1.0,
 ) -> MoveStream:
     """Connect closed detached tracks to their selected body by deposition.
 
@@ -146,6 +147,7 @@ def route_split_supports(
             circuits,
             foot_variant=foot_variant,
             reference_stream=reference_stream,
+            flow_multiplier=flow_multiplier,
         )
     if primary_ring_indices is None:
         primary_ring_indices = _primary_rings(circuits)
@@ -187,6 +189,7 @@ def route_split_supports(
             main_settings,
             foot_variant=foot_variant,
             reference_stream=reference_master,
+            flow_multiplier=flow_multiplier,
         )
     positions = _main_stations(master, primary)
     artwork = SupportArtwork(sliced, pattern)

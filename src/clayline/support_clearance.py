@@ -4,11 +4,22 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from dataclasses import dataclass, field
 from itertools import product
+
+from clayline.work_cancel import check_cancelled
 
 Point3 = tuple[float, float, float]
 _MAX_SPATIAL_QUERIES = 24_000_000
 _MAX_CONE_CHECKS = 8_000_000
+
+
+@dataclass(slots=True)
+class _HeightBucket:
+    indices: list[int] = field(default_factory=list)
+    support_indices: list[int] = field(default_factory=list)
+    highest: float = -math.inf
+    highest_support: float = -math.inf
 
 
 class SupportClearanceReplay:
@@ -27,10 +38,12 @@ class SupportClearanceReplay:
         self._max_lead = max_lead
         self._reach = self._base_radius + max_lead
         self._cell_size = self._reach
+        self._largest_base_radius = self._base_radius
+        self._largest_support_base_radius = self._base_radius
         self._z_tolerance = z_tolerance
         self._step = min(0.5, bead_width / 8)
         self._height_step = max(0.5, bead_width / 4)
-        self._cells: dict[tuple[int, int], dict[int, list[int]]] = defaultdict(dict)
+        self._cells: dict[tuple[int, int], dict[int, _HeightBucket]] = defaultdict(dict)
         self._clay: list[tuple[Point3, Point3, bool, float]] = []
         self._highest = -math.inf
         self._highest_support = -math.inf
@@ -55,6 +68,9 @@ class SupportClearanceReplay:
         index = len(self._clay)
         base_radius = max(self._base_radius, width_mm / 2 + self._tip_radius)
         self._reach = max(self._reach, base_radius + self._max_lead)
+        self._largest_base_radius = max(self._largest_base_radius, base_radius)
+        if support:
+            self._largest_support_base_radius = max(self._largest_support_base_radius, base_radius)
         self._clay.append((start, end, support, base_radius))
         height_bin = math.floor(highest / self._height_step)
         for cell in self._cells_in_box(
@@ -63,25 +79,39 @@ class SupportClearanceReplay:
             max(start[0], end[0]),
             max(start[1], end[1]),
         ):
-            self._cells[cell].setdefault(height_bin, []).append(index)
+            bucket = self._cells[cell].setdefault(height_bin, _HeightBucket())
+            bucket.indices.append(index)
+            bucket.highest = max(bucket.highest, highest)
+            if support:
+                bucket.support_indices.append(index)
+                bucket.highest_support = max(bucket.highest_support, highest)
 
     def check(self, start: Point3, end: Point3, *, support: bool) -> str | None:
         highest = self._highest if support else self._highest_support
         if self._refused or highest <= min(start[2], end[2]) + self._z_tolerance:
             return None
-        radius = self._reach
+        largest_radius = self._largest_base_radius if support else self._largest_support_base_radius
         steps = max(1, math.ceil(math.dist(start, end) / self._step))
         for index in range(steps + 1):
+            if index % 64 == 0:
+                check_cancelled()
             fraction = index / steps
             x, y, z = (a + fraction * (b - a) for a, b in zip(start, end, strict=True))
             if highest <= z + self._z_tolerance:
                 continue
+            # The cone cannot reach its maximum shoulder unless previously
+            # printed clay actually rises that far above this nozzle sample.
+            radius = largest_radius + min(highest - z, self._max_lead)
             lowest_bin = math.floor((z + self._z_tolerance) / self._height_step)
             nearby: set[int] = set()
             for cell in self._cells_in_box(x - radius, y - radius, x + radius, y + radius):
-                for height_bin, indices in self._cells.get(cell, {}).items():
+                for height_bin, bucket in self._cells.get(cell, {}).items():
                     if height_bin < lowest_bin:
                         continue
+                    top = bucket.highest if support else bucket.highest_support
+                    if top <= z + self._z_tolerance:
+                        continue
+                    indices = bucket.indices if support else bucket.support_indices
                     # Bound spatial work independently, including duplicates
                     # from a segment that lies in several grid cells.
                     self._queries_remaining -= len(indices)

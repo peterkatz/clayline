@@ -125,6 +125,45 @@ def test_automatic_foot_sizes_the_flare_without_manual_dimension_limits() -> Non
     assert stricter[0] > widths[0]
 
 
+@pytest.mark.parametrize("needed_courses", (14, 28))
+def test_vase_footing_keeps_its_height_schedule_through_the_required_support(
+    needed_courses: int,
+) -> None:
+    from dataclasses import replace
+
+    from clayline.support_geometry import _vase_footing
+    from clayline.support_models import CurtainPlacement
+
+    original = _flaring_courses()[0]
+    layer_height = 1.24
+    courses = tuple(
+        replace(
+            original,
+            ring=replace(original.ring, z=(index + 1) * layer_height),
+            z=(index + 1) * layer_height
+            + np.linspace(0, layer_height if index >= 3 else 0, len(original.xy)),
+        )
+        for index in range(needed_courses)
+    )
+    curtains = [
+        (
+            CurtainPlacement(id="test", origin="repeated"),
+            ([64] * needed_courses, np.array((1.0, 0.0)), 15.0, 4.13),
+        )
+    ]
+
+    schedule = _vase_footing(courses, curtains, layer_height, gain=0.1)
+
+    assert set(schedule) == set(range(needed_courses))
+    if needed_courses == 14:
+        assert set(schedule.values()) == {0.0}
+    else:
+        assert schedule[3] == 0.0
+        assert schedule[4] == pytest.approx(0.1)
+        assert schedule[13] == 1.0
+        assert all(schedule[index] == 1.0 for index in range(14, needed_courses))
+
+
 def test_manual_foot_and_connected_foundation_keep_their_height_constraints() -> None:
     from clayline.support_geometry import _FOOT_ROUTE_PARAMETERS, _foot_widths
     from clayline.support_models import FootSettings, SupportSettings
@@ -169,6 +208,44 @@ def test_footing_height_cannot_open_a_gap_above_its_previous_printed_course() ->
     assert z.max() - 8.8 < 1.25 * 1.24
     assert z[[0, -1]].tolist() == [10.0, 10.0]
     assert _replay(xy, z, wall, wall_z) is None
+
+
+def test_footing_schedule_propagates_cancellation_after_real_contact_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from threading import Event
+
+    from clayline import support_spatial
+    from clayline.work_cancel import WorkCancelled, cancellation_scope
+
+    xy = np.array(((0, 0), (18, 0), (18, 5), (0, 5), (0, 0)), dtype=float)
+    z = np.array((10, 10.9, 10.8, 10.1, 10), dtype=float)
+    original = z.copy()
+    event = Event()
+    distance_pairs = support_spatial.distance_pairs
+    queried_contacts = []
+
+    def cancel_after_query(*args, **kwargs):
+        result = distance_pairs(*args, **kwargs)
+        queried_contacts.append(len(result[0]))
+        event.set()
+        return result
+
+    monkeypatch.setattr(support_spatial, "distance_pairs", cancel_after_query)
+    with pytest.raises(WorkCancelled), cancellation_scope(event):
+        _limit_footing_descent(
+            xy,
+            z,
+            4.13,
+            1.24,
+            0.5,
+            following_xy=np.array(((0, 2), (20, 2)), dtype=float),
+            following_z=np.array((10.0, 10.0)),
+        )
+
+    assert len(queried_contacts) == 1
+    assert queried_contacts[0] > 0
+    np.testing.assert_array_equal(z, original)
 
 
 @pytest.mark.parametrize("threshold", (0.4, 0.2))

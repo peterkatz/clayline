@@ -32,6 +32,7 @@ from clayline.thread_protection_audit import (
     validate_thread_protection_audit,
 )
 from clayline.weave_stack import WIDE_PART_MARGIN_MM, tip_radius_mm
+from clayline.work_cancel import check_cancelled
 
 _COMMAND = re.compile(r"^\s*([GMT]\d+)\b", re.IGNORECASE)
 _WORD = re.compile(r"(?:^|\s)([XYZEF])(-?(?:\d+(?:\.\d*)?|\.\d+))(?=\s|$)")
@@ -399,6 +400,8 @@ def lint_gcode(
         )
 
     for index, raw_line in enumerate(lines):
+        if index % 512 == 0:
+            check_cancelled()
         line_number = index + 1
         stripped = raw_line.strip()
         block = _block_at(index, positions)

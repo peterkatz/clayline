@@ -27,6 +27,7 @@ from clayline import __version__
 from clayline import defaults as _defaults
 from clayline.emit import DEFAULT_WET_DENSITY_G_CM3, profile_start_charge_e
 from clayline.models import PageMode, PassModel, Point, Profile, ZMode
+from clayline.work_cancel import WorkCancelled
 
 _STATIC = Path(__file__).with_name("static")
 _REPO_EXAMPLES = Path(__file__).resolve().parents[3] / "examples"
@@ -119,8 +120,10 @@ def create_app(
         raise RuntimeError("Clayline UI requires `pip install clayline[ui]`") from exc
 
     from clayline.webui.weave_session import WeaveSessionManager
+    from clayline.webui.weave_work import WeaveWorkManager, run_request_work
 
     weave_sessions = WeaveSessionManager()
+    weave_work = WeaveWorkManager()
 
     def _resolve_weave_session(request: Any) -> tuple[Any, str, bool]:
         # A single-artist desktop app has exactly one session for the life of
@@ -140,6 +143,7 @@ def create_app(
         try:
             yield
         finally:
+            weave_work.clear()
             weave_sessions.clear()
 
     app = FastAPI(
@@ -156,6 +160,7 @@ def create_app(
     app.mount("/static", StaticFiles(directory=_STATIC), name="static")
 
     app.state.weave_sessions = weave_sessions
+    app.state.weave_work = weave_work
 
     def weave_session_http_error(exc: Any) -> Any:
         messages = {
@@ -599,7 +604,10 @@ def create_app(
                 raise UiRequestError("A supported restore requires its saved print file.")
             if verify_restore and sliced.source_sha256 != restore_recipe.source_mesh_sha256:
                 raise UiRequestError("A supported restore requires the matching source mesh.")
-            result, response_payload = await asyncio.to_thread(
+            ticket = weave_work.begin(token, _weave_work_id(payload))
+            result, response_payload = await run_request_work(
+                request,
+                ticket,
                 _modulate_weave_payload,
                 sliced,
                 payload,
@@ -622,6 +630,10 @@ def create_app(
             response = _json_response(Response, response_payload)
             _set_weave_cookie(response, token, created=created)
             return response
+        except WorkCancelled as exc:
+            raise HTTPException(
+                status_code=409, detail={"message": str(exc), "code": "weave_work_cancelled"}
+            ) from exc
         except UiRequestError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
         except WeaveSessionError as exc:
@@ -644,8 +656,9 @@ def create_app(
             cache, token, created = _resolve_weave_session(request)
             prepared_id = _required_id(payload, "prepared_id")
             prepared = cache.get("prepared", prepared_id)
-            result, response_payload = await asyncio.to_thread(
-                _finalize_weave_payload, prepared, payload
+            ticket = weave_work.begin(token, _weave_work_id(payload), continuation=True)
+            result, response_payload = await run_request_work(
+                request, ticket, _finalize_weave_payload, prepared, payload
             )
             if result is not None:
                 # The finalized result owns its exact path now. Keeping the
@@ -662,6 +675,10 @@ def create_app(
             response = _json_response(Response, response_payload)
             _set_weave_cookie(response, token, created=created)
             return response
+        except WorkCancelled as exc:
+            raise HTTPException(
+                status_code=409, detail={"message": str(exc), "code": "weave_work_cancelled"}
+            ) from exc
         except UiRequestError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
         except WeaveSessionError as exc:
@@ -670,6 +687,21 @@ def create_app(
             raise HTTPException(status_code=413, detail=str(exc)) from exc
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/weave/cancel", include_in_schema=False)
+    async def weave_cancel(request: Request) -> Any:
+        try:
+            payload = await _read_json_request(request, required_origin=desktop_origin)
+            if not isinstance(payload, dict):
+                raise UiRequestError("request body must be a JSON object")
+            work_id = _weave_work_id(payload)
+            if work_id is None:
+                raise UiRequestError("work_id is required")
+            _cache, token, _created = _resolve_weave_session(request)
+            weave_work.cancel(token, work_id)
+            return Response(status_code=204)
+        except UiRequestError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     @app.post("/api/weave/pattern", include_in_schema=False)
     async def weave_pattern(request: Request) -> Any:
@@ -877,6 +909,7 @@ def create_app(
             _require_local_origin(request, desktop_origin)
             _c, token, _cr = _resolve_weave_session(request)
             if token is not None:
+                weave_work.clear(token)
                 weave_sessions.clear(token)
             response = Response(status_code=204)
             response.delete_cookie(_weave_session_cookie(), path="/api/weave")
@@ -2549,6 +2582,13 @@ def _query_float(query: dict[str, str], key: str, default: float) -> float:
     if not math.isfinite(resolved):
         raise UiRequestError(f"{key} must be finite")
     return resolved
+
+
+def _weave_work_id(payload: dict[str, Any]) -> str | None:
+    value = payload.get("work_id")
+    if value is not None and (not isinstance(value, str) or not value or len(value) > 128):
+        raise UiRequestError("work_id must be a non-empty string of at most 128 characters")
+    return value
 
 
 def _required_id(payload: dict[str, Any], key: str) -> str:

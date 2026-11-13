@@ -24,6 +24,7 @@ from clayline.support_analysis import (
     _Footprints,
     _footprints,
 )
+from clayline.work_cancel import check_cancelled
 
 _EPS = 1e-9
 _MAX_CONTACT_PAIRS = 2_000_000
@@ -128,6 +129,7 @@ class SupportRouteScorer:
         """
         if (target_center is None) != (target_radius is None):
             raise ValueError("Provide both target center and radius.")
+        check_cancelled()
         if target_radius is not None and target_radius <= 0:
             raise ValueError("Target radius must be positive.")
         samples = self._samples(path, target_center, target_radius)
@@ -226,6 +228,7 @@ class SupportRouteScorer:
                 rows = np.flatnonzero((bins == z_bin) & ~bed)
                 step = min(len(rows), max(1, 250_000 // len(ids)))
                 for first in range(0, len(rows), step):
+                    check_cancelled()
                     query = rows[first : first + step]
                     a, b = tree.query(boxes[query])
                     budget -= len(a)

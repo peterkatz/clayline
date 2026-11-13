@@ -2940,6 +2940,16 @@ input[type="range"] {
   min-height: 52px;
 }
 
+.weave-preview-toolbar .weave-status-chip {
+  flex: none;
+}
+
+#weaveCheckButton {
+  width: auto;
+  flex: none;
+  white-space: nowrap;
+}
+
 .weave-preview-toolbar strong {
   display: block;
   margin-top: 3px;

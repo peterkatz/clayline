@@ -27,6 +27,7 @@ from clayline.models import (
     deposition_run_key,
 )
 from clayline.profiles import emission_defaults
+from clayline.work_cancel import check_cancelled
 
 DEFAULT_WET_DENSITY_G_CM3 = 1.8
 HEADER_COMMENT_LINE_LIMIT = 200
@@ -688,6 +689,8 @@ def _prepare_events(
     printed_a_run = False
     index = 0
     while index < len(moves):
+        if index % 512 == 0:
+            check_cancelled()
         move = moves[index]
         _validate_move(move)
         if move.page_index != current_page:
@@ -772,6 +775,8 @@ def _prepare_events(
             run: list[tuple[Move, EmissionPoint]] = []
             before_run = current
             while index < len(moves):
+                if index % 512 == 0:
+                    check_cancelled()
                 candidate = moves[index]
                 if candidate.kind is not MoveKind.PRINT:
                     break

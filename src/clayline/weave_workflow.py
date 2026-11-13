@@ -45,6 +45,7 @@ from clayline.weave_restore_codec import (
     pattern_header_projection,
 )
 from clayline.weave_zblend import ZBlendPath, build_zblend_path, top_follow_rounding_slope
+from clayline.work_cancel import check_cancelled
 
 if TYPE_CHECKING:
     from clayline.support_analysis import SupportAnalysis
@@ -486,6 +487,7 @@ def prepare_weave_result(
                 resolved_pattern,
                 resolved_profile,
                 support_settings,
+                flow_multiplier=flow_multiplier,
                 foot_variant=4 if regular_curtains else 0,
                 curtain_variant=5 if regular_curtains else 0,
             )
@@ -495,6 +497,7 @@ def prepare_weave_result(
                 resolved_pattern,
                 resolved_profile,
                 support_settings,
+                flow_multiplier=flow_multiplier,
                 foot_variant=4 if regular_curtains else 0,
                 curtain_variant=5 if regular_curtains else 0,
             )
@@ -773,6 +776,7 @@ def _route_support_candidate(
     foot_variant: int = 0,
     curtain_variant: int = 0,
     shared_split_footing: bool = False,
+    flow_multiplier: float = 1.0,
 ) -> tuple[MoveStream, str | None]:
     from clayline.support_geometry import SupportRoutingError, route_supports
 
@@ -787,6 +791,7 @@ def _route_support_candidate(
                 foot_variant=foot_variant,
                 curtain_variant=curtain_variant,
                 reference_stream=source.reference_stream,
+                flow_multiplier=flow_multiplier,
             ), None
         from clayline.support_split_routing import route_split_supports
 
@@ -819,6 +824,7 @@ def _route_support_candidate(
             foot_variant=foot_variant,
             reference_stream=source.reference_stream,
             reference_helical_stream=source.reference_helical_stream,
+            flow_multiplier=flow_multiplier,
         )
         if shared_split_footing:
             routed = replace(
@@ -852,6 +858,7 @@ def _reference_support_stream(
     foot_variant: int,
     curtain_variant: int,
     shared_split_footing: bool = False,
+    flow_multiplier: float = 1.0,
 ) -> tuple[MoveStream | None, str | None]:
     """Route the same support request on its complete weave-free counterpart."""
     if source.reference_stream is None:
@@ -874,6 +881,7 @@ def _reference_support_stream(
         foot_variant=foot_variant,
         curtain_variant=curtain_variant,
         shared_split_footing=shared_split_footing,
+        flow_multiplier=flow_multiplier,
     )
     return stream, error
 
@@ -906,6 +914,7 @@ def _support_candidates(attempt: PreparedWeaveResult) -> Iterator[PreparedWeaveR
     else:
         return
     for foot_variant, curtain_variant in variants:
+        check_cancelled()
         stream, error = _route_support_candidate(
             attempt.support_source,
             attempt.sliced,
@@ -915,6 +924,7 @@ def _support_candidates(attempt: PreparedWeaveResult) -> Iterator[PreparedWeaveR
             foot_variant=foot_variant,
             curtain_variant=curtain_variant,
             shared_split_footing=shared_split_footing,
+            flow_multiplier=attempt.settings.flow_multiplier,
         )
         if error is not None:
             continue
@@ -928,6 +938,7 @@ def _support_candidates(attempt: PreparedWeaveResult) -> Iterator[PreparedWeaveR
             foot_variant=foot_variant,
             curtain_variant=curtain_variant,
             shared_split_footing=shared_split_footing,
+            flow_multiplier=attempt.settings.flow_multiplier,
         )
         reference_trace = (
             prepare_emission(reference_stream, attempt.profile, settings=attempt.settings)
@@ -1050,6 +1061,7 @@ def finalize_weave_result(prepared_result: PreparedWeaveResult) -> WeaveResult:
     base_headroom: float | None = None
     rebuilds = 0
     while True:
+        check_cancelled()
         try:
             partial = None
             failure = None

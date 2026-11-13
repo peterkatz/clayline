@@ -12,6 +12,7 @@ from shapely import STRtree
 
 from clayline.emit import EmissionMotion, EmissionPoint, PreparedEmission
 from clayline.models import MoveKind
+from clayline.work_cancel import check_cancelled
 
 _EPS = 1e-9
 _MAX_DEPOSITS = 400_000
@@ -570,6 +571,7 @@ def _sample_contacts(
         # many paths at the same XY/Z. It cannot allocate an all-pairs matrix.
         step = min(len(rows), max(1, 250_000 // len(ids)))
         for first in range(0, len(rows), step):
+            check_cancelled()
             query = rows[first : first + step]
             a, b = tree.query(box[query])
             pair_budget -= len(a)
@@ -648,6 +650,7 @@ def _inspect(
     maximum = 0.0
     generated_maximum = None
     for batch in range(0, len(deposits), _BATCH_SIZE):
+        check_cancelled()
         indices = np.arange(batch, min(batch + _BATCH_SIZE, len(deposits)))
         sizes = divisions[indices] + 1
         offsets = np.concatenate(([0], np.cumsum(sizes)))

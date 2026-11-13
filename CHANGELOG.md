@@ -2,6 +2,21 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.14.1 — 2026-11-13
+
+### Responsive support checks
+- Changing settings stops the superseded calculation. Each session runs one path
+  calculation at a time, and an old result cannot replace a newer edit.
+- The preview shows **Building supports** and **Checking final path**, with elapsed
+  time. **Stop check** keeps your model and settings; **Check again** resumes checking.
+- Large support bases use faster, bounded clearance queries. Invalid candidate
+  outlines are rejected before their height schedule is calculated.
+- Taller Vase support bases keep their rising height schedule through the last
+  required course. Plain bases also check their contact with the preceding clay,
+  adjusting the innermost lane where the sculpture's contour leaves a gap.
+- Curtain departures check the nozzle against previously printed clay before
+  choosing a route, and also check that the following wall can pass the curtain.
+
 ## 0.14.0 — 2026-11-12
 
 ### Supports that follow the form

@@ -23,9 +23,11 @@ from clayline.support_analysis import SupportTarget
 from clayline.support_models import CurtainPlacement, SupportSettings
 from clayline.support_patterns import SupportArtwork
 from clayline.support_profile import bearing_envelope
+from clayline.support_route_clearance import SupportRouteClearance
 from clayline.support_route_scoring import SupportRouteScorer
 from clayline.weave_models import Pattern, Ring, SlicedForm
 from clayline.weave_stack import tip_radius_mm
+from clayline.work_cancel import check_cancelled
 
 _EPS = 1e-7
 # Match the full analyzer's motion budget, including the original sculpture.
@@ -109,6 +111,7 @@ def route_supports(
     foot_variant: int = 0,
     curtain_variant: int = 0,
     reference_stream: MoveStream | None = None,
+    flow_multiplier: float = 1.0,
 ) -> MoveStream:
     """Insert continuous feet and curtain webs in the exact deposition stream."""
     placements = _placements(settings)
@@ -125,6 +128,7 @@ def route_supports(
             settings,
             foot_variant=foot_variant,
             reference_stream=reference_stream,
+            flow_multiplier=flow_multiplier,
         )
     _require_continuous(stream)
     courses = _wall_courses(stream, sliced)
@@ -139,12 +143,22 @@ def route_supports(
         for course in reference_courses
     ]
     wall_paths = [tuple(stream.moves[index] for index in course.indices) for course in courses]
+    source_starts = [0, *(course.indices[-1] for course in courses[:-1])]
+    source_paths = [
+        stream.moves[start : course.indices[-1] + 1]
+        for start, course in zip(source_starts, courses, strict=True)
+    ]
+    source_tops = [
+        max((move.z for move in path if move.z is not None), default=-math.inf)
+        for path in source_paths
+    ]
     artwork = SupportArtwork(sliced, pattern)
     bead = sliced.bead_width
     foot_parameters = _FOOT_ROUTE_PARAMETERS[foot_variant]
     widths = _foot_widths(reference_courses, settings, bead, foot_parameters)
     curtains = []
     for placement, fraction in placements:
+        check_cancelled()
         stations, direction, reach, thickness = _curtain_placement(
             placement,
             fraction,
@@ -196,9 +210,12 @@ def route_supports(
     additions: dict[int, list[Move]] = defaultdict(list)
     existing: dict[int, list[LineString]] = defaultdict(list)
     feet: dict[int, tuple[int, _Route]] = {}
+    foot_tops: dict[int, float] = {}
+    wall_tops = [float(np.max(course.z)) for course in courses]
     web_insertions: dict[tuple[int, int], list[Move]] = defaultdict(list)
     spacing = max(0.1, min(sliced.sample_spacing, bead / 4.0))
     for course_index, (course, width) in enumerate(zip(courses, widths, strict=True)):
+        check_cancelled()
         if width <= _EPS:
             continue
         anchor_index = course.indices[0]
@@ -210,13 +227,23 @@ def route_supports(
             previous_points = np.asarray([(move.x, move.y, move.z) for move in previous_moves])
             lower_foot = np.stack((previous_points[:-1], previous_points[1:]), axis=1)
         foot_bearing = None
-        if course_index and (
-            settings.style.bases_apply_weaves or settings.style.bases_apply_images
-        ):
-            foot_lower_paths = [wall_paths[course_index - 1]]
-            if course_index - 1 in feet:
-                old_anchor, old_route = feet[course_index - 1]
-                foot_lower_paths.append((stream.moves[old_anchor], *old_route.moves))
+        # Even an undecorated base follows the actual sculpture outline at
+        # its attachment. A weave there can leave a local gap below a plain
+        # base, so every upper course needs actual previous-clay contact.
+        if course_index:
+            # Helical courses overlap in height. A low point on this turn
+            # can rest on a high point two turns earlier; retain every
+            # already printed course that reaches its possible contact band.
+            bearing_min = min(course.ring.z, float(np.min(course.z)), anchor.z) - (
+                1.25 * sliced.layer_height
+            )
+            foot_lower_paths = []
+            for earlier in range(course_index):
+                if wall_tops[earlier] >= bearing_min - _EPS:
+                    foot_lower_paths.append(wall_paths[earlier])
+                if earlier in feet and foot_tops[earlier] >= bearing_min - _EPS:
+                    old_anchor, old_route = feet[earlier]
+                    foot_lower_paths.append((stream.moves[old_anchor], *old_route.moves))
             foot_bearing = SupportRouteScorer(
                 foot_lower_paths,
                 bead_width=bead,
@@ -243,6 +270,7 @@ def route_supports(
         except SupportRoutingError as error:
             raise SupportRoutingError(f"Layer {course_index + 1}: {error}") from error
         feet[course_index] = anchor_index, route
+        foot_tops[course_index] = max(anchor.z, *(move.z for move in route.moves))
         existing[course_index].append(route.line)
 
     foot_paths = {
@@ -256,6 +284,7 @@ def route_supports(
         and all(move.z == courses[index].ring.z for move in path)
     }
     course_bearings: dict[tuple[bool, int], SupportRouteScorer] = {}
+    web_paths: dict[int, list[tuple[Move, ...]]] = defaultdict(list)
 
     def course_bearing(index: int, *, reference: bool = False) -> SupportRouteScorer:
         key = (reference and reference_stream is not stream, index)
@@ -272,6 +301,7 @@ def route_supports(
         return course_bearings[key]
 
     for placement, (stations, direction, reach, thickness) in curtains:
+        check_cancelled()
         # External curtains follow the unweaved profile. Their lower edge
         # grows only enough to carry the selected exterior overhang.
         roots = []
@@ -323,6 +353,7 @@ def route_supports(
         previous_web = None
         previous_web_path = None
         for course_index, (anchor_index, foot_index, anchor, station) in enumerate(roots):
+            check_cancelled()
             course = courses[course_index]
             root_xy = _xy(anchor)
             # The end of this course comes from the contour's local bearing
@@ -435,6 +466,45 @@ def route_supports(
                             courses[next_index].xy[stations[next_index]],
                         )
                     )
+            minimum_z = anchor.z if implicit_footing else min(anchor.z, course.ring.z)
+            cutoff = minimum_z + min(0.15, 0.1 * sliced.layer_height)
+            prior_paths = [
+                source_paths[index] for index in range(course_index) if source_tops[index] > cutoff
+            ]
+            prior_paths.extend(
+                path
+                for index, path in foot_paths.items()
+                if index < course_index and foot_tops[index] > cutoff
+            )
+            prior_paths.extend(
+                path for index, paths in web_paths.items() if index < course_index for path in paths
+            )
+            prior_paths.append(stream.moves[source_starts[course_index] : anchor_index + 1])
+            following_paths = [stream.moves[anchor_index : course.indices[-1] + 1]]
+            if foot_index is not None:
+                foot_anchor, current_foot = feet[course_index]
+                prior_paths.append(
+                    (stream.moves[foot_anchor], *current_foot.moves[: foot_index + 1])
+                )
+                following_paths.append((anchor, *current_foot.moves[foot_index + 1 :]))
+                for (index, at), inserted in web_insertions.items():
+                    if index == course_index:
+                        path = (current_foot.moves[at], *inserted)
+                        (prior_paths if at <= foot_index else following_paths).append(path)
+            else:
+                for at in course.indices:
+                    if at in additions:
+                        path = (stream.moves[at], *additions[at])
+                        (prior_paths if at <= anchor_index else following_paths).append(path)
+            clearance = SupportRouteClearance(
+                prior_paths,
+                following_paths,
+                bead_width=bead,
+                layer_height=sliced.layer_height,
+                nozzle_clearance_mm=pattern.settings.nozzle_clearance_mm,
+                flow_multiplier=flow_multiplier,
+                minimum_nozzle_z=minimum_z,
+            )
             try:
                 route = _clear_curtain_route(
                     course,
@@ -460,12 +530,14 @@ def route_supports(
                     lateral_blend_mm=2.25 * bead if follows_radial_contour else None,
                     independent_artwork=independent_artwork,
                     next_turn=next_turn,
+                    clearance=clearance,
                 )
             except SupportRoutingError as error:
                 raise SupportRoutingError(f"Layer {course_index + 1}: {error}") from error
             existing[course_index].append(route.line)
             previous_web = route.line
             previous_web_path = (anchor, *route.moves)
+            web_paths[course_index].append(previous_web_path)
             if foot_index is None:
                 additions[anchor_index].extend(route.moves)
             else:
@@ -716,6 +788,7 @@ def _wall_courses(stream: MoveStream, sliced: SlicedForm) -> tuple[_Course, ...]
     )
     courses = []
     for layer in sliced.layers:
+        check_cancelled()
         if layer.index > last_layer:
             break
         outer = tuple(ring for ring in layer.rings if not ring.is_hole)
@@ -785,7 +858,10 @@ def _vase_footing(
         # It never transfers to the rising wall, so a level footing avoids
         # opening bearing gaps as different wall phases pass over it.
         return dict.fromkeys(range(highest), 0.0)
-    return {i: min(1.0, max(0, i - rise_start) * gain) for i in range(min(highest, handoff))}
+    # Once this foundation follows the rising wall, keep that schedule until
+    # its last required course. Reverting to a flat course after the ramp can
+    # put the new bead beside or below the preceding course, losing bearing.
+    return {i: min(1.0, max(0, i - rise_start) * gain) for i in range(highest)}
 
 
 def _foot_widths(
@@ -826,6 +902,7 @@ def _foot_widths(
     allowed_shift = max(0.0, settings.max_unsupported_fraction - parameters.edge_margin) * bead
     advances = [0.0] * len(courses)
     for index in range(len(courses) - 2, -1, -1):
+        check_cancelled()
         lower = courses[index]
         if lower.ring.z > height + _EPS:
             continue
@@ -922,45 +999,54 @@ def _foot_route(
         if settings.style.bases_apply_weaves or settings.style.bases_apply_images
         else (1.0,)
     )
-    tested = set()
-    for try_other_angles in (False, True):
-        for artwork_gain in artwork_gains:
-            for direction_index, direction in enumerate(directions):
-                key = artwork_gain, direction_index
-                if key in tested:
-                    continue
-                tested.add(key)
-                try:
-                    route = _foot_route_at(
-                        course,
-                        anchor,
-                        basis,
-                        direction,
-                        width,
-                        artwork,
-                        settings,
-                        profile,
-                        spacing,
-                        footing_scale,
-                        parameters,
-                        soften_footing=soften_footing,
-                        limit_footing_descent=limit_footing_descent,
-                        lower_segments=lower_segments,
-                        artwork_gain=artwork_gain,
-                    )
-                    if bearing is None or bearing.score((anchor, *route.moves))[0] < 0.98:
-                        return route
-                    if first_error is None:
-                        first_error = SupportRoutingError(
-                            "The base artwork cannot retain contact with its preceding course."
+    margins = [parameters.wall_bearing_margin]
+    if bearing is not None and parameters.wall_bearing_margin is not None:
+        # Move the innermost lane within the requested wall-bearing width
+        # when the actual contour leaves a small contact gap. The base's
+        # outside extent and all exact clearance/contact checks stay fixed.
+        margins.extend(margin for margin in (0.025, 0.0, 0.10, 0.15) if margin not in margins)
+    for margin in margins:
+        candidate_parameters = replace(parameters, wall_bearing_margin=margin)
+        tested = set()
+        for try_other_angles in (False, True):
+            for artwork_gain in artwork_gains:
+                for direction_index, direction in enumerate(directions):
+                    check_cancelled()
+                    key = artwork_gain, direction_index
+                    if key in tested:
+                        continue
+                    tested.add(key)
+                    try:
+                        route = _foot_route_at(
+                            course,
+                            anchor,
+                            basis,
+                            direction,
+                            width,
+                            artwork,
+                            settings,
+                            profile,
+                            spacing,
+                            footing_scale,
+                            candidate_parameters,
+                            soften_footing=soften_footing,
+                            limit_footing_descent=limit_footing_descent,
+                            lower_segments=lower_segments,
+                            artwork_gain=artwork_gain,
                         )
-                    # Keep the intended departure and ease unsupported art
-                    # first. If every gain fails, revisit all other angles.
-                    if not try_other_angles:
-                        break
-                except SupportRoutingError as error:
-                    if first_error is None:
-                        first_error = error
+                        if bearing is None or bearing.score((anchor, *route.moves))[0] < 0.98:
+                            return route
+                        if first_error is None:
+                            first_error = SupportRoutingError(
+                                "The base cannot retain contact with its preceding course."
+                            )
+                        # Keep the intended departure and ease unsupported art
+                        # first. If every gain fails, revisit all other angles.
+                        if not try_other_angles:
+                            break
+                    except SupportRoutingError as error:
+                        if first_error is None:
+                            first_error = error
     assert first_error is not None
     raise first_error
 
@@ -1013,6 +1099,7 @@ def _foot_route_at(
         else None
     )
     for index, distance in enumerate(offsets):
+        check_cancelled()
         offset = basis.buffer(float(distance), quad_segs=4)
         if width_limit is not None and not width_limit.covers(offset):
             offset = offset.intersection(width_limit)
@@ -1082,6 +1169,14 @@ def _foot_route_at(
         blend *= artwork_gain
         xy += displacement[:, None] * blend[:, None] * normals
         flow *= 1.0 + blend * (effect_flow - 1.0)
+    # Height fitting cannot repair an invalid XY departure. Reject it before
+    # building the large contact graph; the exact same line is emitted below.
+    line = LineString(xy)
+    if not line.is_simple or line.length <= _EPS:
+        identifier = "curtain-foundation" if footing_scale is not None else "foot"
+        raise SupportRoutingError(f"Support {identifier} crosses its own return lane.")
+    _check_crossing(line, [course.wall], root, bead, "foot")
+    _check_exterior(line, course, root, bead, "foot")
     if footing_scale is not None and footing_scale > 0 and limit_footing_descent:
         if parameters.wall_bearing_margin is not None:
             # A ramped footing must still leave a lower shelf beneath the
@@ -1122,8 +1217,6 @@ def _foot_route_at(
         "curtain-foundation" if footing_scale is not None else "foot",
         attachable=attachable,
     )
-    _check_crossing(route.line, [course.wall], root, bead, "foot")
-    _check_exterior(route.line, course, root, bead, "foot")
     return route
 
 
@@ -1151,23 +1244,27 @@ def _limit_footing_descent(
     """
     import heapq
 
+    from clayline.support_spatial import distance_pairs
+
     segments = shapely.linestrings(np.stack((xy[:-1], xy[1:]), axis=1))
     tree = shapely.STRtree(segments)
     base_radius = bead / 2 + tip_radius_mm(bead)
     allowed_lead = min(0.15, 0.1 * layer_height) * 0.95
     rounding_margin = min(1e-4, spacing / 1_000.0)
     radius = base_radius + float(np.ptp(z)) + rounding_margin
-    rows, neighbors = tree.query(segments, predicate="dwithin", distance=radius)
-    forward = neighbors > rows
-    rows, neighbors = rows[forward], neighbors[forward]
-    if len(rows) > 2_000_000:
-        raise SupportRoutingError("The footing clearance schedule exceeds its contact budget.")
-    distances = shapely.distance(segments[rows], segments[neighbors])
+    try:
+        rows, neighbors, distances = distance_pairs(
+            tree, segments, radius, forward_only=True, max_pairs=2_000_000
+        )
+    except ValueError as error:
+        raise SupportRoutingError(str(error)) from error
     limits = np.maximum(allowed_lead, distances - base_radius - rounding_margin)
     # An edge v -> u encodes z[u] <= z[v] + limit. Taking the minimum
     # elevation on the later segment bounds every interpolated nozzle point.
     edges: list[dict[int, float]] = [{} for _ in z]
-    for earlier, later, limit in zip(rows, neighbors, limits, strict=True):
+    for pair_index, (earlier, later, limit) in enumerate(zip(rows, neighbors, limits, strict=True)):
+        if pair_index % 4096 == 0:
+            check_cancelled()
         for u in (int(earlier), int(earlier) + 1):
             for v in (int(later), int(later) + 1):
                 if u != v:
@@ -1179,8 +1276,7 @@ def _limit_footing_descent(
 
     wall = shapely.linestrings(np.stack((following_xy[:-1], following_xy[1:]), axis=1))
     wall_tree = shapely.STRtree(wall)
-    feet, wall_segments = wall_tree.query(segments, predicate="dwithin", distance=radius)
-    distances = shapely.distance(segments[feet], wall[wall_segments])
+    feet, wall_segments, distances = distance_pairs(wall_tree, segments, radius)
     ceiling = np.full(len(z), np.inf)
     cap = np.minimum(following_z[wall_segments], following_z[wall_segments + 1]) + np.maximum(
         allowed_lead, distances - base_radius - rounding_margin
@@ -1192,9 +1288,7 @@ def _limit_footing_descent(
     if lower_segments is not None and len(lower_segments):
         lower_lines = shapely.linestrings(lower_segments[:, :, :2])
         lower_tree = shapely.STRtree(lower_lines)
-        points, deposits = lower_tree.query(
-            shapely.points(xy), predicate="dwithin", distance=bead / 2
-        )
+        points, deposits, _ = distance_pairs(lower_tree, shapely.points(xy), bead / 2)
         starts = lower_segments[deposits, 0]
         vectors = lower_segments[deposits, 1] - starts
         lengths = np.einsum("ij,ij->i", vectors[:, :2], vectors[:, :2])
@@ -1223,7 +1317,11 @@ def _limit_footing_descent(
         values = upper.copy()
         queue = [(float(value), index) for index, value in enumerate(values)]
         heapq.heapify(queue)
+        steps = 0
         while queue:
+            if steps % 4096 == 0:
+                check_cancelled()
+            steps += 1
             value, index = heapq.heappop(queue)
             if value != values[index]:
                 continue
@@ -1540,6 +1638,7 @@ def _clear_curtain_route(
     lateral_blend_mm: float | None = None,
     independent_artwork: bool = False,
     next_turn: tuple[SupportRouteScorer, tuple[Move, ...]] | None = None,
+    clearance: SupportRouteClearance | None = None,
 ) -> _Route:
     bead = artwork.sliced.bead_width
     root = _xy(anchor)
@@ -1563,6 +1662,7 @@ def _clear_curtain_route(
         spread_lengths = (2.25, 1.75, 2.75)
         angles = (0, -15, 15, -30, 30, -45, 45, -65, 65) if tune_departure else (0,)
     for gain, spread_beads, degrees in product(gains, spread_lengths, angles):
+        check_cancelled()
         angle = math.radians(degrees)
         heading = np.array(
             (
@@ -1601,8 +1701,12 @@ def _clear_curtain_route(
                 bead,
                 identifier,
             )
+            path = (anchor, *route.moves)
+            if clearance is not None:
+                finding = clearance.check(path)
+                if finding is not None:
+                    raise SupportRoutingError(finding)
             if bearing is not None:
-                path = (anchor, *route.moves)
                 peak, unsupported = bearing.score(path)
                 target_peak = max(
                     (

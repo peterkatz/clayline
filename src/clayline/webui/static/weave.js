@@ -17,6 +17,7 @@
     slice: "/api/weave/slice",
     modulate: "/api/weave/modulate",
     finalize: "/api/weave/finalize",
+    cancel: "/api/weave/cancel",
     imageCatalogue: "/api/images/catalogue",
     imageUpload: "/api/images/upload",
     imagePreview: "/api/images/preview",
@@ -250,6 +251,9 @@
     previousSeam: "chained",
     sequence: { mesh: 0, slice: 0, modulate: 0 },
     controllers: { mesh: null, slice: null, modulate: null },
+    workClientId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    workId: null,
+    checkProgress: null,
     timers: { mesh: null, slice: null, modulate: null, settle: null },
     eventStartedAt: null,
     quality: null,
@@ -509,6 +513,15 @@
   }
 
   function abortStage(stage) {
+    if (stage === "modulate") endCheckProgress();
+    if (stage === "modulate" && S.controllers.modulate && S.workId) {
+      // Explicit cancellation also works if WebKit keeps the connection alive.
+      // The identity prevents a delayed cancel from stopping a newer edit.
+      fetch(API.cancel, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ work_id: S.workId }), keepalive: true,
+      }).catch(() => {});
+    }
     S.controllers[stage]?.abort();
     S.controllers[stage] = null;
   }
@@ -526,6 +539,7 @@
   function dropFinalPath() {
     abortStage("modulate");
     S.sequence.modulate += 1;
+    endCheckProgress();
     // The final path's own clean-up no longer runs for it.
     setRoughPreviewWorking(false);
   }
@@ -1910,6 +1924,43 @@
     chip.classList.toggle("is-warning", kind === "warning");
   }
 
+  function endCheckProgress(sequence = null) {
+    if (sequence !== null && S.checkProgress?.sequence !== sequence) return;
+    window.clearTimeout(S.checkProgress?.timer);
+    S.checkProgress = null;
+    $("#weaveCheckButton").hidden = true;
+  }
+
+  function startCheckProgress(sequence, phase) {
+    endCheckProgress();
+    const startedAt = performance.now();
+    const update = () => {
+      if (sequence !== S.sequence.modulate) return;
+      const seconds = Math.floor((performance.now() - startedAt) / 1000);
+      setStatus(`${phase}…${seconds >= 3 ? ` ${seconds}s` : ""}`, "exact");
+      S.checkProgress.timer = window.setTimeout(update, 1000);
+    };
+    const button = $("#weaveCheckButton");
+    button.hidden = false;
+    button.textContent = "Stop check";
+    S.checkProgress = { sequence, timer: null };
+    update();
+  }
+
+  function stopCheck() {
+    window.clearTimeout(S.timers.modulate);
+    window.clearTimeout(S.timers.settle);
+    invalidateExact("Check stopped. Your settings are kept. Choose Check again when ready.");
+    idle();
+    setStatus("Check stopped");
+    const status = "Support check stopped. Choose Check again to continue.";
+    $("#weaveSupportStatus").textContent = status;
+    renderSupportInspection(status, 0, false);
+    const button = $("#weaveCheckButton");
+    button.hidden = false;
+    button.textContent = "Check again";
+  }
+
   function invalidateExact(message = "Inputs changed — rebuilding the final path.") {
     dropFinalPath();
     S.exactResult = null;
@@ -2195,6 +2246,8 @@
   async function runModulation(quality = "settle") {
     if (!S.slice) return;
     const { controller, sequence } = newStage("modulate");
+    const workId = `${S.workClientId}-${sequence}`;
+    S.workId = workId;
     S.quality = quality;
     if (quality === "settle") {
       // The exact re-check runs ~600 ms after every edit. It must NOT tear
@@ -2206,7 +2259,8 @@
       // genuinely invalidates the geometry) still drops to the placeholder.
       S.busy = true;
       setExactExportsEnabled(false);
-      setStatus("Checking…", "exact");
+      renderSupportResult(null);
+      startCheckProgress(sequence, S.supports.enabled ? "Building supports" : "Building path");
       syncSettleButton();
       // If a rough trace is still on screen, show that its exact replacement
       // is actively being calculated. No rough stamp means the toolbar's
@@ -2218,7 +2272,7 @@
       setRoughPreviewWorking(true);
     }
     try {
-      const body = JSON.stringify(modulationPayload(quality));
+      const body = JSON.stringify({ ...modulationPayload(quality), work_id: workId });
       const payload = await jsonResponse(await fetch(API.modulate, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2229,13 +2283,15 @@
       markJsonReceived();
       S.result = payload;
       if (quality === "settle") S.exactResult = payload;
-      await renderResult(payload, quality);
+      await renderResult(payload, quality, { sequence });
+      if (sequence !== S.sequence.modulate) return;
       markRender(quality);
       if (quality === "settle" && payload.finalizing === true) {
-        await finalizeExact(payload, controller, sequence);
+        await finalizeExact(payload, controller, sequence, workId);
       }
     } catch (error) {
       if (error.name !== "AbortError" && sequence === S.sequence.modulate) {
+        if (error.code === "weave_work_cancelled") { stopCheck(); return; }
         if (!(await recoverFromExpiredSession(error))) {
           recordInteriorRefusal(error);
           showWeaveState(
@@ -2252,6 +2308,9 @@
         // An aborted, superseded request must not clear the indicator owned
         // by the newer request.
         setRoughPreviewWorking(false);
+        endCheckProgress(sequence);
+        S.controllers.modulate = null;
+        S.workId = null;
         if (quality === "settle") idle();
       }
     }
@@ -2277,17 +2336,19 @@
     syncControls();
   }
 
-  async function finalizeExact(preparedPayload, controller, sequence) {
+  async function finalizeExact(preparedPayload, controller, sequence, workId) {
+    if (controller.signal.aborted || sequence !== S.sequence.modulate) return;
     if (!preparedPayload?.prepared_id) {
       throw new Error("The exact geometry response did not include its audit identity.");
     }
-    setStatus("Checking\u2026", "exact");
+    startCheckProgress(sequence, "Checking final path");
     $("#weaveExportIdentity").textContent = "Checking the final path — download remains disabled.";
     const payload = await jsonResponse(await fetch(API.finalize, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         prepared_id: preparedPayload.prepared_id,
+        work_id: workId,
       }),
       signal: controller.signal,
     }));
@@ -2302,7 +2363,8 @@
       // The final check eased the Z-blend and rebuilt the path instead of
       // refusing the job. What is on screen has to become the path that
       // downloads, so the replacement trace is drawn before anything else.
-      await renderResult(finalized, "settle");
+      await renderResult(finalized, "settle", { sequence });
+      if (sequence !== S.sequence.modulate) return;
     } else {
       renderWarnings(pathWarnings(finalized), true, finalized.support_analysis, finalized.support_error);
       renderReport(finalized.report, finalized);
@@ -3411,7 +3473,7 @@
     return host;
   }
 
-  async function renderResult(payload, quality) {
+  async function renderResult(payload, quality, { sequence = null } = {}) {
     // Read before applyCapabilities, whose syncControls redraws the Interior
     // controls from it.
     if (quality === "settle") {
@@ -3445,6 +3507,7 @@
     const displayTrace = payload.trace || payload.centerline;
     if (Array.isArray(displayTrace?.moves)) S.lastTrace = displayTrace;
     const plot = await renderTrace(displayTrace);
+    if (sequence !== null && sequence !== S.sequence.modulate) return;
     syncFlowControls();
     showRoughPreview(quality === "drag");
     if (quality === "drag") setStatus("Rough preview", "transient");
@@ -8079,6 +8142,10 @@
       // the exact pass runs on its own from there. Slicing is the only
       // click this button ever carries.
       if (!S.slice) { beginMetric(); runSlice(); }
+    });
+    $("#weaveCheckButton").addEventListener("click", () => {
+      if (S.checkProgress) stopCheck();
+      else { beginMetric(); scheduleReleaseSettle({ commit: false }); }
     });
     $("#weaveRetryButton").addEventListener("click", () => {
       beginMetric();

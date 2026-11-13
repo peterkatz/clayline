@@ -38,6 +38,7 @@ def route_open_supports(
     *,
     foot_variant: int,
     reference_stream: MoveStream | None = None,
+    flow_multiplier: float = 1.0,
 ) -> MoveStream:
     """Close a cycle of near-touching arcs using short, audited deposited welds.
 
@@ -111,6 +112,7 @@ def route_open_supports(
         profile,
         settings,
         foot_variant=foot_variant,
+        flow_multiplier=flow_multiplier,
         reference_stream=replace(reference_stream, moves=tuple(reference_moves))
         if reference_stream is not None
         else None,

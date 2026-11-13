@@ -438,7 +438,9 @@ def test_the_studio_page_redraws_a_repaired_result() -> None:
     text = source.read_text(encoding="utf-8")
     assert "payload.geometry_repaired === true" in text
     finalize = text.split("async function finalizeExact")[1].split("function scheduleMesh")[0]
-    assert 'renderResult(finalized, "settle")' in finalize
+    repair = finalize.split("if (payload.geometry_repaired === true) {")[1].split("} else {")[0]
+    assert 'await renderResult(finalized, "settle", { sequence });' in repair
+    assert "if (sequence !== S.sequence.modulate) return;" in repair
 
 
 def maintainers_tumbler_result(reach: float = REACH) -> Any:
