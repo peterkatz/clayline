@@ -860,18 +860,94 @@
               </div>
               <div class="scope-subhead"><span>Bottom</span><strong>spirals under the wall</strong></div>
               <div class="control-grid two-up">
-                <label class="field" title="Printed before the wall starts. Zero adds none."><span>Bottom layers</span><input id="weaveBottomLayers" type="number" value="0" min="0" step="1" aria-describedby="weaveBottomLayersHint"><small class="dependent-control-hint" id="weaveBottomLayersHint" hidden>Bottom is available only when the print range starts at source layer 1.</small></label>
+                <label class="field" title="Spirals of clay under the wall, each laid inside the wall as it prints, so it follows the weave in and out. Zero adds none."><span>Bottom layers</span><input id="weaveBottomLayers" type="number" value="0" min="0" step="1" aria-describedby="weaveBottomLayersHint"><small class="dependent-control-hint" id="weaveBottomLayersHint" hidden>Bottom is available only when the print range starts at source layer 1.</small></label>
                 <label class="field" id="weaveBottomOverlapField" title="How much each neighbouring dense fill coil overlaps its neighbour — in the bottom, in a solid interior, and in an infill's base and cap skins. Sparse infill ribs are spaced by Rib spacing instead. More overlap closes the fill with more clay."><span>Fill overlap</span><input id="weaveBottomOverlap" type="number" value="0.2" min="0" max="0.95" step="0.05" aria-describedby="weaveBottomOverlapHint"><small class="dependent-control-hint" id="weaveBottomOverlapHint" hidden>Fill overlap spaces dense fill only — the bottom, a solid interior, or an infill's base and cap skins. Nothing here is laying dense fill.</small></label>
               </div>
-              <label class="switch-row" id="weaveBottomAlternateRow">
+              <label class="switch-row" id="weaveBottomAlternateRow" title="On, every bottom layer above the first is laid in rows that cross the one below, which bonds the base stronger; each layer then ends beside its own wall and the nozzle lifts to reach the next. Off, the bottom layers take turns: one goes from the wall in to the centre, the next from the centre back out to the wall, and the top one ends at the wall, where the wall carries on up, so the whole base is one unbroken line with no lift. With Vase mode on, the wall's turns under the base are laid level and only the turn on the top bottom layer climbs. Taking turns needs a bottom in one piece with no hole through it; with Vase mode on, a top that does not split into pieces for Z-blend to follow, and with it off, a seam that is not scattered; and a pattern fitted with profile blend must leave the wall under the base level. Otherwise each layer ends beside its own wall, and past a short step the nozzle lifts rather than print a line through clay.">
                 <span><strong>Alternate bottom direction</strong><small id="weaveBottomAlternateHint">Crossing passes bond the base stronger.</small></span>
-                <input id="weaveBottomAlternate" type="checkbox" role="switch" checked aria-describedby="weaveBottomAlternateHint">
+                <input id="weaveBottomAlternate" type="checkbox" role="switch" aria-describedby="weaveBottomAlternateHint">
               </label>
             </div>
           </section>
 
-          <section class="rail-section weave-section" data-weave-section="print">
+          <section class="rail-section weave-section" data-weave-section="supports" id="weaveSupports">
             <div class="section-index">07</div>
+            <div class="section-body">
+              <h2>Supports</h2>
+              <label class="field">
+                <span>Allowable overhang (%)</span>
+                <input id="weaveSupportThreshold" data-support-setting="max_unsupported_fraction" data-support-factor="100" type="number" min="0" max="95" step="1" value="40" aria-describedby="weaveSupportThresholdHint">
+                <small id="weaveSupportThresholdHint">Checks the piece profile without weaves. Lower values build more support.</small>
+              </label>
+              <label class="switch-row">
+                <span><strong>Reinforced base</strong></span>
+                <input id="weaveSupportFoot" data-support-setting="foot.enabled" type="checkbox" role="switch">
+              </label>
+              <label class="switch-row">
+                <span><strong>Radial curtains</strong></span>
+                <input id="weaveSupportRepeated" data-support-setting="repeated_curtains.enabled" type="checkbox" role="switch" aria-controls="weaveSupportRepeatedOptions">
+              </label>
+              <div id="weaveSupportRepeatedOptions" hidden>
+                <label class="field"><span>Number of curtains</span><input data-support-setting="repeated_curtains.count" type="number" min="1" max="12" step="1" value="4"></label>
+              </div>
+              <div class="weave-support-actions">
+                <button class="secondary-button compact-button" id="weaveSupportAddLocal" type="button" aria-pressed="false" disabled>Add local support</button>
+              </div>
+              <p class="field-hint" id="weaveSupportPickHint" aria-live="polite"></p>
+              <p class="field-hint" id="weaveSupportCurtainCount">0 of 12 active</p>
+              <label class="field" id="weaveSupportPlacementField" hidden><span>Selected support</span><select id="weaveSupportPlacement"></select></label>
+              <div id="weaveSupportPlacementOptions" hidden>
+                <p class="field-hint" id="weaveSupportCurtainDimensions" role="status" aria-live="polite" hidden></p>
+                <div class="weave-support-actions">
+                  <button class="secondary-button compact-button" id="weaveSupportLocateCurtain" type="button" disabled>Locate</button>
+                  <button class="secondary-button compact-button" id="weaveSupportRemove" type="button">Remove local support</button>
+                </div>
+              </div>
+              <div class="weave-control-block">
+                <div class="scope-subhead"><span>Base appearance</span></div>
+                <div class="control-grid two-up">
+                  <label class="switch-row" title="Apply weaves to the base. Support sizing uses the piece profile without weaves."><span><strong>Weaves</strong></span><input data-support-setting="style.bases_apply_weaves" type="checkbox" role="switch"></label>
+                  <label class="switch-row"><span><strong>Images</strong></span><input data-support-setting="style.bases_apply_images" type="checkbox" role="switch"></label>
+                </div>
+                <div class="scope-subhead"><span>Curtain appearance</span></div>
+                <div class="control-grid two-up">
+                  <label class="switch-row" title="Apply weaves to the curtains. Support sizing uses the piece profile without weaves."><span><strong>Weaves</strong></span><input data-support-setting="style.curtains_apply_weaves" type="checkbox" role="switch"></label>
+                  <label class="switch-row"><span><strong>Images</strong></span><input data-support-setting="style.curtains_apply_images" type="checkbox" role="switch"></label>
+                </div>
+                <p class="field-hint">Patterns ease where needed to keep supports connected.</p>
+              </div>
+              <details class="advanced-controls" id="weaveSupportAdvanced">
+                <summary>Advanced</summary>
+                <p class="field-hint">Optional manual limits. Changing allowable overhang, base, radial count, or local placement returns to automatic sizing.</p>
+                <div class="control-grid two-up">
+                  <label class="field"><span>Base sizing</span><select data-support-setting="foot.extent_mode"><option value="auto">Automatic</option><option value="manual">Manual</option></select></label>
+                  <label class="field"><span>Base outline</span><select data-support-setting="foot.outline"><option value="smooth">Smooth</option><option value="stepped">Stepped</option></select></label>
+                  <label class="field"><span>Extra base width (mm)</span><input data-support-setting="foot.extra_width_mm" data-unit="mm" type="number" min="0.1" max="1000" step="0.1" value="10"></label>
+                  <label class="field"><span>Base height (mm)</span><input data-support-setting="foot.height_mm" data-unit="mm" type="number" min="0.1" max="1000" step="0.1" value="10"></label>
+                  <label class="field"><span>Curtain sizing</span><select data-support-setting="repeated_curtains.extent_mode"><option value="auto">Automatic</option><option value="manual">Manual</option></select></label>
+                  <label class="field"><span>Distribution</span><select data-support-setting="repeated_curtains.distribution"><option value="angular">Radial</option><option value="perimeter">Along perimeter</option></select></label>
+                  <label class="field"><span>Arrangement offset (%)</span><input data-support-setting="repeated_curtains.offset" data-support-factor="100" type="number" min="0" max="100" step="1" value="0"></label>
+                  <label class="field"><span>Extra reach (mm)</span><input data-support-setting="repeated_curtains.reach_mm" data-unit="mm" type="number" min="0.1" max="1000" step="0.1" value="15"></label>
+                  <label class="field"><span>Top height (mm)</span><input data-support-setting="repeated_curtains.top_height_mm" data-unit="mm" type="number" min="0.1" max="1000" step="0.1" placeholder="Auto"></label>
+                  <label class="field"><span>Thickness (mm)</span><input data-support-setting="repeated_curtains.thickness_mm" data-unit="mm" type="number" min="0.1" max="1000" step="0.1" value="5"></label>
+                </div>
+                <div id="weaveSupportAdvancedPlacement" hidden>
+                  <div class="scope-subhead"><span>Selected support</span></div>
+                  <div class="control-grid two-up">
+                    <label class="field" id="weaveSupportFractionField"><span>Perimeter position (%)</span><input data-support-placement="anchor.fraction" data-support-factor="100" type="number" min="0" max="100" step="0.1" placeholder="Auto"></label>
+                    <label class="field"><span>Direction (°)</span><input data-support-placement="direction_deg" type="number" min="-360" max="360" step="1" placeholder="Auto"></label>
+                    <label class="field"><span>Extra reach (mm)</span><input data-support-placement="reach_mm" data-unit="mm" type="number" min="0.1" max="1000" step="0.1" placeholder="Auto"></label>
+                    <label class="field"><span>Top height (mm)</span><input data-support-placement="top_height_mm" data-unit="mm" type="number" min="0.1" max="1000" step="0.1" placeholder="Auto"></label>
+                    <label class="field"><span>Thickness (mm)</span><input data-support-placement="thickness_mm" data-unit="mm" type="number" min="0.1" max="1000" step="0.1" placeholder="Auto"></label>
+                  </div>
+                </div>
+              </details>
+              <p class="field-hint" id="weaveSupportStatus" role="status">Slice the form to inspect support needs.</p>
+            </div>
+          </section>
+
+          <section class="rail-section weave-section" data-weave-section="print">
+            <div class="section-index">08</div>
             <div class="section-body">
               <h2>Print</h2>
               <p class="section-copy">Which layers print, and how separate pieces take turns.</p>
@@ -960,6 +1036,11 @@
           </div>
           <div class="weave-active-state" id="weaveActiveState" hidden>
             <div id="weaveToolpathHost" class="weave-toolpath-host" aria-label="Mesh Mode toolpath preview"></div>
+            <ul class="weave-support-legend" id="weaveSupportLegend" aria-label="Support preview legend" hidden>
+              <li id="weaveSupportLegendNeeds" hidden><button id="weaveSupportWarningsToggle" type="button" aria-pressed="true" aria-label="Span warnings (red dots)" aria-controls="weaveToolpathHost"><i class="support-key-needs" aria-hidden="true"></i><span id="weaveSupportWarningsLabel">Span warnings on</span></button></li>
+              <li id="weaveSupportLegendClay" hidden><i class="support-key-clay" aria-hidden="true"></i><span id="weaveSupportLegendClayLabel">Added support clay</span></li>
+              <li id="weaveSupportLegendGuide" hidden><i class="support-key-guide" aria-hidden="true"></i>Curtain placement guide</li>
+            </ul>
             <p class="surface-pick-hint" id="weaveSurfacePickHint" role="status" aria-live="polite" hidden>Click the surface that should sit on the bed. Esc cancels.</p>
             <div class="transient-stamp" id="weaveTransientStamp" role="status" aria-live="polite" aria-atomic="true" aria-busy="false" hidden title="A quick sketch of the change while you drag — release to rebuild the exact final path.">
               <span>Rough preview</span>
@@ -988,7 +1069,7 @@
         </div>
         <footer class="preview-footer">
           <span id="weaveCoordinateReadout">Work area from selected printer profile</span>
-          <span>The preview is the exact path the export writes</span>
+          <span id="weavePreviewTruth">The preview is the exact path the export writes</span>
         </footer>
       </section>
 
@@ -1001,6 +1082,31 @@
           </button>
         </div>
         <p class="quiet-empty" id="weaveInspectorQuiet">Slice the form to see the numbers.</p>
+        <section class="weave-support-inspection" id="weaveSupportInspection" aria-labelledby="weaveSupportInspectionTitle" hidden>
+          <h3 id="weaveSupportInspectionTitle">Supports</h3>
+          <p id="weaveSupportInspectionStatus"></p>
+          <p class="physical-readout" id="weaveSupportBasis"></p>
+          <p class="physical-readout" id="weaveSupportAdded" hidden></p>
+          <p class="field-hint" id="weaveSupportCurtainTarget" hidden></p>
+          <label class="switch-row"><span>Show span warnings (red dots)</span><input id="weaveShowSupportNeeds" type="checkbox" role="switch" checked></label>
+          <label class="switch-row" id="weaveSupportColorRow" hidden><span>Color supports blue</span><input id="weaveSupportColors" type="checkbox" role="switch" checked></label>
+              <div class="warning-detail weave-support-diagnostic" id="weaveSupportDiagnostic" hidden>
+                <p class="warning-raw" id="weaveSupportDiagnosticMessage"></p>
+                <p class="warning-coordinate" id="weaveSupportDiagnosticLocation"></p>
+                <div class="warning-spot-stepper">
+                  <button id="weaveSupportPrevious" type="button" aria-label="Locate previous support span">Previous</button>
+                  <output id="weaveSupportSpanIndex" aria-live="polite"></output>
+                  <button id="weaveSupportNext" type="button" aria-label="Locate next support span">Next</button>
+                </div>
+                <button class="secondary-button compact-button" id="weaveSupportLocate" type="button">Locate on path</button>
+              </div>
+          <button class="secondary-button compact-button" id="weaveSupportAddAtSpan" type="button" hidden>Add support here</button>
+          <div class="weave-support-actions">
+            <button class="secondary-button compact-button" id="weaveSupportInspectSpan" type="button" hidden>Locate span</button>
+            <button class="secondary-button compact-button" id="weaveSupportInspectCurtain" type="button" hidden>Locate curtain</button>
+            <button class="secondary-button compact-button" id="weaveSupportInspectSettings" type="button">Support settings</button>
+          </div>
+        </section>
         <section class="safety-callout weave-print-guidance" id="weaveSafetyCallout" aria-labelledby="weavePrintGuidanceTitle" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h8m4 0h4M4 17h3m4 0h9M12 4v6M7 14v6"/></svg>
           <div><h3 id="weavePrintGuidanceTitle">Expect to tune each print</h3><p>Ceramic printers and clay can vary from one print to the next, so some trial and error is normal. Monitor every print closely and adjust speed and flow as needed.</p></div>

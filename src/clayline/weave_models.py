@@ -130,6 +130,16 @@ class FormWarningCode(StrEnum):
     # clay, a different cause and a different fix than a rib that cannot reach
     # a seam on a sparse lattice.
     BOTTOM_UNWELDED_WALL = "bottom_unwelded_wall"
+    # 2026-11-11 (Pete asked, 2026-11-10, that no floor be laid outside the
+    # wall it sits in): every floor is now filled inside its own wall as laid,
+    # so it follows the weave in and out.  Where a wall line makes no clean
+    # area to fill, that one layer keeps the outline it always had, and says
+    # so.
+    BOTTOM_ON_OUTLINE = "bottom_on_outline"
+    # A base that would be laid taking turns, kept one layer at a
+    # time by something it cannot lay over: said once, so the potter knows why
+    # the base is not one line.
+    BOTTOM_LAYER_BY_LAYER = "bottom_layer_by_layer"
     # 2026-08-04 (Pete's half1.obj steel-drum half): the continuous thread used
     # to decline in silence.  One layer it could not open handed the WHOLE form
     # back to the travelling route — 140 non-deposit moves over 47 layers — and

@@ -38,10 +38,13 @@ class Coil:
     points: tuple[EmissionPoint, ...]
     widths_mm: tuple[float, ...]
     height_mm: float
+    support_segments: tuple[tuple[str, str] | None, ...] = ()
 
     def __post_init__(self) -> None:
         if len(self.points) < 2 or len(self.widths_mm) != len(self.points):
             raise ValueError("a coil needs at least two points and one width per point")
+        if self.support_segments and len(self.support_segments) != len(self.points) - 1:
+            raise ValueError("coil support provenance needs one entry per segment")
 
 
 def coils_from_prepared(prepared: PreparedEmission) -> tuple[Coil, ...]:
@@ -61,18 +64,20 @@ def coils_from_prepared(prepared: PreparedEmission) -> tuple[Coil, ...]:
     current: EmissionPoint | None = prepared.initial_point
     points: list[EmissionPoint] = []
     widths: list[float] = []
+    support_segments: list[tuple[str, str] | None] = []
 
     def close() -> None:
-        nonlocal points, widths
+        nonlocal points, widths, support_segments
         if len(points) >= 2:
             coils.append(
                 Coil(
                     points=tuple(points),
                     widths_mm=tuple(widths),
                     height_mm=layer_height,
+                    support_segments=tuple(support_segments),
                 )
             )
-        points, widths = [], []
+        points, widths, support_segments = [], [], []
 
     for event in prepared.events:
         if not isinstance(event, EmissionMotion):
@@ -90,6 +95,14 @@ def coils_from_prepared(prepared: PreparedEmission) -> tuple[Coil, ...]:
             if not points:
                 points = [current]
                 widths = [width]
+            role = event.source_move.role
+            support_id = event.source_move.support_id
+            if role is not None and support_id is not None:
+                if not support_segments:
+                    support_segments.extend([None] * (len(points) - 1))
+                support_segments.append((role, support_id))
+            elif support_segments:
+                support_segments.append(None)
             points.append(event.point)
             widths.append(width)
         else:
@@ -171,7 +184,8 @@ def coil_obj_lines(prepared: PreparedEmission, *, name: str = "clayline-coils") 
     yield f"o {name}"
     vertex_count = 0
     for index, coil in enumerate(coils_from_prepared(prepared), start=1):
-        yield f"g coil_{index:05d}"
+        group = f"coil_{index:05d}"
+        yield f"g {group}"
         tangents = _tangents(coil.points)
         base = vertex_count
         for point, tangent, width in zip(coil.points, tangents, coil.widths_mm, strict=True):
@@ -184,7 +198,14 @@ def coil_obj_lines(prepared: PreparedEmission, *, name: str = "clayline-coils") 
         start_cap = vertex_count + 1
         end_cap = vertex_count + 2
         vertex_count += 2
+        previous_role = None
         for i in range(len(coil.points) - 1):
+            if coil.support_segments:
+                role = coil.support_segments[i]
+                if role != previous_role:
+                    suffix = "" if role is None else f" {role[0]}_{role[1]}"
+                    yield f"g {group}{suffix}"
+                    previous_role = role
             ring_a = base + i * RING_SIDES
             ring_b = ring_a + RING_SIDES
             for k in range(RING_SIDES):
@@ -193,6 +214,8 @@ def coil_obj_lines(prepared: PreparedEmission, *, name: str = "clayline-coils") 
                 b0, b1 = ring_b + k + 1, ring_b + k_next + 1
                 yield f"f {a0} {b1} {b0}"
                 yield f"f {a0} {a1} {b1}"
+        if previous_role is not None:
+            yield f"g {group}"
         ring_first = base
         ring_last = base + (len(coil.points) - 1) * RING_SIDES
         for k in range(RING_SIDES):

@@ -22,6 +22,7 @@ from typing import Any
 
 from clayline.models import Bounds, ExtrusionMode, Point, Profile, TravelPolicy
 from clayline.profiles import validate_profile
+from clayline.support_models import SupportSettings, parse_support_settings
 from clayline.wave import pattern_from_json, pattern_to_json
 from clayline.weave_models import (
     HOLLOWS_IGNORE,
@@ -42,6 +43,7 @@ PARAMETER_CHUNK_LIMIT = 999999
 PARAMETER_COMMENT_LINE_LIMIT = 200
 _SCHEMA = "clayline.weave-restore"
 _VERSION = 1
+_SUPPORT_VERSION = 2
 _COUNT = re.compile(r"[1-9][0-9]{0,5}")
 
 _TOP_KEYS = {
@@ -170,6 +172,51 @@ class DecodedWeaveRestore:
     hollows: str = HOLLOWS_KEEP
     # Whether clay kept flowing on crossings; off when the capsule does not say.
     keep_clay_flowing: bool = False
+    support_settings: SupportSettings | None = None
+
+
+# From 0.13.1 to 0.13.4 a pattern's settings could carry "bottom_outward": true,
+# when how a bottom is laid was a switch.  It is how every bottom is laid now
+# (Pete asked, 2026-11-11), so the key is read and ignored and nothing writes it;
+# a print file those builds wrote carries it, and must still restore.  The text
+# they wrote is today's canonical text with that one key added.
+_RETIRED_BOTTOM_KEY = "bottom_outward"
+
+
+def _with_retired_bottom_key(pattern: Pattern) -> dict[str, Any]:
+    payload = json.loads(pattern_to_json(pattern))
+    payload["settings"][_RETIRED_BOTTOM_KEY] = True
+    return payload
+
+
+def canonical_pattern_texts(pattern: Pattern) -> tuple[str, str]:
+    """The pattern texts a print file may carry: today's, then 0.13.1 to 0.13.4's."""
+
+    retired = json.dumps(
+        _with_retired_bottom_key(pattern),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return pattern_to_json(pattern), retired
+
+
+def pattern_header_projections(pattern: Pattern) -> tuple[str, str]:
+    """The readable header patterns a print file may carry: today's, then 0.13.1 to 0.13.4's."""
+
+    retired = json.dumps(
+        _with_retired_bottom_key(pattern),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return pattern_header_projection(pattern), _header_safe(retired)
+
+
+def _header_safe(projected: str) -> str:
+    return projected.replace(" ", "\\u0020").replace(";", "\\u003b")
 
 
 def pattern_header_projection(pattern: Pattern) -> str:
@@ -327,6 +374,7 @@ def encode_restore_capsule(
     top_layer: str = TOP_LAYER_BELOW,
     hollows: str = HOLLOWS_KEEP,
     keep_clay_flowing: bool = False,
+    support_settings: SupportSettings | None = None,
 ) -> str:
     """Encode one strict canonical capsule ready for bounded framing."""
 
@@ -395,7 +443,7 @@ def encode_restore_capsule(
         emission_payload["keep_clay_flowing"] = True
     payload = {
         "schema": _SCHEMA,
-        "version": _VERSION,
+        "version": _VERSION if support_settings is None else _SUPPORT_VERSION,
         "source": source_payload,
         "slice": slice_payload,
         "emission": emission_payload,
@@ -411,6 +459,8 @@ def encode_restore_capsule(
             end_early_mm=profile_end_early_mm,
         ),
     }
+    if support_settings is not None:
+        payload["support_settings"] = support_settings.to_dict()
     raw = json.dumps(
         payload,
         sort_keys=True,
@@ -434,11 +484,13 @@ def decode_restore_capsule(encoded: str) -> DecodedWeaveRestore:
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid restore capsule JSON: {exc.msg}") from exc
     _object(payload, "restore capsule")
-    _exact_keys(payload, _TOP_KEYS, "restore capsule")
+    version = _integer(payload.get("version"), "restore capsule version")
+    if version not in {_VERSION, _SUPPORT_VERSION}:
+        raise ValueError("unsupported restore capsule version")
+    keys = _TOP_KEYS | {"support_settings"} if version == _SUPPORT_VERSION else _TOP_KEYS
+    _exact_keys(payload, keys, "restore capsule")
     if payload["schema"] != _SCHEMA:
         raise ValueError(f"unsupported restore capsule schema {payload['schema']!r}")
-    if _integer(payload["version"], "restore capsule version") != _VERSION:
-        raise ValueError("unsupported restore capsule version")
 
     source = _object(payload["source"], "restore source")
     _exact_keys_with_optional(source, _SOURCE_KEYS, _SOURCE_OPTIONAL_KEYS, "restore source")
@@ -467,7 +519,7 @@ def decode_restore_capsule(encoded: str) -> DecodedWeaveRestore:
         "pattern JSON",
     )
     pattern = pattern_from_json(pattern_text)
-    if pattern_to_json(pattern) != pattern_text:
+    if pattern_text not in canonical_pattern_texts(pattern):
         raise ValueError("restore pattern JSON is not canonical")
 
     profile, profile_prime, profile_end = _decode_profile(payload["profile"])
@@ -554,6 +606,11 @@ def decode_restore_capsule(encoded: str) -> DecodedWeaveRestore:
         top_layer=sliced.get("top_layer", TOP_LAYER_BELOW),
         hollows=sliced.get("hollows", HOLLOWS_KEEP),
         keep_clay_flowing="keep_clay_flowing" in emission,
+        support_settings=(
+            parse_support_settings(payload["support_settings"])
+            if version == _SUPPORT_VERSION
+            else None
+        ),
     )
     canonical = encode_restore_capsule(
         source_mesh_name=decoded.source_mesh_name,
@@ -586,7 +643,17 @@ def decode_restore_capsule(encoded: str) -> DecodedWeaveRestore:
         top_layer=decoded.top_layer,
         hollows=decoded.hollows,
         keep_clay_flowing=decoded.keep_clay_flowing,
+        support_settings=decoded.support_settings,
     )
+    if pattern_text != pattern_to_json(decoded.pattern):
+        # Written by 0.13.1 to 0.13.4: the same capsule, carrying their text.
+        raw = json.loads(_unb64(canonical, "restore capsule"))
+        raw["pattern_json_utf8_b64"] = _b64(pattern_text.encode("utf-8"))
+        canonical = _b64(
+            json.dumps(
+                raw, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+            ).encode("utf-8")
+        )
     if canonical != encoded:
         raise ValueError("restore capsule is not in canonical form")
     return decoded
@@ -914,9 +981,11 @@ __all__ = [
     "PATTERN_PARAMETER",
     "RESTORE_CAPSULE_PARAMETER",
     "DecodedWeaveRestore",
+    "canonical_pattern_texts",
     "chunk_parameter_value",
     "decode_restore_capsule",
     "encode_restore_capsule",
     "pattern_header_projection",
+    "pattern_header_projections",
     "reassemble_parameter_value",
 ]

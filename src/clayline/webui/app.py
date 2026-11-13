@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -591,6 +592,13 @@ def create_app(
                 if restore_id is None
                 else cache.get("recipe", _required_id(payload, "restore_id"))
             )
+            verify_restore = _boolean(payload, "verify_supported_restore", False)
+            if verify_restore and (
+                restore_recipe is None or restore_recipe.supported_body_sha256 is None
+            ):
+                raise UiRequestError("A supported restore requires its saved print file.")
+            if verify_restore and sliced.source_sha256 != restore_recipe.source_mesh_sha256:
+                raise UiRequestError("A supported restore requires the matching source mesh.")
             result, response_payload = await asyncio.to_thread(
                 _modulate_weave_payload,
                 sliced,
@@ -598,8 +606,12 @@ def create_app(
                 None if restore_recipe is None else restore_recipe.profile,
                 None if restore_recipe is None else restore_recipe.profile_prime_mm,
                 None if restore_recipe is None else restore_recipe.profile_end_early_mm,
+                restore_recipe if verify_restore else None,
             )
             if isinstance(result, PreparedWeaveResult):
+                # Keep the active slice newer than superseded derived results
+                # when this exact geometry needs room in the bounded cache.
+                cache.get("slice", slice_id)
                 prepared_id = weave_sessions.put(token, "prepared", result)
                 response_payload["prepared_id"] = prepared_id
             elif result is not None:
@@ -630,14 +642,23 @@ def create_app(
             if not isinstance(payload, dict):
                 raise UiRequestError("request body must be a JSON object")
             cache, token, created = _resolve_weave_session(request)
-            prepared = cache.get("prepared", _required_id(payload, "prepared_id"))
+            prepared_id = _required_id(payload, "prepared_id")
+            prepared = cache.get("prepared", prepared_id)
             result, response_payload = await asyncio.to_thread(
                 _finalize_weave_payload, prepared, payload
             )
-            result_id = weave_sessions.put(token, "result", result)
-            response_payload["result_id"] = result_id
-            response_payload["gcode_url"] = f"/api/weave/result/{result_id}/gcode"
-            response_payload["obj_url"] = f"/api/weave/result/{result_id}/obj"
+            if result is not None:
+                # The finalized result owns its exact path now. Keeping the
+                # consumed reference geometry would evict the editable slice.
+                cache.discard("prepared", prepared_id)
+                # The repaired preview is already in response_payload. Its
+                # planning/reference buffers are no longer needed for export
+                # or reporting; retain only the accepted emitted artifact.
+                result = replace(result, support_repair=None)
+                result_id = weave_sessions.put(token, "result", result)
+                response_payload["result_id"] = result_id
+                response_payload["gcode_url"] = f"/api/weave/result/{result_id}/gcode"
+                response_payload["obj_url"] = f"/api/weave/result/{result_id}/obj"
             response = _json_response(Response, response_payload)
             _set_weave_cookie(response, token, created=created)
             return response
@@ -1410,6 +1431,7 @@ def _load_weave_mesh_payload(
     query: dict[str, str],
     profile_override: Any | None = None,
 ) -> tuple[Any, dict[str, Any]]:
+    from clayline.profiles import load_profile
     from clayline.weave_api import load_mesh
     from clayline.webui.weave_payload import compact_mesh_payload
 
@@ -1420,6 +1442,7 @@ def _load_weave_mesh_payload(
         if profile_override is None
         else profile_override
     )
+    profile = profile if isinstance(profile, Profile) else load_profile(profile)
     scale = _query_optional_float(query, "scale", _defaults.DEFAULT_WEAVE_SCALE)
     fit_height = _query_optional_float(query, "fit_height", _defaults.DEFAULT_WEAVE_FIT_HEIGHT_MM)
     offset_x = _query_float(query, "offset_x", _defaults.DEFAULT_WEAVE_XY_OFFSET_MM[0])
@@ -1476,6 +1499,7 @@ def _load_weave_mesh_payload(
         "filename": filename,
         "source_sha256": mesh.source_sha256,
         "profile_name": mesh.profile_name,
+        "placement_center_mm": [profile.center.x, profile.center.y],
         "bounds_mm": _bounds_payload(mesh.bounds),
         "honesty": {
             "format": honesty.source_format,
@@ -1510,6 +1534,7 @@ def _slice_weave_mesh_payload(
     payload: dict[str, Any],
     profile_override: Any | None = None,
 ) -> tuple[Any, dict[str, Any]]:
+    from clayline.support_primary import supported_vase_wall
     from clayline.weave_api import sliced_form_stats
     from clayline.weave_emergence import find_island_emergence
     from clayline.weave_models import (
@@ -1591,7 +1616,8 @@ def _slice_weave_mesh_payload(
     # An artist who switched the range off has declined the proposal, and the
     # page says so with island_stop: false; without it every re-slice turned
     # the range back on.
-    island_stop_wanted = _boolean(payload, "island_stop", True)
+    supports_active = _boolean(payload, "supports_enabled", False)
+    island_stop_wanted = _boolean(payload, "island_stop", True) and not supports_active
     default_island_stop = requested_range is None and emergence is not None and island_stop_wanted
     selected = select_layer_range(
         sliced,
@@ -1603,7 +1629,8 @@ def _slice_weave_mesh_payload(
         hint_form = trim_leading_empty_layers(selected)
     except ValueError:
         hint_form = selected
-    hint = zblend_disabled_hint(hint_form, SeamPolicy.CHAINED)
+    wall = supported_vase_wall(hint_form) if supports_active else None
+    hint = zblend_disabled_hint(hint_form if wall is None else wall.sliced, SeamPolicy.CHAINED)
     # The first presentation of an automatic island stop deliberately retains
     # full mesh facts/warnings.  An artist needs to see that the form really
     # continues above the proposed print range, not a falsely truncated mesh.
@@ -1737,13 +1764,28 @@ def _attach_top_follow_ghost(trace: dict[str, Any], zblend_path: Any | None) -> 
     }
 
 
+def _support_guide_stream(prepared_result: Any) -> Any:
+    """Keep provisional support guides on the same profile as support sizing."""
+
+    source = prepared_result.support_source
+    if source is not None and source.reference_stream is not None:
+        return source.reference_stream
+    if prepared_result.support_reference is not None:
+        return prepared_result.support_reference.source_stream
+    return source.stream if source is not None else prepared_result.stream
+
+
 def _modulate_weave_payload(
     sliced: Any,
     payload: dict[str, Any],
     profile_override: Any | None = None,
     profile_prime_mm: float | None = None,
     profile_end_early_mm: float | None = None,
+    verify_restore: Any | None = None,
 ) -> tuple[Any | None, dict[str, Any]]:
+    from clayline.support_geometry import curtain_guides
+    from clayline.support_models import parse_support_settings
+    from clayline.support_primary import supported_vase_wall
     from clayline.weave_emergence import find_island_emergence
     from clayline.weave_range import (
         bottom_disabled_hint,
@@ -1765,13 +1807,19 @@ def _modulate_weave_payload(
     if quality not in {"drag", "settle"}:
         raise UiRequestError("quality must be 'drag' or 'settle'")
     pattern = resolve_pattern(payload)
+    support_settings = (
+        parse_support_settings(payload["support_settings"])
+        if "support_settings" in payload
+        else None
+    )
+    supports_active = support_settings is not None and support_settings.enabled
     split_allowance = _island_split_allowance(pattern.settings.z_blend)
     emergence = find_island_emergence(sliced, transient_layers=split_allowance)
     island_range_auto = _boolean(payload, "island_range_auto", False)
     # The artist declined the island stop (range switched off): no stop is
     # proposed here either, so the range they chose is the whole form.
-    island_stop_declined = not _boolean(payload, "island_stop", True)
-    explicit_range = payload.get("layer_range")
+    island_stop_declined = supports_active or not _boolean(payload, "island_stop", True)
+    explicit_range = None if supports_active and island_range_auto else payload.get("layer_range")
     if (
         pattern.settings.z_blend
         and not island_stop_declined
@@ -1789,6 +1837,7 @@ def _modulate_weave_payload(
     # the last one-ring layer. The disconnected suffix is never threaded.
     auto_crown = (
         island_range_auto
+        and not supports_active
         and emergence is not None
         and pattern.settings.z_blend
         and pattern.settings.follow_top_edge
@@ -1834,7 +1883,8 @@ def _modulate_weave_payload(
     island_emergence = _island_emergence_payload(
         emergence, selected.layer_range, applied=auto_crown or island_stop
     )
-    hint = zblend_disabled_hint(selected, pattern.settings.seam)
+    wall = supported_vase_wall(selected) if supports_active else None
+    hint = zblend_disabled_hint(selected if wall is None else wall.sliced, pattern.settings.seam)
     if pattern.settings.z_blend and hint is not None:
         # F9.7 + Pete 2026-07-22 (restored-settings deadlock): a persisted
         # Vase mode toggle can refuse a freshly loaded, otherwise-fine form
@@ -1855,7 +1905,15 @@ def _modulate_weave_payload(
         )
     started = time.perf_counter()
     if quality == "drag":
-        zblend_path = build_zblend_path(selected, pattern) if pattern.settings.z_blend else None
+        split_vase = wall is not None and pattern.settings.z_blend
+        drag_pattern = (
+            replace(pattern, settings=replace(pattern.settings, z_blend=False))
+            if split_vase
+            else pattern
+        )
+        zblend_path = (
+            build_zblend_path(selected, drag_pattern) if drag_pattern.settings.z_blend else None
+        )
         crown_finish = _crown_finish_payload(
             selected,
             zblend_path,
@@ -1864,7 +1922,7 @@ def _modulate_weave_payload(
         )
         trace = drag_trace_payload(
             selected,
-            pattern,
+            drag_pattern,
             max_points=_integer(
                 payload,
                 "display_point_budget",
@@ -1879,7 +1937,7 @@ def _modulate_weave_payload(
         )
         _attach_top_follow_ghost(trace, zblend_path)
         engine_at = time.perf_counter()
-        visuals = pattern_payload(pattern, selected, zblend_path=zblend_path)
+        visuals = pattern_payload(drag_pattern, selected, zblend_path=zblend_path)
         finished = time.perf_counter()
         return None, {
             "schema": "clayline.ui.weave-result.v1",
@@ -1931,6 +1989,8 @@ def _modulate_weave_payload(
     job_id = payload.get("job_id")
     if job_id is not None and (not isinstance(job_id, str) or not job_id.strip()):
         raise UiRequestError("job_id must be non-blank text when provided")
+    if verify_restore is not None:
+        job_id = verify_restore.job_id
     prepared_result = prepare_weave_result(
         sliced,
         pattern,
@@ -1946,7 +2006,12 @@ def _modulate_weave_payload(
         job_id=job_id,
         layer_range=requested_range,
         keep_clay_flowing=keep_clay_flowing,
+        support_settings=support_settings,
     )
+    if verify_restore is not None:
+        prepared_result = replace(
+            prepared_result, supported_restore_body_sha256=verify_restore.supported_body_sha256
+        )
     safe_amplitude, safe_swing = _safe_offer(
         prepared_result.sliced,
         pattern,
@@ -1955,6 +2020,16 @@ def _modulate_weave_payload(
     )
     engine_at = time.perf_counter()
     trace = _weave_trace_payload(prepared_result)
+    guides = (
+        curtain_guides(
+            _support_guide_stream(prepared_result),
+            prepared_result.sliced,
+            prepared_result.profile,
+            support_settings,
+        )
+        if support_settings is not None and prepared_result.support_error is not None
+        else []
+    )
     artifact_stem = _artifact_stem(payload.get("filename"), source_name=sliced.source_path.name)
     finished = time.perf_counter()
     top_follow_applied = bool(
@@ -1963,7 +2038,8 @@ def _modulate_weave_payload(
     return prepared_result, {
         "schema": "clayline.ui.weave-result.v1",
         "quality": "settle",
-        "geometry_exact": True,
+        "geometry_exact": prepared_result.support_error is None,
+        **({"support_guides": guides} if guides else {}),
         "finalizing": True,
         "exportable": False,
         "filename": f"{artifact_stem}.gcode",
@@ -2060,6 +2136,7 @@ def _safe_offer(
 # writes the second, which Clayline from before them refuses as newer.
 WEAVE_SETTINGS_SCHEMA_V1 = "clayline.weave-settings.v1"
 WEAVE_SETTINGS_SCHEMA_V2 = "clayline.weave-settings.v2"
+WEAVE_SETTINGS_SCHEMA_V3 = "clayline.weave-settings.v3"
 
 
 def weave_settings_schema(pattern: Any) -> str:
@@ -2084,13 +2161,21 @@ def _weave_settings_snapshot(prepared_result: Any, payload: dict[str, Any]) -> d
     can replay headlessly without guessing at any field.
     """
 
+    from clayline.support_models import SupportSettings
     from clayline.wave import pattern_to_json
 
     sliced = prepared_result.sliced
     settings = prepared_result.settings
     layer_from, layer_to = sliced.layer_range
+    supports = prepared_result.support_settings
+    has_support_intent = supports is not None and supports != SupportSettings()
     return {
-        "schema": weave_settings_schema(prepared_result.pattern),
+        "schema": (
+            WEAVE_SETTINGS_SCHEMA_V3
+            if has_support_intent
+            else weave_settings_schema(prepared_result.pattern)
+        ),
+        **({"support_settings": supports.to_dict()} if has_support_intent else {}),
         "pattern_json": pattern_to_json(prepared_result.pattern),
         "placement": {
             "up_axis": sliced.up_axis.value,
@@ -2142,7 +2227,9 @@ def _finalize_weave_payload(
 ) -> tuple[Any, dict[str, Any]]:
     """Finish artifacts from one exact prepared object, never rebuilt geometry."""
 
+    from clayline.support_geometry import curtain_guides
     from clayline.weave_workflow import (
+        SupportPlanRefused,
         TopFollowClimbRefused,
         WeaveWorkflowError,
         finalize_weave_result,
@@ -2152,6 +2239,35 @@ def _finalize_weave_payload(
     started = time.perf_counter()
     try:
         result = finalize_weave_result(prepared_result)
+    except SupportPlanRefused as exc:
+        draft = exc.draft
+        settings = prepared_result.support_settings
+        guides = (
+            curtain_guides(
+                _support_guide_stream(prepared_result),
+                prepared_result.sliced,
+                prepared_result.profile,
+                settings,
+            )
+            if settings is not None
+            else []
+        )
+        return None, {
+            **(
+                {"geometry_repaired": True, "trace": _weave_trace_payload(draft)}
+                if draft is not None and draft is not prepared_result
+                else {}
+            ),
+            **({"support_guides": guides} if guides else {}),
+            "schema": "clayline.ui.weave-finalized.v1",
+            "quality": "settle",
+            "geometry_exact": False,
+            "finalizing": False,
+            "exportable": False,
+            "support_error": str(exc),
+            "support_analysis": None if exc.analysis is None else exc.analysis.to_dict(),
+            "settings_snapshot": _weave_settings_snapshot(prepared_result, payload),
+        }
     except TopFollowClimbRefused as exc:
         # Layer 3 (no dead ends): the bounded repair in finalize_weave_result
         # already tried easing the rim and rebuilding, up to its budget, and
@@ -2195,7 +2311,9 @@ def _finalize_weave_payload(
     # no longer the one being exported, so ``exact`` becomes the repaired trace
     # and the response carries it back for the page to draw.  Without a repair
     # this is the same object it always was, and the identity still holds.
-    repaired = None if result.climb_repair is None else result.climb_repair.prepared
+    repaired = result.support_repair
+    if repaired is None and result.climb_repair is not None:
+        repaired = result.climb_repair.prepared
     exact = prepared_result if repaired is None else repaired
     if result.emission.stream is not exact.stream:
         raise UiRequestError("finalized Weave result rebuilt the exact MoveStream")
@@ -2237,6 +2355,9 @@ def _finalize_weave_payload(
         "gcode_bytes": len(gcode_bytes),
         "filename": f"{artifact_stem}.gcode",
         "report": report,
+        **(
+            {"support_analysis": report["support_analysis"]} if "support_analysis" in report else {}
+        ),
         "warnings": warning_rows_with_safe_offer(
             report["warnings"],
             safe_amplitude_mm=safe_amplitude,
@@ -2267,6 +2388,14 @@ def _restore_weave_gcode_payload(
     warning = None if mesh is None else mesh_restore_warning(recipe, mesh)
     return {
         "schema": "clayline.ui.weave-restore.v1",
+        **(
+            {
+                "support_settings": recipe.support_settings.to_dict(),
+                "supported_body_sha256": recipe.supported_body_sha256,
+            }
+            if recipe.support_settings is not None
+            else {}
+        ),
         "needs_mesh": mesh is None,
         "source_mesh": {
             "filename": recipe.source_mesh_name,
@@ -2341,6 +2470,7 @@ def _weave_trace_payload(result: Any) -> dict[str, Any]:
             "vertical": "Z (mm)",
         },
         layer_labels=_weave_layer_labels(result),
+        include_support_roles=result.support_settings is not None,
     )
     _attach_top_follow_ghost(trace, result.zblend_path)
     return trace
@@ -2954,11 +3084,13 @@ def _prepared_trace_payload(
     stroke_indices: dict[tuple[int, str], int] | None = None,
     stroke_elements: dict[tuple[int, str], str] | None = None,
     global_pass_order: bool = False,
+    include_support_roles: bool = False,
 ) -> dict[str, Any]:
     """Mode-neutral serializer for one exact prepared emission trace."""
 
     from clayline.emit import EmissionMotion, is_flowing_crossing
     from clayline.models import MoveKind
+    from clayline.support_analysis import deposition_role
 
     indices = {} if stroke_indices is None else dict(stroke_indices)
     elements = {} if stroke_elements is None else dict(stroke_elements)
@@ -3006,6 +3138,10 @@ def _prepared_trace_payload(
                 round(event.source_move.flow_multiplier, 4),
             ]
         )
+        if include_support_roles:
+            moves[-1].extend(
+                (deposition_role(event) if kind else None, event.source_move.support_id)
+            )
     initial = prepared.initial_point
     meta: dict[str, Any] = {
         "passes": passes,

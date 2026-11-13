@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from itertools import pairwise
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from clayline.emit import (
     DEFAULT_WET_DENSITY_G_CM3,
@@ -20,6 +22,8 @@ from clayline.models import Move, MoveKind, MoveStream, Profile, Warning, deposi
 from clayline.preview import PreviewOptions, write_plan_png, write_toolpath_html
 from clayline.profiles import emission_defaults, load_profile
 from clayline.report import JobReport, build_report, write_report
+from clayline.support_models import SupportSettings, parse_support_settings
+from clayline.support_primary import SupportedVaseWall, supported_vase_wall
 from clayline.wave import load_pattern
 from clayline.weave_emergence import with_pieces_apart_warnings
 from clayline.weave_models import FormWarningCode, Pattern, SlicedForm
@@ -42,6 +46,9 @@ from clayline.weave_restore_codec import (
 )
 from clayline.weave_zblend import ZBlendPath, build_zblend_path, top_follow_rounding_slope
 
+if TYPE_CHECKING:
+    from clayline.support_analysis import SupportAnalysis
+
 # The one final-check finding a Weave job can repair instead of refusing: the
 # shaped rim climbs a shade too steeply once its coordinates are written down.
 TOP_FOLLOW_CLIMB_CODE = "weave_top_follow_slope"
@@ -52,6 +59,23 @@ MAX_CLIMB_REPAIR_REBUILDS = 3
 
 class WeaveWorkflowError(ValueError):
     """Raised when a Weave result cannot be built or reused safely."""
+
+
+class SupportPlanRefused(WeaveWorkflowError):
+    """The candidate can be inspected, but it cannot be exported."""
+
+    def __init__(
+        self,
+        message: str,
+        analysis: SupportAnalysis | None = None,
+        *,
+        retryable: bool = False,
+        draft: PreparedWeaveResult | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.analysis = analysis
+        self.retryable = retryable
+        self.draft = draft
 
 
 class TopFollowClimbRefused(WeaveWorkflowError):
@@ -112,6 +136,7 @@ class WeaveRebuildRecipe:
     layer_range: LayerRangeInput
     top_follow_slope_headroom: float
     keep_clay_flowing: bool = False
+    support_settings: SupportSettings | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +174,8 @@ class WeaveResult:
     # an eased rebuild was accepted in its place.  ``None`` on every job that
     # passed the first time, which is every job that passes today.
     climb_repair: ClimbRepair | None = None
+    support_settings: SupportSettings | None = None
+    support_repair: PreparedWeaveResult | None = None
 
     @property
     def warnings(self) -> tuple[Warning, ...]:
@@ -225,6 +252,15 @@ class WeaveResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _SupportSource:
+    stream: MoveStream
+    vase_wall: SupportedVaseWall | None
+    helical_stream: MoveStream | None
+    reference_stream: MoveStream | None = None
+    reference_helical_stream: MoveStream | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedWeaveResult:
     """Exact Stage-B geometry awaiting audited artifact finalization.
 
@@ -245,6 +281,12 @@ class PreparedWeaveResult:
     # How this trace was built, so the final check can ask for one eased
     # rebuild instead of refusing the job.  Never used on a job that passes.
     rebuild: WeaveRebuildRecipe | None = None
+    support_settings: SupportSettings | None = None
+    support_error: str | None = None
+    support_source: _SupportSource | None = None
+    support_reference: PreparedEmission | None = None
+    support_reference_error: str | None = None
+    supported_restore_body_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if self.prepared.source_stream is not self.stream:
@@ -255,6 +297,25 @@ class PreparedWeaveResult:
     @property
     def warnings(self) -> tuple[Warning, ...]:
         return self.stream.warnings
+
+
+def _support_reference_pattern(pattern: Pattern) -> Pattern:
+    """Keep the placed form and images, excluding intentional weave effects."""
+    flat = Pattern()
+    return replace(
+        pattern,
+        wave=flat.wave,
+        extrusion=flat.extrusion,
+        extra_weaves=(),
+        settings=replace(
+            pattern.settings,
+            amplitude=0.0,
+            follow_lobes=1.0,
+            follow_coves=1.0,
+            flow_lobes=1.0,
+            flow_coves=1.0,
+        ),
+    )
 
 
 def prepare_weave_result(
@@ -274,6 +335,7 @@ def prepare_weave_result(
     start_charge_e: float | None = None,
     top_follow_slope_headroom: float = 0.0,
     keep_clay_flowing: bool = False,
+    support_settings: SupportSettings | None = None,
 ) -> PreparedWeaveResult:
     """Build the exact immutable export trace without serializing artifacts.
 
@@ -296,6 +358,8 @@ def prepare_weave_result(
                     "must be unset or 0"
                 )
 
+    if support_settings is not None:
+        support_settings = parse_support_settings(support_settings)
     resolved_pattern = load_pattern(pattern)
     selected = select_layer_range(sliced, layer_range)
     try:
@@ -312,23 +376,63 @@ def prepare_weave_result(
         raise WeaveWorkflowError(f"The interior cannot be filled: {interior_hint}")
     resolved_profile = _resolve_profile(selected, profile)
     profile_defaults = emission_defaults(resolved_profile)
-    zblend_path = (
-        build_zblend_path(
-            selected,
-            resolved_pattern,
-            top_follow_slope_headroom=top_follow_slope_headroom,
+
+    def wall_source(
+        form: SlicedForm,
+        render_pattern: Pattern = resolved_pattern,
+        render_job_id: str | None = job_id,
+    ) -> tuple[ZBlendPath | None, _SupportSource]:
+        vase_wall = (
+            supported_vase_wall(form)
+            if support_settings is not None
+            and support_settings.enabled
+            and render_pattern.settings.z_blend
+            else None
         )
-        if resolved_pattern.settings.z_blend
-        else None
-    )
-    stream = build_form_move_stream(
-        selected,
-        resolved_pattern,
-        resolved_profile,
-        job_id=job_id,
-        zblend_path=zblend_path,
-        flow_multiplier=flow_multiplier,
-    )
+        vase_form = form if vase_wall is None else vase_wall.sliced
+        hold_outline_layers = (
+            frozenset(
+                lower.index
+                for lower, upper in pairwise(form.layers)
+                if len(lower.rings) != len(upper.rings)
+            )
+            if vase_wall is not None
+            else frozenset()
+        )
+        path = (
+            build_zblend_path(
+                vase_form,
+                render_pattern,
+                top_follow_slope_headroom=top_follow_slope_headroom,
+                hold_outline_layers=hold_outline_layers,
+            )
+            if render_pattern.settings.z_blend
+            else None
+        )
+        primary = build_form_move_stream(
+            vase_form,
+            render_pattern,
+            resolved_profile,
+            job_id=render_job_id,
+            zblend_path=path,
+            flow_multiplier=flow_multiplier,
+        )
+        if vase_wall is None:
+            return path, _SupportSource(primary, None, None)
+        layered_pattern = replace(
+            render_pattern, settings=replace(render_pattern.settings, z_blend=False)
+        )
+        layered = build_form_move_stream(
+            form,
+            layered_pattern,
+            resolved_profile,
+            job_id=primary.job_id,
+            flow_multiplier=flow_multiplier,
+        )
+        return path, _SupportSource(layered, vase_wall, primary)
+
+    zblend_path, source = wall_source(selected)
+    stream = source.stream
     if resolved_pattern.settings.bottom_layers == 0:
         first_deposited_layer = _first_deposited_stream_layer(
             stream,
@@ -346,22 +450,53 @@ def prepare_weave_result(
             )
         if first_deposited_layer > 0:
             selected = trim_leading_unprinted_layers(selected, first_deposited_layer)
-            zblend_path = (
-                build_zblend_path(
-                    selected,
-                    resolved_pattern,
-                    top_follow_slope_headroom=top_follow_slope_headroom,
+            zblend_path, source = wall_source(selected)
+            stream = source.stream
+    support_error = None
+    support_reference_error = None
+    reference_stream = None
+    if support_settings is not None:
+        _, reference_source = wall_source(
+            selected, _support_reference_pattern(resolved_pattern), source.stream.job_id
+        )
+        reference_stream = reference_source.stream
+        stream = replace(
+            stream,
+            warnings=tuple(w for w in stream.warnings if w.code != FormWarningCode.OVERHANG),
+        )
+        source = replace(
+            source,
+            stream=stream,
+            reference_stream=reference_source.stream,
+            reference_helical_stream=reference_source.helical_stream,
+        )
+        if support_settings.enabled:
+            from clayline.support_geometry import _placements
+
+            regular_curtains = (
+                bool(_placements(support_settings))
+                and source.vase_wall is None
+                and all(
+                    sum(not ring.is_hole for ring in layer.rings) <= 1 for layer in selected.layers
                 )
-                if resolved_pattern.settings.z_blend
-                else None
             )
-            stream = build_form_move_stream(
+            stream, support_error = _route_support_candidate(
+                source,
                 selected,
                 resolved_pattern,
                 resolved_profile,
-                job_id=job_id,
-                zblend_path=zblend_path,
-                flow_multiplier=flow_multiplier,
+                support_settings,
+                foot_variant=4 if regular_curtains else 0,
+                curtain_variant=5 if regular_curtains else 0,
+            )
+            reference_stream, support_reference_error = _reference_support_stream(
+                source,
+                selected,
+                resolved_pattern,
+                resolved_profile,
+                support_settings,
+                foot_variant=4 if regular_curtains else 0,
+                curtain_variant=5 if regular_curtains else 0,
             )
     range_facts = layer_range_payload(selected)
     snapshot_prime_mm = (
@@ -416,6 +551,9 @@ def prepare_weave_result(
         top_layer=selected.top_layer,
         hollows=selected.hollows,
         keep_clay_flowing=keep_clay_flowing,
+        support_settings=(
+            support_settings if support_settings is not None and support_settings.enabled else None
+        ),
     )
     parameters = {
         "bottom_layers": resolved_pattern.settings.bottom_layers,
@@ -555,6 +693,9 @@ def prepare_weave_result(
         # nozzle cone over the clay laid so far.
         parameters["weave_stack_pieces"] = "true"
         parameters["nozzle_clearance_mm"] = resolved_pattern.settings.nozzle_clearance_mm
+    if support_settings is not None and support_settings.enabled:
+        parameters["support_path_version"] = 1
+        parameters["support_clearance_mm"] = resolved_pattern.settings.nozzle_clearance_mm
     parameters.update(
         chunk_parameter_value(PATTERN_PARAMETER, pattern_header_projection(resolved_pattern))
     )
@@ -577,6 +718,11 @@ def prepare_weave_result(
         keep_clay_flowing=keep_clay_flowing,
     )
     prepared = prepare_emission(stream, resolved_profile, settings=settings)
+    support_reference = (
+        prepare_emission(reference_stream, resolved_profile, settings=settings)
+        if reference_stream is not None
+        else None
+    )
     return PreparedWeaveResult(
         sliced=selected,
         pattern=resolved_pattern,
@@ -585,6 +731,13 @@ def prepare_weave_result(
         settings=settings,
         prepared=prepared,
         zblend_path=zblend_path,
+        support_settings=support_settings,
+        support_error=support_error,
+        support_reference=support_reference,
+        support_reference_error=support_reference_error,
+        support_source=source
+        if support_settings is not None and support_settings.enabled
+        else None,
         rebuild=WeaveRebuildRecipe(
             # The form as handed in, not ``selected``: the range selection and
             # the leading-layer trim are part of what a rebuild has to redo.
@@ -605,8 +758,190 @@ def prepare_weave_result(
             layer_range=layer_range,
             top_follow_slope_headroom=top_follow_slope_headroom,
             keep_clay_flowing=keep_clay_flowing,
+            support_settings=support_settings,
         ),
     )
+
+
+def _route_support_candidate(
+    source: _SupportSource,
+    sliced: SlicedForm,
+    pattern: Pattern,
+    profile: Profile,
+    settings: SupportSettings,
+    *,
+    foot_variant: int = 0,
+    curtain_variant: int = 0,
+    shared_split_footing: bool = False,
+) -> tuple[MoveStream, str | None]:
+    from clayline.support_geometry import SupportRoutingError, route_supports
+
+    try:
+        if source.vase_wall is None:
+            return route_supports(
+                source.stream,
+                sliced,
+                pattern,
+                profile,
+                settings,
+                foot_variant=foot_variant,
+                curtain_variant=curtain_variant,
+                reference_stream=source.reference_stream,
+            ), None
+        from clayline.support_split_routing import route_split_supports
+
+        geometry_settings = settings
+        if shared_split_footing:
+            repeated_top = settings.repeated_curtains.top_height_mm or 0.0
+            height = max(
+                sliced.first_layer_height + 4.5 * sliced.layer_height,
+                repeated_top + 0.5 * sliced.layer_height,
+            )
+            geometry_settings = replace(
+                settings,
+                foot=replace(
+                    settings.foot,
+                    enabled=True,
+                    extent_mode="manual",
+                    extra_width_mm=max(0.1, round(2.4 * sliced.bead_width)),
+                    height_mm=min(sliced.layers[-1].z, math.ceil(height)),
+                ),
+            )
+        routed = route_split_supports(
+            source.stream,
+            sliced,
+            pattern,
+            profile,
+            geometry_settings,
+            primary_stream=source.helical_stream,
+            primary_ring_indices=source.vase_wall.ring_indices,
+            primary_sliced=source.vase_wall.sliced,
+            foot_variant=foot_variant,
+            reference_stream=source.reference_stream,
+            reference_helical_stream=source.reference_helical_stream,
+        )
+        if shared_split_footing:
+            routed = replace(
+                routed, moves=tuple(_mark_curtain_footing(move) for move in routed.moves)
+            )
+        return routed, None
+    except SupportRoutingError as error:
+        return source.stream, str(error)
+
+
+def _mark_curtain_footing(move: Move) -> Move:
+    if move.support_id != "foot":
+        return move
+    return replace(
+        move,
+        support_id="curtain-foundation",
+        metadata=tuple(
+            (key, "curtain-foundation" if key == "support_id" else value)
+            for key, value in move.metadata
+        ),
+    )
+
+
+def _reference_support_stream(
+    source: _SupportSource,
+    sliced: SlicedForm,
+    pattern: Pattern,
+    profile: Profile,
+    settings: SupportSettings,
+    *,
+    foot_variant: int,
+    curtain_variant: int,
+    shared_split_footing: bool = False,
+) -> tuple[MoveStream | None, str | None]:
+    """Route the same support request on its complete weave-free counterpart."""
+    if source.reference_stream is None:
+        return None, None
+    reference_source = replace(
+        source,
+        stream=source.reference_stream,
+        helical_stream=source.reference_helical_stream,
+    )
+    reference_settings = replace(
+        settings,
+        style=replace(settings.style, bases_apply_weaves=False, curtains_apply_weaves=False),
+    )
+    stream, error = _route_support_candidate(
+        reference_source,
+        sliced,
+        _support_reference_pattern(pattern),
+        profile,
+        reference_settings,
+        foot_variant=foot_variant,
+        curtain_variant=curtain_variant,
+        shared_split_footing=shared_split_footing,
+    )
+    return stream, error
+
+
+def _support_candidates(attempt: PreparedWeaveResult) -> Iterator[PreparedWeaveResult]:
+    """Keep the requested settings while trying alternative printable fills."""
+    from clayline.support_geometry import FOOT_ROUTE_VARIANT_COUNT, _placements
+
+    settings = attempt.support_settings
+    if settings is None or attempt.support_source is None:
+        return
+    split = any(
+        sum(not ring.is_hole for ring in layer.rings) > 1 for layer in attempt.sliced.layers
+    )
+    shared_split_footing = (
+        attempt.support_source.vase_wall is not None
+        and settings.repeated_curtains.enabled
+        and not settings.foot.enabled
+        and any(row.enabled and row.origin == "local" for row in settings.placements)
+    )
+    if not split and _placements(settings):
+        if not settings.foot.enabled and not attempt.pattern.settings.z_blend:
+            # This variant changes only the footing. A Layered curtain with
+            # no footing would rebuild the identical rejected route.
+            return
+        variants = [(5, 5)]
+    elif settings.foot.enabled or shared_split_footing:
+        first = 0 if shared_split_footing else 1
+        variants = [(variant, 0) for variant in range(first, FOOT_ROUTE_VARIANT_COUNT)]
+    else:
+        return
+    for foot_variant, curtain_variant in variants:
+        stream, error = _route_support_candidate(
+            attempt.support_source,
+            attempt.sliced,
+            attempt.pattern,
+            attempt.profile,
+            settings,
+            foot_variant=foot_variant,
+            curtain_variant=curtain_variant,
+            shared_split_footing=shared_split_footing,
+        )
+        if error is not None:
+            continue
+        trace = prepare_emission(stream, attempt.profile, settings=attempt.settings)
+        reference_stream, reference_error = _reference_support_stream(
+            attempt.support_source,
+            attempt.sliced,
+            attempt.pattern,
+            attempt.profile,
+            settings,
+            foot_variant=foot_variant,
+            curtain_variant=curtain_variant,
+            shared_split_footing=shared_split_footing,
+        )
+        reference_trace = (
+            prepare_emission(reference_stream, attempt.profile, settings=attempt.settings)
+            if reference_stream is not None
+            else None
+        )
+        yield replace(
+            attempt,
+            stream=stream,
+            prepared=trace,
+            support_error=None,
+            support_reference=reference_trace,
+            support_reference_error=reference_error,
+        )
 
 
 def _rebuild_prepared_weave_result(
@@ -632,6 +967,7 @@ def _rebuild_prepared_weave_result(
         layer_range=recipe.layer_range,
         top_follow_slope_headroom=top_follow_slope_headroom,
         keep_clay_flowing=recipe.keep_clay_flowing,
+        support_settings=recipe.support_settings,
     )
 
 
@@ -715,7 +1051,46 @@ def finalize_weave_result(prepared_result: PreparedWeaveResult) -> WeaveResult:
     rebuilds = 0
     while True:
         try:
-            finalized = _finalize_once(attempt)
+            partial = None
+            failure = None
+            try:
+                finalized = _finalize_once(attempt)
+                partial = finalized
+                if not _automatic_support_targets_met(finalized):
+                    finalized = None
+            except SupportPlanRefused as original:
+                if not original.retryable:
+                    raise
+                failure = original
+                finalized = None
+            if finalized is None:
+                for candidate in _support_candidates(attempt):
+                    try:
+                        checked = replace(
+                            _finalize_once(candidate),
+                            support_repair=replace(candidate, support_source=None),
+                        )
+                    except SupportPlanRefused as refused:
+                        if refused.draft is not None:
+                            failure = refused
+                        continue
+                    if partial is None or _support_target_score(checked) < _support_target_score(
+                        partial
+                    ):
+                        partial = checked
+                    if _automatic_support_targets_met(checked):
+                        finalized = checked
+                        break
+                if finalized is None:
+                    if partial is None:
+                        assert failure is not None
+                        raise failure
+                    raise SupportPlanRefused(
+                        "The automatic supports do not meet the allowable overhang at all "
+                        "selected attachments. Adjust their placement or add a local support.",
+                        partial.job_report.support_analysis,
+                        draft=partial.support_repair or attempt,
+                    )
         except _ClimbRejected as rejection:
             if base_headroom is None:
                 base_headroom = _climb_repair_base_headroom(attempt)
@@ -723,9 +1098,12 @@ def finalize_weave_result(prepared_result: PreparedWeaveResult) -> WeaveResult:
                 raise TopFollowClimbRefused(str(rejection)) from rejection
             rebuilds += 1
             assert attempt.rebuild is not None
-            attempt = _rebuild_prepared_weave_result(
-                attempt.rebuild,
-                top_follow_slope_headroom=base_headroom * 2.0**rebuilds,
+            attempt = replace(
+                _rebuild_prepared_weave_result(
+                    attempt.rebuild,
+                    top_follow_slope_headroom=base_headroom * 2.0**rebuilds,
+                ),
+                supported_restore_body_sha256=attempt.supported_restore_body_sha256,
             )
             continue
         if rebuilds == 0:
@@ -745,6 +1123,47 @@ class _ClimbRejected(WeaveWorkflowError):
     """The final check refused this attempt, and only over its written climb."""
 
 
+def _automatic_support_targets_met(result: WeaveResult) -> bool:
+    analysis = result.job_report.support_analysis
+    if analysis is None:
+        return True
+    automatic = [target for target in analysis.target_results if target.automatic]
+    settings = result.support_settings
+    automatic_geometry = bool(automatic) or bool(
+        settings is not None
+        and settings.enabled
+        and settings.foot.enabled
+        and settings.foot.extent_mode == "auto"
+    )
+    generated_overhang = _support_threshold_peak(analysis)
+    return all(target.target_met for target in automatic) and (
+        not automatic_geometry
+        or generated_overhang is None
+        or generated_overhang <= analysis.threshold + 1e-9
+    )
+
+
+def _support_threshold_peak(analysis: SupportAnalysis) -> float | None:
+    # The user's overhang limit excludes intentional weave geometry. The
+    # actual deposited foundation/contact audit remains a separate hard gate.
+    return (
+        analysis.reference_generated_max_unsupported_fraction
+        if analysis.warning_basis == "underlying_form_without_weaves"
+        else analysis.generated_max_unsupported_fraction
+    )
+
+
+def _support_target_score(result: WeaveResult) -> tuple[int, float, float, float]:
+    analysis = result.job_report.support_analysis
+    targets = () if analysis is None else analysis.target_results
+    return (
+        sum(target.unresolved for target in targets),
+        sum(target.remaining_length_mm for target in targets),
+        (_support_threshold_peak(analysis) or 0.0) if analysis is not None else 0.0,
+        max((target.max_unsupported_fraction or 0.0 for target in targets), default=0.0),
+    )
+
+
 def _finalize_once(prepared_result: PreparedWeaveResult) -> WeaveResult:
     """Finalize one attempt; raise :class:`_ClimbRejected` when only climb refused it."""
 
@@ -752,6 +1171,65 @@ def _finalize_once(prepared_result: PreparedWeaveResult) -> WeaveResult:
     profile = prepared_result.profile
     settings = prepared_result.settings
     prepared = prepared_result.prepared
+    supports = prepared_result.support_settings
+    support_analysis = None
+    if supports is not None:
+        from clayline.support_analysis import SupportTarget, analyze_support
+        from clayline.support_geometry import SupportRoutingError, curtain_targets
+
+        targets = ()
+        if supports.enabled:
+            try:
+                targets = curtain_targets(
+                    prepared_result.support_source.reference_stream
+                    if prepared_result.support_source is not None
+                    and prepared_result.support_source.reference_stream is not None
+                    else prepared_result.support_reference.source_stream
+                    if prepared_result.support_reference is not None
+                    else prepared_result.support_source.stream
+                    if prepared_result.support_source is not None
+                    else stream,
+                    prepared_result.sliced,
+                    profile,
+                    supports,
+                )
+            except SupportRoutingError:
+                # A missing target is an unresolved request, never vacuous
+                # evidence that the generated geometry supports the wall.
+                targets = (SupportTarget("curtains", (), settings.bead_width / 2.0),)
+        support_analysis = analyze_support(
+            prepared,
+            threshold=supports.max_unsupported_fraction,
+            first_layer_height=prepared_result.sliced.first_layer_height,
+            targets=targets,
+            reference=prepared_result.support_reference,
+        )
+        if prepared_result.support_error is not None:
+            raise SupportPlanRefused(
+                prepared_result.support_error, support_analysis, retryable=True
+            )
+        if prepared_result.support_reference_error is not None:
+            raise SupportPlanRefused(
+                "The underlying form's support route could not be completed: "
+                + prepared_result.support_reference_error,
+                support_analysis,
+                retryable=True,
+                draft=prepared_result,
+            )
+        if supports.enabled and support_analysis.generated_without_foundation:
+            raise SupportPlanRefused(
+                "Part of a support has no previously printed clay beneath it. "
+                "Adjust its foundation, reach, or appearance.",
+                support_analysis,
+                retryable=True,
+                draft=prepared_result,
+            )
+        if supports.enabled and support_analysis.generated_unresolved:
+            raise SupportPlanRefused(
+                "ClayLine could not verify the foundation of the full support path.",
+                support_analysis,
+                draft=prepared_result,
+            )
     gcode, motion_line_numbers = emit_gcode_with_motion_lines(
         stream, profile, settings=settings, prepared=prepared
     )
@@ -761,7 +1239,26 @@ def _finalize_once(prepared_result: PreparedWeaveResult) -> WeaveResult:
         message = f"Weave emission failed lint: {details}"
         if all(item.code == TOP_FOLLOW_CLIMB_CODE for item in lint_report.errors):
             raise _ClimbRejected(message)
+        if supports is not None and supports.enabled:
+            finding = next(
+                (
+                    item.message
+                    for item in lint_report.errors
+                    if item.code.startswith("weave_support_")
+                ),
+                "Adjust the support placement or extent to pass the final toolpath check.",
+            )
+            raise SupportPlanRefused(
+                finding, support_analysis, retryable=True, draft=prepared_result
+            )
         raise WeaveWorkflowError(message)
+    expected_body = prepared_result.supported_restore_body_sha256
+    if expected_body is not None and lint_report.header.get("body_sha256") != expected_body:
+        raise SupportPlanRefused(
+            "These settings did not reproduce the saved support path. "
+            "The original G-code still contains the route that printed.",
+            support_analysis,
+        )
     emission = WeaveEmission(stream, settings, prepared, gcode, lint_report, motion_line_numbers)
     report = build_report(
         stream,
@@ -777,6 +1274,8 @@ def _finalize_once(prepared_result: PreparedWeaveResult) -> WeaveResult:
         mesh_source_path=prepared_result.sliced.source_path,
         mesh_honesty=prepared_result.sliced.mesh_honesty,
     )
+    if support_analysis is not None:
+        report = replace(report, support_analysis=support_analysis)
     if report.prepared_trace is not prepared:
         raise WeaveWorkflowError("report did not retain the exact Weave prepared trace")
     return WeaveResult(
@@ -786,6 +1285,7 @@ def _finalize_once(prepared_result: PreparedWeaveResult) -> WeaveResult:
         emission,
         report,
         prepared_result.zblend_path,
+        support_settings=supports,
     )
 
 
@@ -805,6 +1305,7 @@ def build_weave_result(
     job_id: str | None = None,
     layer_range: LayerRangeInput = None,
     keep_clay_flowing: bool = False,
+    support_settings: SupportSettings | None = None,
 ) -> WeaveResult:
     """Build and finalize one Weave form through the audited shared back half."""
 
@@ -824,6 +1325,7 @@ def build_weave_result(
             job_id=job_id,
             layer_range=layer_range,
             keep_clay_flowing=keep_clay_flowing,
+            support_settings=support_settings,
         )
     )
 

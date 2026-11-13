@@ -513,7 +513,8 @@ def test_draw_calibration_defaults_use_schema_specific_auto_width() -> None:
         "function syncHistoryButtons", 1
     )[0]
     assert ".removeItem?.(" in restore_block
-    assert "loadMode(" not in restore_block
+    assert "validDrawSettings" not in restore_block
+    assert "applyDrawSettings" not in restore_block
 
 
 def test_item_1_wires_per_mode_history_to_settled_restore_paths() -> None:
@@ -528,7 +529,7 @@ def test_item_1_wires_per_mode_history_to_settled_restore_paths() -> None:
     assert "onSettled: (snapshot) => {" in app
     assert "onSettled: (snapshot) => {" in weave
     assert "drawStateWriter?.suspend(() => applyDrawSettings(snapshot))" in app
-    assert "applyWeaveSettings(snapshot, { settle: true })" in weave
+    assert "applyWeaveSettings(snapshot, { settle: true, modelChanged, land })" in weave
     assert "applyCanonicalPattern(snapshot.pattern_json);" in weave
     assert (
         "uploadMesh();"
@@ -543,3 +544,53 @@ def test_item_1_wires_per_mode_history_to_settled_restore_paths() -> None:
     assert "weaveHistory?.seed(weaveHistoryEntry(weaveSettingsSnapshot()))" in weave
     assert "if (!drawHistoryGestureActive)" in app
     assert "if (!weaveHistoryGestureActive)" in weave
+
+
+def test_startup_preserves_display_preference_without_restoring_job_settings() -> None:
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    startup = (
+        "function restoreDrawSettings()"
+        + app.split("function restoreDrawSettings()", 1)[1].split("function syncHistoryButtons", 1)[
+            0
+        ]
+    )
+    result = _run_node(
+        f"""
+        const assert = require("node:assert/strict");
+        const ui = require({json.dumps(str(MODULE))});
+        const values = new Map();
+        const storage = {{
+          getItem: key => values.get(key) ?? null,
+          setItem: (key, value) => values.set(key, value),
+          removeItem: key => values.delete(key),
+        }};
+        globalThis.window = {{ClaylineStudioState: ui, claylineSettingsStorage: storage}};
+        const state = {{}};
+        {startup}
+        const results = [];
+        for (const visible of [false, true]) {{
+          const display = {{schema: "clayline.weave-display.v1", show_span_warnings: visible}};
+          ui.saveMode(storage, "weave_display", display);
+          for (let launch = 0; launch < 2; launch += 1) {{
+            // Opening a project writes its job next to the display preference.
+            ui.saveMode(storage, "weave", {{schema: "weave.v3", pattern_json: "saved job"}});
+            ui.saveMode(storage, "draw", {{schema: "draw.v2", passes: ["saved drawing"]}});
+            ui.saveMode(storage, "unexpected_job", {{stale: true}});
+            assert.equal(restoreDrawSettings(), false);
+            assert.equal(state.drawSettingsRestored, true);
+            assert.deepEqual(ui.loadMode(storage, "weave_display"), display);
+            assert.equal(ui.loadMode(storage, "weave"), null);
+            assert.equal(ui.loadMode(storage, "draw"), null);
+            assert.deepEqual(Object.keys(JSON.parse(storage.getItem(ui.STORAGE_KEY)).modes),
+              ["weave_display"]);
+          }}
+          results.push(ui.loadMode(storage, "weave_display").show_span_warnings);
+        }}
+        ui.saveMode(storage, "weave_display", {{schema: "clayline.weave-display.v1",
+          show_span_warnings: "false"}});
+        restoreDrawSettings();
+        assert.equal(ui.loadMode(storage, "weave_display"), null);
+        console.log(JSON.stringify({{preserved: results, invalidRemoved: true}}));
+        """
+    )
+    assert result == {"preserved": [False, True], "invalidRemoved": True}

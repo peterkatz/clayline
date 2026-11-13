@@ -188,7 +188,7 @@ def test_the_web_restore_button_lives_with_the_pattern_and_brings_back_only_it()
     # The Model box's branch brings every setting back through the same apply
     # path a project file uses, then asks for the model by name.
     assert "settingsSnapshotFromRestore(payload)" in everything
-    assert "applyWeaveSettings(snapshot, { settle: true })" in everything
+    assert "applyWeaveSettings(snapshot, { settle: true, supportedRestore })" in everything
     assert "payload.needs_mesh" in everything
     assert "the model it was sliced from" in everything
     snapshot = WEAVE[

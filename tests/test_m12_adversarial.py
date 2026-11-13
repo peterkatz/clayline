@@ -157,7 +157,10 @@ def test_bottom_plus_zblend_has_monotonic_deposition_and_reconciled_volume() -> 
         [event.point.z for event in print_events if event.extrude], dtype=np.float64
     )
 
-    assert np.all(np.diff(deposited_z) >= 0.0)
+    # Never down by more than rounding: the step up between two level turns
+    # under the base comes out a few 1e-14 mm high, and the file writes Z to
+    # the thousandth.
+    assert np.all(np.diff(deposited_z) >= -1e-9)
     assert first.emission.gcode.encode() == second.emission.gcode.encode()
     assert first.emission.lint_report.ok
     assert first.report().cross_check.passed
@@ -357,9 +360,12 @@ def test_multiple_bottom_islands_are_layer_first_with_no_intra_run_travel() -> N
         (0, 0),
         (1, 1),
     ]
+    # Each fill ends beside its own wall (the old order's weld ran 18.52 mm
+    # back out from the middle; Pete asked, 2026-11-11, that every bottom end
+    # at its wall).
     assert [
         round(float(np.hypot(right.x - left.x, right.y - left.y)), 4) for _p, left, right in proved
-    ] == [18.5231, 18.5231, 18.5231, 18.5231]
+    ] == [8.8453, 8.8453, 8.8453, 8.8453]
 
     # The measured defect, by its exact endpoints: island 2's fill at
     # (278.9750, 202.4279) welded to island 1's wall at (227.4750, 201.5031),
@@ -625,7 +631,17 @@ def _rolled_seam_annulus() -> cl.SlicedFormFacade:
     return replace(sliced, id="rolled-seam-annulus", layers=tuple(layers))
 
 
-def test_a_bottom_that_cannot_reach_its_own_wall_lifts_and_says_so() -> None:
+def test_a_bottom_whose_wall_seam_sits_across_the_hole_ends_beside_its_wall() -> None:
+    """The rolled-seam annulus: the old order's step out crossed the hole.
+
+    Its fill ended at the hole, and the straight step out to a wall whose seam
+    sits across the hole left the clay, so the nozzle lifted and said so.
+    Every bottom now ends beside its own wall (Pete asked, 2026-11-11), so the
+    fill ends at the seam and joins it by a short step inside the clay: one
+    run, no lift, nothing to say.  A join the proof refuses still lifts and
+    says so (tests/test_bottom_outward.py).
+    """
+
     sliced = _rolled_seam_annulus()
     pattern = _pattern(z_blend=False, bottom_layers=1, amplitude=0.0)
     result = sliced.modulate(
@@ -636,12 +652,6 @@ def test_a_bottom_that_cannot_reach_its_own_wall_lifts_and_says_so() -> None:
     )
     moves = result.emission.stream.moves
     region = lowest_slice_regions(sliced)[0]
-
-    # The refusal is real: the chord the emitter would have laid leaves the clay.
-    fill_runs = [
-        (key, [move for move in run_moves if move.kind is MoveKind.PRINT])
-        for key, run_moves in _print_runs(moves)
-    ]
     bottom_prints = [
         move
         for move in moves
@@ -650,46 +660,20 @@ def test_a_bottom_that_cannot_reach_its_own_wall_lifts_and_says_so() -> None:
     wall_start = next(
         move for move in moves if move.kind is MoveKind.PRINT and move.comment == "weave wall"
     )
+    end = bottom_prints[-1]
     assert (
-        contained_connector(
-            region,
-            (bottom_prints[-1].x, bottom_prints[-1].y),
-            (wall_start.x, wall_start.y),
-            tolerance=None,
-        )
-        is None
+        contained_connector(region, (end.x, end.y), (wall_start.x, wall_start.y), tolerance=None)
+        is not None
     )
-
-    # So the fill run ends, and the wall is reached by paste-safe travel.
-    assert _bottom_weld_junctions(moves) == []
-    assert deposition_run_key(bottom_prints[-1]) != deposition_run_key(wall_start)
-    between = []
-    for move in moves:
-        if move is bottom_prints[-1]:
-            between = []
-            continue
-        if move is wall_start:
-            break
-        between.append(move.kind)
-    assert between == [MoveKind.TRAVEL_LIFT, MoveKind.TRAVEL_XY, MoveKind.TRAVEL_APPROACH]
-    assert all(run_prints for _key, run_prints in fill_runs)
-    assert result.emission.lint_report.ok
-
-    # And it says so, once, with a one-based layer and a one-based ordinal.
-    spoken = [
+    assert np.hypot(wall_start.x - end.x, wall_start.y - end.y) <= sliced.bead_width
+    assert len(_bottom_weld_junctions(moves)) == 1
+    assert deposition_run_key(end) == deposition_run_key(wall_start)
+    assert not [
         warning
         for warning in result.emission.stream.warnings
         if warning.code == FormWarningCode.BOTTOM_UNWELDED_WALL
     ]
-    assert len(spoken) == 1
-    assert spoken[0].message.startswith(
-        "layer 1: the bottom fill of island 1 of 1 cannot reach that island's own wall"
-    )
-    assert "lifts and travels there" in spoken[0].message
-    # Zero-based SOURCE outer provenance in the machine-readable location.
-    assert "island=0" in spoken[0].message
-    assert spoken[0].provenance.subpath_index == 0
-    assert spoken[0].page_id == "form"
+    assert result.emission.lint_report.ok
 
 
 def test_a_normal_annulus_keeps_its_bottom_topology_exactly() -> None:
@@ -712,12 +696,12 @@ def test_a_normal_annulus_keeps_its_bottom_topology_exactly() -> None:
     # Measured, and pinned so a re-pairing regression fails loudly rather than
     # quietly moving a protected golden: on this form the ring nearest the
     # nozzle on layer 1 is the HOLE, and the weld to it is a short step
-    # entirely inside the annulus.  Layers 0 and 2 weld to the outer.  (The
-    # byte-pinned golden recipe measures 12.5002 / 2.5012 / 12.5002 on the same
-    # topology; this fixture samples coarser, so its lengths differ slightly.)
+    # entirely inside the annulus.  Layers 0 and 2 weld to the outer.  Every
+    # fill ends beside the ring it welds to, so each step is about half a
+    # coil (the old order's outer welds ran 12.5 mm back out from the hole).
     assert [
         round(float(np.hypot(right.x - left.x, right.y - left.y)), 4) for _p, left, right in proved
-    ] == [12.5093, 2.5057, 12.5093]
+    ] == [2.5012, 2.5, 2.5012]
     assert [
         _nearest_ring_island(sliced, left.layer_index, right) for _p, left, right in proved
     ] == [0, 1, 0]

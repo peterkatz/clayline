@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 import clayline as cl
 from clayline.models import MoveKind, deposition_run_key
@@ -143,9 +144,15 @@ def test_bottom_plus_zblend_offsets_the_exact_same_wall_and_lints() -> None:
     )
 
     assert result.emission.lint_report.ok
-    assert result.report().totals.stroke_count == 3
+    # The base takes turns, so the whole print is one stroke (three, one per
+    # bottom layer, before Pete asked on 2026-11-11 that every base be laid so).
+    assert result.report().totals.stroke_count == 1
     assert result.report().totals.layer_count == len(sliced.layers)
-    assert result.report().totals.total_stack_height_mm == sliced.layers[-1].z
+    # The level turns under the base leave a few 1e-15 mm of rounding at the
+    # top; the file's Z is written to the thousandth.
+    assert result.report().totals.total_stack_height_mm == pytest.approx(
+        sliced.layers[-1].z, abs=1e-9
+    )
 
 
 def test_warning_analysis_is_adapted_into_public_result_with_spot_provenance() -> None:
@@ -245,9 +252,11 @@ def test_multiple_bottom_islands_are_ordered_layer_first() -> None:
 # and no established run topology moves to buy that proof.
 # --------------------------------------------------------------------------
 
-# Recaptured 2026-10-02 when the 30 mm top got its own layer (15 layers, not 14).
+# Recaptured 2026-10-02 when the 30 mm top got its own layer (15 layers, not 14),
+# and 2026-11-11 when every base came to be laid taking turns (Pete asked that
+# it be how a bottom is laid, not a switch beside the old order).
 LOBED_ZBLEND_BOTTOM3_BODY_SHA256 = (
-    "6e0fb60e8fc1cbe79356c822601652c02e0ad85ccfcdec29d64b9212373c79bc"
+    "523b3c1c6a054a5f99d45aa3d258ca7cddcae120a0c5e81955f338565f8753d9"
 )
 
 
@@ -300,7 +309,7 @@ def _prove_bottom_junctions(
 
 
 def test_a_zblend_bottom_proves_its_junction_without_splitting_the_coil() -> None:
-    """The lobed Z-blend bottom: one proof per layer, one unbroken tail."""
+    """The lobed Z-blend bottom: taking turns, one proved junction, one unbroken run."""
 
     sliced = cl.load_mesh(MESH / "lobed-tumbler.obj").slice(
         layer_height=2.0, sample_spacing=1.0, bead_width=5.0
@@ -322,23 +331,30 @@ def test_a_zblend_bottom_proves_its_junction_without_splitting_the_coil() -> Non
     moves = result.emission.stream.moves
 
     proved = _prove_bottom_junctions(sliced, pattern, result)
-    assert len(proved) == 3
-    assert [plan.region_ordinal for plan, _l, _r in proved] == [0, 0, 0]
-    assert [plan.outer_island_index for plan, _l, _r in proved] == [0, 0, 0]
-    assert [
-        round(float(np.hypot(right.x - left.x, right.y - left.y)), 4) for _p, left, right in proved
-    ] == [26.8170, 26.8170, 26.8170]
+    # The base takes turns and the whole print is one run, so only the top
+    # bottom layer's end meets the wall that carries on up: one junction, a
+    # short step beside that wall.  The old order laid one per layer, a bead
+    # of 27 to 28 mm from the middle back out across each layer's own floor.
+    assert len(proved) == 1
+    ((plan, left, right),) = proved
+    assert (plan.region_ordinal, plan.outer_island_index) == (0, 0)
+    assert plan.spiral.bottom_layer_index == 2
+    step = float(np.hypot(right.x - left.x, right.y - left.y))
+    assert round(step, 4) == 5.142
+    assert step <= 2.0 * sliced.bead_width
 
-    # The last bottom layer absorbs every remaining revolution, and it is still
+    # The last bottom layer still absorbs every remaining revolution in that
     # ONE run: only the fill-to-first-wall junction was proved, and no
     # wall-to-wall continuation was re-proved or split.
-    last_run = _runs(moves)[-1]
+    runs = _runs(moves)
+    assert len(runs) == 1
+    assert not [move for move in moves if move.kind is MoveKind.TRAVEL_LIFT]
     tail_layers = {
         move.layer_index
-        for move in last_run[1]
+        for move in runs[-1][1]
         if move.kind is MoveKind.PRINT and not (move.comment or "").startswith("bottom ")
     }
-    assert tail_layers >= set(range(2, len(sliced.layers)))
+    assert tail_layers == set(range(len(sliced.layers)))
     assert not [
         warning
         for warning in result.emission.stream.warnings
@@ -375,20 +391,24 @@ def test_a_single_ring_bottom_through_the_band_keeps_one_established_wall_tail()
     moves = result.emission.stream.moves
 
     proved = _prove_bottom_junctions(sliced, pattern, result)
-    assert len(proved) == 3
-    assert [
-        round(float(np.hypot(right.x - left.x, right.y - left.y)), 4) for _p, left, right in proved
-    ] == [18.5058, 18.5058, 18.5058]
+    # Taking turns, the base and the band are one run, so one junction is
+    # proved: the top bottom layer's end, a short step beside its wall.  The
+    # old order proved three, each 19.07 mm back out across its own floor.
+    assert len(proved) == 1
+    ((_plan, left, right),) = proved
+    step = float(np.hypot(right.x - left.x, right.y - left.y))
+    assert round(step, 4) == 2.5009
+    assert step <= 2.0 * sliced.bead_width
 
-    # Every layer of the band from the last bottom layer upward rides one run.
+    # Every layer of the band, the base's included, rides that one run.
     runs = _runs(moves)
-    assert len(runs) == 3
+    assert len(runs) == 1
     tail_layers = {
         move.layer_index
         for move in runs[-1][1]
         if move.kind is MoveKind.PRINT and not (move.comment or "").startswith("bottom ")
     }
-    assert tail_layers == set(range(2, len(sliced.layers)))
+    assert tail_layers == set(range(len(sliced.layers)))
     assert result.emission.lint_report.ok
 
 

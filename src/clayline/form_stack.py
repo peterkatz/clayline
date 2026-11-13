@@ -14,6 +14,10 @@ from functools import partial
 from itertools import pairwise
 
 import numpy as np
+import shapely
+from shapely.errors import ShapelyError
+from shapely.geometry import LineString, Polygon
+from shapely.geometry import Point as ShapelyPoint
 
 from clayline.models import (
     JobSettings,
@@ -41,7 +45,16 @@ from clayline.wave import (
     spiral_stand_ins,
 )
 from clayline.weave_analysis import analyze_weave_geometry, weave_rhythm
-from clayline.weave_bottom import BottomStroke, build_bottom_plan
+from clayline.weave_bottom import (
+    BottomStroke,
+    build_bottom_plan,
+    lay_in_and_back_out,
+    lay_toward,
+    one_way_spiral,
+    seat_inside_walls,
+    takes_turns,
+    wall_floor_region,
+)
 from clayline.weave_continuity import (
     DirectStepGates,
     FillStrip,
@@ -49,7 +62,11 @@ from clayline.weave_continuity import (
     material_extent,
 )
 from clayline.weave_entry import LayerEntry, choose_layer_entry
-from clayline.weave_fill import contained_connector
+from clayline.weave_fill import (
+    RETURNING_SPIRAL_LEAD_SPACINGS,
+    contained_connector,
+    reaching_connector,
+)
 from clayline.weave_interior import build_interior_strokes
 from clayline.weave_models import (
     FormWarning,
@@ -62,6 +79,7 @@ from clayline.weave_models import (
     SlicedForm,
     SliceLayer,
     WallBand,
+    WeaveSettings,
 )
 from clayline.weave_stack import (
     ClearanceRule,
@@ -82,6 +100,7 @@ from clayline.weave_zblend import (
     ZBlendPath,
     ZBlendPoint,
     build_zblend_path,
+    floor_line_xy,
     profile_silhouette_shapes,
 )
 
@@ -92,6 +111,46 @@ _FIRST_LAYER_FLOW_FACTOR = JobSettings().first_layer_flow_factor
 # work explicitly rather than letting a pathological layer run unwatched.  The
 # reference jobs need two; sixteen leaves room without hiding a runaway.
 _MAX_LINKED_RIB_PIECES = 16
+# How long a printed bead from a bottom's end to its own
+# wall may be, in coil widths, before the nozzle lifts for it instead.
+#
+# A spiral laid from the middle outward ends on the ring point nearest the
+# wall's start, so its step to the wall runs straight across the band the wall
+# itself weaves through: half a coil plus however far the pattern has swung
+# the wall in or out at its seam.  Two coil widths covers every pattern but
+# the deepest swings, and nothing is crossed on the way that the wall will not
+# cross too.  A spiral that went in and came back out is measured the same way
+# across that band, with the distance it stops behind the wall's start by
+# design allowed on top — see where the reach is used.
+#
+# Rows end wherever their last line does.  A bead from there to the seam runs
+# ALONG the rim, at layer height, over the ends of the rows just laid — the
+# very move the switch exists to remove — so rows get one coil width and no
+# more.
+_BOTTOM_OUTWARD_SPIRAL_REACH_COILS = 2.0
+_BOTTOM_OUTWARD_ROWS_REACH_COILS = 1.0
+# How far from level, as a share of the layer's own rise, the wall below may
+# have ended for a returning spiral to carry straight on from it without a
+# lift.  A wall that climbs as it goes round ends within one sample's rise of
+# the next layer's height; a wall laid flat ends a whole layer below it, and
+# that step up is left to the lifted travel it has always been.
+_BOTTOM_CARRY_ON_LEVEL_SHARE = 0.25
+# The grid a wall's bead and its floor's area are overlaid on to prove a step
+# between them, in millimetres: far finer than a bead is laid, and coarse
+# enough that two nearly touching outlines cannot stop a print.
+_STEP_GRID_MM = 1e-6
+# How far a turn under a base that takes turns may stand from its own layer's
+# height, in millimetres, and still count as level: rounding, nothing a
+# printer could lay.
+_LEVEL_TURN_SLACK_MM = 1e-6
+# How much floor, in square millimetres, cutting a spiral's innermost curl for
+# a step up may leave bare: about the square millimetre a spiral that goes in
+# and comes back out may leave at its seam.  More, and the step lifts instead.
+_CUT_BARE_MM2 = 1.0
+# The shared proof that a wall standing off its floor is reached by a straight
+# step, under its own name for the one rule built on it here, so that a test
+# refusing the sequencer's own questions counts each question once.
+_reaching_connector = reaching_connector
 
 
 class FormStackError(ValueError):
@@ -308,13 +367,37 @@ def build_form_move_stream(
             total += point.extra_pattern_scales[index] * (sample - 1.0)
         return total
 
-    def add_run(paths: Iterable[_RingPath], *, label: str, thread_id: str | None = None) -> None:
-        nonlocal current, run_number, highest_clay
+    # The id of the run laid last, for a run that carries straight on from it.
+    open_run_id: str | None = None
+
+    def add_run(
+        paths: Iterable[_RingPath],
+        *,
+        label: str,
+        thread_id: str | None = None,
+        carry_on: bool = False,
+    ) -> None:
+        """Lay ``paths`` as one run, each joined to the next by a printed bead.
+
+        ``carry_on`` lays them as more of the run before instead: no lift, no
+        travel, the same stroke, the nozzle printing straight from where it
+        stands to the first point given.  The caller has proved that step.
+        Only a returning bottom spiral asks for it; everywhere else a run is
+        its own stroke, reached by a paste-safe travel, exactly as it was.
+        """
+
+        nonlocal current, run_number, highest_clay, open_run_id
         resolved = tuple(paths)
         if not resolved:
             return
-        run_id = f"weave-{run_number:05d}-{label}"
-        run_number += 1
+        carried = carry_on and current is not None and open_run_id is not None
+        if carried:
+            assert open_run_id is not None
+            run_id = open_run_id
+        else:
+            run_id = f"weave-{run_number:05d}-{label}"
+            run_number += 1
+        open_run_id = run_id
         # One physical lump of clay, named once, so every move it contains can
         # be recognised as belonging to the same unbroken thread.  Only the
         # continuous-thread route passes one; every other route leaves the key
@@ -323,7 +406,7 @@ def build_form_move_stream(
             () if thread_id is None else (("clay_thread_id", thread_id),)
         )
         first = resolved[0].points[0]
-        if current is not None:
+        if current is not None and not carried:
             moves.extend(
                 _paste_safe_travel(
                     current,
@@ -469,6 +552,16 @@ def build_form_move_stream(
     # vessel and stops at its own layer count; an interior fills every layer it
     # was sliced for.
     fill_layers = len(sliced.layers) if interior_filled else bottom_layers
+    # The last point of the wall a bottom layer was last joined to, so the next
+    # bottom layer can tell that the nozzle still stands there.
+    bottom_wall_end: _PathPoint | None = None
+    # Each base layer's wall line, where the route knows it better than the
+    # wall path itself does: in Vase mode, the line its floor is filled inside
+    # (weave_zblend.floor_line_xy) — a turn standing on something flat as laid,
+    # lean and all, so the floor reaches under it; a turn standing on a climbing
+    # turn at its own layer's height.  Any layer absent here takes its wall
+    # path's first turn, which for a wall laid flat is that line already.
+    floor_lines: dict[int, np.ndarray] = {}
 
     def add_fill_then_wall(
         layer_index: int,
@@ -492,6 +585,7 @@ def build_form_move_stream(
         relative order, so the caller can print the rest with its own labels.
         """
 
+        nonlocal bottom_wall_end
         fills = tuple(fill_by_layer.get(layer_index, ()))
         walls = tuple(wall_paths)
         if not fills:
@@ -558,6 +652,17 @@ def build_form_move_stream(
                     "sequenced without the region its fill was proved inside"
                 )
             regions = _bottom_regions(bottom_fills)
+            # Each region's fill is laid to END beside its own wall's start
+            # (Pete asked, 2026-11-11, that every bottom be laid this way, with
+            # no switch back to the old order): here, with the wall in
+            # hand, a spiral is seated on the wall's own start — going in and
+            # coming back out, so that it begins there too, or from the middle
+            # outward where its floor refuses that — and rows are run whichever
+            # way ends nearer it.  A spiral that begins beside a wall which has
+            # just climbed to its height carries straight on from that wall as
+            # the same run.  Any other first point is reached by the ordinary
+            # lifted travel between runs, made before any of this layer's clay
+            # is down.
             lead_region = None
             if walls_are_one_run and walls:
                 lead_region = next(
@@ -576,6 +681,133 @@ def build_form_move_stream(
                     )
             consumed: set[int] = set()
             segment_number = 0
+
+            def judge_steps(
+                plan: BottomStroke,
+                group: tuple[_RingPath, ...],
+                region_fills: tuple[_RingPath, ...],
+                *,
+                returns: bool,
+                leads: bool,
+                inside_wall: bool = False,
+            ) -> tuple[bool, bool, np.ndarray | None]:
+                """Rule on the two steps between one region's fill and its wall.
+
+                The answer is whether the fill carries straight on from the
+                wall below as the same run, whether its step out is too long to
+                be asked for at all, and the proved step out, or ``None`` for a
+                lift.  ``returns`` is the planner's own word that the fill is a
+                spiral that goes in and comes back out; ``leads`` that it is
+                the first thing laid on this layer.
+                """
+
+                # A spiral that goes in and comes back out begins beside the
+                # wall below it — and on a wall that climbs as it goes round,
+                # that wall has just ended at this layer's own height.  Then
+                # the nozzle need not lift at all: the step from the wall's end
+                # to the spiral's first point is a short, level bead over the
+                # finished layer, before any of this layer's clay is down, and
+                # the spiral carries on as the same run.  It is a straight step
+                # across the band the wall weaves through, like the step out of
+                # a one-way spiral, and is held to the same two coil widths.
+                # Anything else — a spiral that begins in the middle, a wall
+                # that ended a layer lower, something laid in between — starts
+                # its own run and is reached by the lifted travel it always
+                # was.
+                spiral_reach = _BOTTOM_OUTWARD_SPIRAL_REACH_COILS * sliced.bead_width
+                carries_on = (
+                    returns
+                    and bool(group)
+                    and leads
+                    and layer_index > 0
+                    and current is not None
+                    and current is bottom_wall_end
+                    and abs(region_fills[0].points[0].z - current.z)
+                    <= _BOTTOM_CARRY_ON_LEVEL_SHARE
+                    * (sliced.layers[layer_index].z - sliced.layers[layer_index - 1].z)
+                    and math.hypot(
+                        region_fills[0].points[0].x - current.x,
+                        region_fills[0].points[0].y - current.y,
+                    )
+                    <= spiral_reach
+                    and reaching_connector(
+                        plan.region,
+                        (region_fills[0].points[0].x, region_fills[0].points[0].y),
+                        (current.x, current.y),
+                        tolerance=plan.tolerance,
+                    )
+                    is not None
+                )
+                # A bead too long to be a weld would be printed
+                # through this layer's own fresh fill, or across the open step
+                # out to a wall swung far from it, so the nozzle lifts for it
+                # instead.  A returning spiral ends on its outermost ring two
+                # lines behind the wall's start by design, so that its first
+                # bead covers the opening left in that ring; that sideways run
+                # is no part of how far the wall has swung, and is allowed on
+                # top of the reach.
+                kept_apart = False
+                if group:
+                    sideways = (
+                        RETURNING_SPIRAL_LEAD_SPACINGS
+                        * sliced.bead_width
+                        * (1.0 - pattern.settings.overlap_fraction)
+                    )
+                    reach = (
+                        math.hypot(spiral_reach, sideways)
+                        if returns
+                        else spiral_reach
+                        if plan.spiral.fill_kind == "spiral"
+                        else _BOTTOM_OUTWARD_ROWS_REACH_COILS * sliced.bead_width
+                    )
+                    kept_apart = (
+                        math.hypot(
+                            group[0].points[0].x - region_fills[-1].points[-1].x,
+                            group[0].points[0].y - region_fills[-1].points[-1].y,
+                        )
+                        > reach
+                    )
+                # The fill already ends
+                # beside the wall's start, and a pattern can have swung that
+                # start out past the outline, so the proof lets the bead leave
+                # the region exactly as far as the wall it joins already has
+                # and no farther.  A floor filled inside its own wall has that
+                # wall for its edge, so its wall starts on that edge — or, where
+                # the weave loops at a sharp hollow, just past it — and the step
+                # to it may cut over the wall's own bead where the weave dents
+                # the edge between them (``_inside_its_wall``).
+                route = (
+                    None
+                    if not group or kept_apart
+                    else _inside_its_wall(
+                        plan.region,
+                        (region_fills[-1].points[-1].x, region_fills[-1].points[-1].y),
+                        (group[0].points[0].x, group[0].points[0].y),
+                        bead_width=sliced.bead_width,
+                        tolerance=plan.tolerance,
+                    )
+                    if inside_wall
+                    else reaching_connector(
+                        plan.region,
+                        (region_fills[-1].points[-1].x, region_fills[-1].points[-1].y),
+                        (group[0].points[0].x, group[0].points[0].y),
+                        tolerance=plan.tolerance,
+                    )
+                )
+                # A step out is a bead laid at layer height after everything
+                # else on the layer, so the one thing it may never do is run
+                # through the spiral it has just left.  The spiral's own
+                # builder proves that for the wall start it was given; this is
+                # the same question asked of the step actually about to be
+                # laid.
+                if (
+                    route is not None
+                    and plan.spiral.fill_kind == "spiral"
+                    and _crosses_its_own_fill(region_fills[-1], route)
+                ):
+                    route = None
+                return carries_on, kept_apart, route
+
             for position, (plan, region_fills) in enumerate(regions):
                 if walls_are_one_run:
                     # Never filtered and never reordered: the established coil
@@ -597,16 +829,91 @@ def build_form_move_stream(
                     group = () if index is None else (walls[index],)
                     if index is not None:
                         consumed.add(index)
-                route = (
-                    None
-                    if not group
-                    else contained_connector(
-                        plan.region,
-                        (region_fills[-1].points[-1].x, region_fills[-1].points[-1].y),
-                        (group[0].points[0].x, group[0].points[0].y),
-                        tolerance=plan.tolerance,
-                    )
+                region_strokes = tuple(
+                    item
+                    for item in bottom_fills
+                    if item.plan.outer_island_index == plan.outer_island_index
                 )
+                # Every floor is filled inside its own wall as laid, not to the
+                # outline the plan had before any wall was known: a weave
+                # swings the wall in and out across that outline, and a floor
+                # filled to it would run out past the wall where it swings in
+                # and leave a gap where it swings out.  A wall with no weave
+                # that stands on the outline keeps the plan's own floor.
+                seated_inside = False
+                if group:
+                    if walls_are_one_run:
+                        line = floor_lines.get(layer_index)
+                        wall_lines = {
+                            group[0].ring.provenance.island_index: (
+                                _first_turn(group[0]) if line is None else line
+                            )
+                        }
+                    else:
+                        wall_lines = {
+                            path.ring.provenance.island_index: _first_turn(path)
+                            for path in walls
+                            if path.ring.provenance.island_index in plan.wall_island_indices
+                        }
+                    seated, kept_outline = _seated_fills(
+                        sliced, region_strokes, wall_lines, settings=pattern.settings
+                    )
+                    if kept_outline:
+                        bottom_warnings.append(_bottom_outline_warning(layer_index, plan))
+                    if seated is not region_strokes:
+                        region_strokes = seated
+                        plan = seated[0].plan
+                        region_fills = tuple(item.path for item in seated)
+                        seated_inside = True
+                # The layer may be laid twice over: first as a spiral
+                # that goes in and comes back out, and, where that one's step
+                # out to the wall turns out not to be printable, again as the
+                # spiral that closes every ring.  A returning spiral leaves its
+                # outermost ring open where it meets the wall, and its step out
+                # is part of what covers that opening; so one whose step is too
+                # long, refused, or would cross its own floor is not laid with
+                # a lift in the step's place.  It is not laid at all.
+                returns = False
+                if group:
+                    wall_start = (group[0].points[0].x, group[0].points[0].y)
+                    wall_onward = _a_little_farther_along(group[0], 2.0 * sliced.bead_width)
+                    region_fills, returns = _bottom_fills_toward(
+                        sliced,
+                        region_strokes,
+                        overlap_fraction=pattern.settings.overlap_fraction,
+                        toward=wall_start,
+                        onward=wall_onward,
+                        wall=(
+                            floor_lines.get(layer_index, _first_turn(group[0]))
+                            if walls_are_one_run
+                            else _first_turn(group[0])
+                        ),
+                    )
+                carries_on, kept_apart, route = judge_steps(
+                    plan,
+                    group,
+                    region_fills,
+                    returns=returns,
+                    leads=position == 0,
+                    inside_wall=seated_inside,
+                )
+                if returns and route is None:
+                    region_fills, returns = _bottom_fills_toward(
+                        sliced,
+                        region_strokes,
+                        overlap_fraction=pattern.settings.overlap_fraction,
+                        toward=wall_start,
+                        onward=wall_onward,
+                        returning=False,
+                    )
+                    carries_on, kept_apart, route = judge_steps(
+                        plan,
+                        group,
+                        region_fills,
+                        returns=returns,
+                        leads=position == 0,
+                        inside_wall=seated_inside,
+                    )
                 # The route is measured, then discarded: its two points ARE the
                 # two the run already joins, so a proved junction injects
                 # nothing and emits exactly the moves it always did.
@@ -616,19 +923,33 @@ def build_form_move_stream(
                     add_run(
                         (fill,),
                         label=f"bottom-{layer_index:03d}-segment-{segment_number:03d}",
+                        carry_on=carries_on,
                     )
+                    carries_on = False
                     segment_number += 1
                 run_label = (
                     label if len(regions) == 1 else f"{label}-island-{plan.outer_island_index:03d}"
                 )
                 if welded:
-                    add_run((region_fills[-1], *group), label=run_label)
+                    add_run((region_fills[-1], *group), label=run_label, carry_on=carries_on)
+                    bottom_wall_end = group[-1].points[-1]
                 elif group:
                     # Refused: the fill run ended above, and ``add_run`` lays the
                     # paste-safe lift, traverse and approach it already lays
                     # between runs.  No new travel code, and no bead over a void.
                     add_run(group, label=run_label)
-                    bottom_warnings.append(_bottom_unwelded_wall_warning(layer_index, plan))
+                    bottom_wall_end = group[-1].points[-1]
+                    if not kept_apart:
+                        bottom_warnings.append(_bottom_unwelded_wall_warning(layer_index, plan))
+                    elif plan.spiral.fill_kind == "spiral":
+                        # Rows that stop far from the seam lift by design.  A
+                        # spiral is meant to END beside its wall, so one that
+                        # could not — a wall swung far out at its seam, or a
+                        # spiral that could not be seated there — is not the
+                        # plan and says so.
+                        bottom_warnings.append(
+                            _bottom_unwelded_wall_warning(layer_index, plan, too_far=True)
+                        )
             return tuple(path for position, path in enumerate(walls) if position not in consumed)
         # Per-island weld: fill island 0, weld wall 0, travel to island 1, fill,
         # weld wall 1.  That is one run per island rather than one per stroke,
@@ -708,6 +1029,219 @@ def build_form_move_stream(
         # own run, so it never hands one back.
         return ()
 
+    def base_takes_turns(walls_by_layer: Sequence[tuple[_RingPath, ...]]) -> bool:
+        """Whether this base is laid taking turns, with its walls in hand.
+
+        ``takes_turns`` reads the slice and settings; this also asks that each
+        base layer's plan is the one spiral that implies and that every layer
+        has its wall, so nothing below can be asked to lay what is not there.
+        """
+
+        count = len(walls_by_layer)
+        if count != bottom_layers or count == 0 or interior_filled:
+            return False
+        if not takes_turns(
+            sliced,
+            bottom_layers=bottom_layers,
+            bottom_alternate=pattern.settings.bottom_alternate,
+        ):
+            return False
+        for layer_index, walls in enumerate(walls_by_layer):
+            items = bottom_fills_by_layer.get(layer_index, ())
+            if (
+                not walls
+                or len(items) != 1
+                or items[0].plan.spiral.fill_kind != "spiral"
+                or walls[0].ring.provenance.island_index != items[0].plan.outer_island_index
+            ):
+                return False
+        # A floor laid after its wall turn must not be laid below any of that
+        # turn, or the clay would go down: every turn under the top base layer
+        # stands at its own layer's height, which Profile blend's relief does
+        # not, unless the base sits in its flat foot.
+        return not _base_turns_lifted(sliced, walls_by_layer)
+
+    def add_base_in_turns(walls_by_layer: Sequence[tuple[_RingPath, ...]], *, label: str) -> None:
+        """Lay the whole base taking turns: rim to centre, then centre to rim.
+
+        The top base layer always runs centre to rim, so
+        it ends beside the start of the wall that carries on up the pot; below
+        it the layers alternate.  A layer laid rim to centre puts its wall turn
+        down first and starts its floor beside where that turn ended.  A layer
+        laid centre to rim starts in the middle, where the layer below ended,
+        and finishes beside its own wall's start, and that wall follows.  So
+        each layer starts where the one before it ended, and the only travel
+        is the one to the start of the print.
+
+        Every floor is a spiral of closed rings filled inside its own wall as
+        laid.  Every step between two pieces is printed when it is short and
+        stays in clay — the floor's own area, or the wall's own bead — and the
+        nozzle lifts for it otherwise, and says so.  A step up between two
+        walls is printed as a wall's layer change always is.
+
+        The caller has asked ``base_takes_turns``; in Vase mode the turns under
+        the top base layer are level, so no floor is ever laid beside a wall
+        taller than itself.
+        """
+
+        nonlocal bottom_wall_end
+        count = len(walls_by_layer)
+        reach = _BOTTOM_OUTWARD_SPIRAL_REACH_COILS * sliced.bead_width
+        floors: list[_RingPath] = []
+        plans: list[BottomStroke] = []
+        areas: list[Polygon] = []
+        lines: list[np.ndarray] = []
+        inward = [(count - 1 - layer_index) % 2 == 1 for layer_index in range(count)]
+        for layer_index, walls in enumerate(walls_by_layer):
+            (item,) = bottom_fills_by_layer[layer_index]
+            plan = item.plan
+            line = floor_lines.get(layer_index)
+            if line is None:
+                line = _first_turn(walls[0])
+            region, kept_outline = wall_floor_region(
+                sliced, plan, walls={plan.outer_island_index: line}
+            )
+            seat = walls[-1].points[-1] if inward[layer_index] else walls[0].points[0]
+            points, area = _one_way_spiral(
+                sliced,
+                plan,
+                region,
+                seat=(seat.x, seat.y),
+                overlap_fraction=pattern.settings.overlap_fraction,
+            )
+            if kept_outline or (region is not None and area is plan.region):
+                bottom_warnings.append(_bottom_outline_warning(layer_index, plan))
+            if not inward[layer_index]:
+                points = points[::-1]
+            template = item.path.points[0]
+            floors.append(
+                _RingPath(
+                    item.path.ring,
+                    tuple(replace(template, x=float(x), y=float(y)) for x, y in points),
+                )
+            )
+            plans.append(plan)
+            areas.append(area)
+            lines.append(line)
+
+        # The step up from one floor's middle to the next is printed rising, and
+        # the floor it climbs into is laid after it.  Where the straight step
+        # would cross either floor's line on its way — the end of the lower
+        # spiral curling past it, or the start of the upper one curling back
+        # across it — each floor is cut where the step first meets it instead,
+        # so the step joins the two lines and runs over neither.
+        # Never more than one line spacing of either floor is cut: a step that
+        # would cross more of it than that lifts instead.
+        # A step that is lifted after all crosses nothing, so its floors keep
+        # every bit of their spirals.
+        spacing = sliced.bead_width * (1.0 - pattern.settings.overlap_fraction)
+        centre_steps: dict[int, bool] = {}
+        for layer_index in range(count - 1):
+            if inward[layer_index] and not inward[layer_index + 1]:
+                lower, upper, met = _meet_without_crossing(
+                    floors[layer_index].points,
+                    floors[layer_index + 1].points,
+                    most=spacing,
+                )
+                step_route = ((lower[-1].x, lower[-1].y), (upper[0].x, upper[0].y))
+                printed = (
+                    met
+                    and _centre_step_up(
+                        step_route,
+                        (areas[layer_index], areas[layer_index + 1]),
+                        tolerances=(
+                            plans[layer_index].tolerance,
+                            plans[layer_index + 1].tolerance,
+                        ),
+                        reach=reach,
+                    )
+                    and _cut_leaves_no_bare_floor(
+                        (
+                            (floors[layer_index].points, lower, areas[layer_index]),
+                            (floors[layer_index + 1].points, upper, areas[layer_index + 1]),
+                        ),
+                        step_route,
+                        cover=sliced.bead_width / 2.0,
+                    )
+                )
+                if printed:
+                    floors[layer_index] = _RingPath(floors[layer_index].ring, lower)
+                    floors[layer_index + 1] = _RingPath(floors[layer_index + 1].ring, upper)
+                centre_steps[layer_index + 1] = printed
+
+        def step(start: _PathPoint, end: _PathPoint) -> tuple[tuple[float, float], ...]:
+            return ((start.x, start.y), (end.x, end.y))
+
+        # Each piece in print order, and whether the step into it is printed.
+        calls: list[tuple[tuple[_RingPath, ...], bool]] = []
+        previous: tuple[str, int] | None = None
+        for layer_index in range(count):
+            order = ("wall", "floor") if inward[layer_index] else ("floor", "wall")
+            for kind in order:
+                paths = walls_by_layer[layer_index] if kind == "wall" else (floors[layer_index],)
+                joined = False
+                warning: FormWarning | None = None
+                if previous is not None:
+                    before_kind, before_layer = previous
+                    if before_kind == "wall" and kind == "wall":
+                        joined = True
+                    elif before_kind == "wall":
+                        # The wall turn just laid, to the rim of its own floor.
+                        joined = _wall_step_in(
+                            step(walls_by_layer[before_layer][-1].points[-1], paths[0].points[0]),
+                            areas[layer_index],
+                            lines[layer_index],
+                            bead_width=sliced.bead_width,
+                            tolerance=plans[layer_index].tolerance,
+                            reach=reach,
+                        )
+                        if not joined:
+                            warning = _bottom_base_lift_warning(
+                                layer_index, plans[layer_index], "wall_to_floor"
+                            )
+                    elif kind == "floor":
+                        # The middle of one floor, up to the middle of the next,
+                        # decided with the cut above.
+                        joined = centre_steps.get(layer_index, False)
+                        if not joined:
+                            warning = _bottom_base_lift_warning(
+                                layer_index, plans[layer_index], "floor_to_floor"
+                            )
+                    else:
+                        # The rim of a floor, out to its own wall's start: the
+                        # step out every spiral laid outward has, proved the
+                        # same way, against the floor it leaves.
+                        route = step(floors[before_layer].points[-1], paths[0].points[0])
+                        joined = _floor_step_out(
+                            route,
+                            floors[before_layer],
+                            areas[before_layer],
+                            bead_width=sliced.bead_width,
+                            tolerance=plans[before_layer].tolerance,
+                            reach=reach,
+                            # Half a coil past the outline is not the wall's
+                            # bead where the floor kept the outline.
+                            edge_is_wall=areas[before_layer] is not plans[before_layer].region,
+                        )
+                        if not joined:
+                            warning = _bottom_unwelded_wall_warning(
+                                before_layer, plans[before_layer]
+                            )
+                if warning is not None:
+                    bottom_warnings.append(warning)
+                if joined and kind == "wall" and previous is not None and previous[0] == "wall":
+                    calls[-1] = (calls[-1][0] + paths, calls[-1][1])
+                else:
+                    calls.append((paths, joined))
+                previous = (kind, layer_index)
+        for position, (paths, joined) in enumerate(calls):
+            add_run(
+                paths,
+                label=label if position == 0 else f"{label}-segment-{position:03d}",
+                carry_on=joined,
+            )
+        bottom_wall_end = walls_by_layer[-1][-1].points[-1]
+
     if pattern.settings.z_blend:
         blended = zblend_path if zblend_path is not None else build_zblend_path(sliced, pattern)
         top_follow_active = blended.top_follow is not None
@@ -733,7 +1267,11 @@ def build_form_move_stream(
             for layer_index in range(bottom_layers):
                 revolution = blended.revolutions[layer_index]
                 if layer_index < bottom_layers - 1:
-                    geometry = revolution.points[:-1]
+                    # A level base turn ends a layer below the turn above it
+                    # and shares no point with it, so it keeps its last one.
+                    geometry = (
+                        revolution.points if revolution.is_level_base else revolution.points[:-1]
+                    )
                 else:
                     geometry = revolution.points + tuple(
                         point
@@ -819,6 +1357,7 @@ def build_form_move_stream(
                 layer = (
                     point.target_layer_index
                     if point.revolution_u == 1.0
+                    and not blended.revolutions[revolution_index].is_level_base
                     else point.source_layer_index
                 )
                 path_points.append(
@@ -876,7 +1415,33 @@ def build_form_move_stream(
         # refuses to combine with a filled interior, so this branch only ever
         # sees a bottom and its revolution groups always start at layer 0.
         consumed = bottom_layers
+        # Each base floor is filled inside the line of the wall turn laid beside
+        # it, reaching under a turn that stands on something flat.
         for layer_index in range(consumed):
+            floor_lines[layer_index] = floor_line_xy(sliced, blended, layer_index)
+        in_turns = [(revolution_paths[layer_index],) for layer_index in range(consumed)]
+        if consumed and blended.level_base_count == consumed - 1 and base_takes_turns(in_turns):
+            add_base_in_turns(in_turns, label="zblend-wall-base-in-turns")
+            consumed_by_layers = 0
+        else:
+            consumed_by_layers = consumed
+            # A base that would take turns but for a split top Z-blend follows:
+            # the turns under it must stay climbing for the rim's own climb
+            # rule, so it is laid one layer at a time, and says why.
+            if consumed >= 2 and takes_turns(
+                sliced,
+                bottom_layers=bottom_layers,
+                bottom_alternate=pattern.settings.bottom_alternate,
+            ):
+                if blended.top_follow is not None:
+                    bottom_warnings.append(_bottom_layer_by_layer_warning("split_top"))
+                elif any(
+                    point.profile_z_offset != 0.0
+                    for revolution in blended.revolutions[: consumed - 1]
+                    for point in revolution.points
+                ):
+                    bottom_warnings.append(_bottom_layer_by_layer_warning("relief"))
+        for layer_index in range(consumed_by_layers):
             walls = (
                 revolution_paths[layer_index:]
                 if layer_index == consumed - 1
@@ -1209,8 +1774,6 @@ def build_form_move_stream(
                 return None
             measured: float | None = None
             if proof is not None:
-                from shapely.geometry import LineString
-
                 measured = float(
                     LineString((start, end))
                     .difference(proof.polygon.buffer(proof.tolerance or 0.0))
@@ -2145,6 +2708,26 @@ def build_form_move_stream(
                 # interior fills every band, so a band that starts higher would have
                 # looked up the wrong layer's fill and printed it at the wrong Z.
                 consumed = min(max(0, fill_layers - band.span.first_layer), len(ring_paths))
+                in_turns = [
+                    (ring_paths[offset],) if offset < consumed - 1 else tuple(ring_paths[offset:])
+                    for offset in range(consumed)
+                ]
+                if consumed and band.span.first_layer == 0 and base_takes_turns(in_turns):
+                    add_base_in_turns(in_turns, label=f"band-{band.index:03d}-base-in-turns")
+                    processed_fill_layers.update(range(consumed))
+                    continue
+                if (
+                    consumed >= 2
+                    and band.span.first_layer == 0
+                    and consumed == bottom_layers
+                    and takes_turns(
+                        sliced,
+                        bottom_layers=bottom_layers,
+                        bottom_alternate=pattern.settings.bottom_alternate,
+                    )
+                    and _base_turns_lifted(sliced, in_turns)
+                ):
+                    bottom_warnings.append(_bottom_layer_by_layer_warning("relief"))
                 for offset in range(consumed):
                     layer_index = band.span.first_layer + offset
                     walls = ring_paths[offset:] if offset == consumed - 1 else (ring_paths[offset],)
@@ -2791,6 +3374,473 @@ def _bottom_regions(
     return tuple((plan, tuple(paths)) for plan, paths in groups)
 
 
+def _bottom_fills_toward(
+    sliced: SlicedForm,
+    fills: tuple[_BottomFill, ...],
+    *,
+    overlap_fraction: float,
+    toward: tuple[float, float],
+    onward: tuple[float, float] | None = None,
+    wall: np.ndarray | None = None,
+    returning: bool = True,
+) -> tuple[tuple[_RingPath, ...], bool]:
+    """One region's bottom paths on one layer, laid to end beside ``toward``.
+
+    ``fills`` are every stroke the plan gave that region, in its order.  Every
+    point of a bottom stroke carries the same Z, layer, flow and label, and
+    every stroke of a region seeds the same wall ring, so the first point of
+    the first path is the template for all of them and only X and Y are new.
+    ``onward`` is a point a little farther along the wall being joined.
+
+    The second answer is whether what comes back is ONE spiral that goes in and
+    comes back out, and so begins beside ``toward`` as well as ending there.
+    ``wall`` is the wall being joined, as (x, y) points from its start, which
+    such a spiral is measured against; ``returning=False`` asks for the spiral
+    that closes every ring whatever the floor would allow.
+    """
+
+    template = fills[0].path.points[0]
+    ring = fills[0].path.ring
+    strokes = tuple(item.plan for item in fills)
+    there_and_back = (
+        lay_in_and_back_out(
+            sliced,
+            strokes[0],
+            overlap_fraction=overlap_fraction,
+            toward=toward,
+            onward=onward,
+            wall=wall,
+        )
+        if returning and len(strokes) == 1
+        else None
+    )
+    laid = (
+        (there_and_back,)
+        if there_and_back is not None
+        else lay_toward(
+            sliced,
+            strokes,
+            overlap_fraction=overlap_fraction,
+            toward=toward,
+            onward=onward,
+            returning=False,
+        )
+    )
+    return (
+        tuple(
+            _RingPath(
+                ring,
+                tuple(replace(template, x=float(point[0]), y=float(point[1])) for point in points),
+            )
+            for points in laid
+        ),
+        there_and_back is not None,
+    )
+
+
+def _seated_fills(
+    sliced: SlicedForm,
+    items: tuple[_BottomFill, ...],
+    walls: dict[int, np.ndarray],
+    *,
+    settings: WeaveSettings,
+) -> tuple[tuple[_BottomFill, ...], bool]:
+    """One region's bottom paths on one layer, filled inside its own walls as laid.
+
+    ``walls`` maps each of the region's wall rings to its line at the floor's
+    height.  The second answer is whether the walls made no clean area, so the
+    plan's own paths to the outline come back for the caller to say so.  When
+    nothing changes the very ``items`` given come back, so a caller can tell.
+    """
+
+    plans = tuple(item.plan for item in items)
+    strokes, kept_outline = seat_inside_walls(
+        sliced,
+        plans,
+        walls=walls,
+        overlap_fraction=settings.overlap_fraction,
+        bottom_alternate=settings.bottom_alternate,
+    )
+    if len(strokes) == len(plans) and all(
+        seated is planned for seated, planned in zip(strokes, plans, strict=True)
+    ):
+        return items, kept_outline
+    template = items[0].path.points[0]
+    ring = items[0].path.ring
+    return (
+        tuple(
+            _BottomFill(
+                path=_RingPath(
+                    ring,
+                    tuple(
+                        replace(template, x=float(point[0]), y=float(point[1]))
+                        for point in stroke.spiral.points
+                    ),
+                ),
+                plan=stroke,
+            )
+            for stroke in strokes
+        ),
+        kept_outline,
+    )
+
+
+def _one_way_spiral(
+    sliced: SlicedForm,
+    plan: BottomStroke,
+    region: Polygon | None,
+    *,
+    seat: tuple[float, float],
+    overlap_fraction: float,
+) -> tuple[np.ndarray, Polygon]:
+    """A floor's spiral of closed rings from its rim inward, starting beside ``seat``.
+
+    :func:`clayline.weave_bottom.one_way_spiral`, which the drag preview asks
+    too, so the floor dragged is the floor that settles.
+    """
+
+    return one_way_spiral(sliced, plan, region, seat=seat, overlap_fraction=overlap_fraction)
+
+
+def _meet_without_crossing(
+    lower: tuple[_PathPoint, ...],
+    upper: tuple[_PathPoint, ...],
+    *,
+    most: float,
+) -> tuple[tuple[_PathPoint, ...], tuple[_PathPoint, ...], bool]:
+    """Two floors joined by a straight step up, cut so the step crosses neither line.
+
+    ``lower`` ends where the step leaves it and ``upper`` begins where the step
+    arrives.  Where the step would cross the lower line before leaving it, the
+    lower floor ends at the last such crossing instead; where it would cross
+    the upper line before arriving, the upper floor begins at the first.  What
+    is cut away is the curl of a spiral's innermost ring, never more than
+    ``most`` millimetres of either line; whether that leaves any floor bare is
+    the caller's to measure (:func:`_cut_leaves_no_bare_floor`).
+
+    The third answer is whether the step now crosses neither line.  ``False``
+    hands back both floors as they were, for the step to be lifted instead:
+    more would have to be cut than ``most``, or the geometry cannot be measured.
+    """
+
+    original_lower, original_upper = lower, upper
+    for _attempt in range(4):
+        if len(lower) < 2 or len(upper) < 2:
+            return original_lower, original_upper, False
+        start = (lower[-1].x, lower[-1].y)
+        end = (upper[0].x, upper[0].y)
+        if math.hypot(end[0] - start[0], end[1] - start[1]) <= 1e-9:
+            break
+        try:
+            step = LineString((start, end))
+            cut_lower = _cut_at_crossing(lower, step, keep="before", away_from=start)
+            cut_upper = (
+                None
+                if cut_lower is not None
+                else _cut_at_crossing(upper, step, keep="after", away_from=end)
+            )
+        except ShapelyError:
+            return original_lower, original_upper, False
+        if cut_lower is not None:
+            lower = cut_lower
+        elif cut_upper is not None:
+            upper = cut_upper
+        else:
+            break
+    else:
+        return original_lower, original_upper, False
+    if (
+        _path_length(original_lower) - _path_length(lower) > most
+        or _path_length(original_upper) - _path_length(upper) > most
+    ):
+        return original_lower, original_upper, False
+    return lower, upper, True
+
+
+def _cut_leaves_no_bare_floor(
+    cuts: tuple[tuple[tuple[_PathPoint, ...], tuple[_PathPoint, ...], Polygon], ...],
+    step: tuple[tuple[float, float], ...],
+    *,
+    cover: float,
+) -> bool:
+    """Whether cutting a spiral's innermost curl for a step leaves no floor bare.
+
+    ``cuts`` is each floor as laid before and after the cut, with its area;
+    ``cover`` is half a coil.  The floor the full spiral covered, less what the
+    cut spiral and the step itself cover, must come to no more than about a
+    square millimetre, the floor a spiral that goes in and back out may leave.
+    A cut that cannot be measured leaves floor bare.
+    """
+
+    try:
+        (start, end) = step
+        laid = (
+            LineString(step).buffer(cover, quad_segs=8)
+            if math.hypot(end[0] - start[0], end[1] - start[1]) > 1e-9
+            else None
+        )
+        for original, cut, area in cuts:
+            if cut is original:
+                continue
+            before = shapely.intersection(
+                LineString([(point.x, point.y) for point in original]).buffer(cover, quad_segs=8),
+                area,
+                grid_size=_STEP_GRID_MM,
+            )
+            after = LineString([(point.x, point.y) for point in cut]).buffer(cover, quad_segs=8)
+            if laid is not None:
+                after = shapely.union(after, laid, grid_size=_STEP_GRID_MM)
+            if shapely.difference(before, after, grid_size=_STEP_GRID_MM).area > _CUT_BARE_MM2:
+                return False
+    except ShapelyError:
+        return False
+    return True
+
+
+def _path_length(points: tuple[_PathPoint, ...]) -> float:
+    return float(
+        sum(
+            math.hypot(after.x - before.x, after.y - before.y) for before, after in pairwise(points)
+        )
+    )
+
+
+def _cut_at_crossing(
+    path: tuple[_PathPoint, ...],
+    step: LineString,
+    *,
+    keep: str,
+    away_from: tuple[float, float],
+) -> tuple[_PathPoint, ...] | None:
+    """``path`` cut where ``step`` crosses it, or ``None`` where it does not.
+
+    ``keep="before"`` keeps the path up to the crossing nearest the step's far
+    end (the step leaves the path's end); ``keep="after"`` keeps it from the
+    crossing nearest the step's start (the step arrives at the path's start).
+    Meeting the path at ``away_from``, its own joining point, is no crossing.
+    """
+
+    line = LineString([(point.x, point.y) for point in path])
+    met = step.intersection(line)
+    if met.is_empty:
+        return None
+    candidates: list[tuple[float, float]] = []
+    for part in getattr(met, "geoms", (met,)):
+        for x, y in part.coords:
+            if math.hypot(x - away_from[0], y - away_from[1]) > 1e-6:
+                candidates.append((float(x), float(y)))
+    if not candidates:
+        return None
+    along_step = [step.project(ShapelyPoint(x, y)) for x, y in candidates]
+    chosen = candidates[
+        int(np.argmax(along_step)) if keep == "before" else int(np.argmin(along_step))
+    ]
+    xy = np.asarray([(point.x, point.y) for point in path], dtype=np.float64)
+    arcs = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T))))
+    at = line.project(ShapelyPoint(*chosen))
+    if keep == "before":
+        kept = [point for point, arc in zip(path, arcs, strict=True) if arc < at - 1e-9]
+        if not kept:
+            return None
+        return (*kept, replace(kept[-1], x=chosen[0], y=chosen[1]))
+    kept = [point for point, arc in zip(path, arcs, strict=True) if arc > at + 1e-9]
+    if not kept:
+        return None
+    return (replace(kept[0], x=chosen[0], y=chosen[1]), *kept)
+
+
+def _wall_step_in(
+    route: tuple[tuple[float, float], ...],
+    area: Polygon,
+    wall: np.ndarray,
+    *,
+    bead_width: float,
+    tolerance: float | None,
+    reach: float,
+) -> bool:
+    """Whether the step from a wall turn's end to the rim of its own floor is printed.
+
+    No longer than ``reach``, and in clay: the floor's own area, or the wall
+    turn's own bead, which is already down.  The step leaves from the middle of
+    the wall's line, and on a turn that does not quite close it runs across the
+    wall's own first bead to reach the floor.  A step that cannot be measured
+    is not printed.
+    """
+
+    (start, end) = route
+    length = math.hypot(end[0] - start[0], end[1] - start[1])
+    if length > reach:
+        return False
+    if length <= 1e-9:
+        return True
+    try:
+        if contained_connector(area, start, end, tolerance=tolerance) is not None:
+            return True
+        clay = shapely.union(
+            area, LineString(wall).buffer(bead_width / 2.0), grid_size=_STEP_GRID_MM
+        )
+        line = LineString(route)
+        return bool(clay.covers(line) if tolerance is None else clay.buffer(tolerance).covers(line))
+    except ShapelyError:
+        return False
+
+
+def _centre_step_up(
+    route: tuple[tuple[float, float], ...],
+    areas: tuple[Polygon, Polygon],
+    *,
+    tolerances: tuple[float | None, float | None],
+    reach: float,
+) -> bool:
+    """Whether the step from one floor's middle up to the next floor's middle is printed.
+
+    No longer than ``reach``, and inside both floors, each proved on its own.
+    """
+
+    (start, end) = route
+    length = math.hypot(end[0] - start[0], end[1] - start[1])
+    if length > reach:
+        return False
+    if length <= 1e-9:
+        return True
+    try:
+        return all(
+            contained_connector(area, start, end, tolerance=tolerance) is not None
+            for area, tolerance in zip(areas, tolerances, strict=True)
+        )
+    except ShapelyError:
+        return False
+
+
+def _floor_step_out(
+    route: tuple[tuple[float, float], ...],
+    fill: _RingPath,
+    area: Polygon,
+    *,
+    bead_width: float,
+    tolerance: float | None,
+    reach: float,
+    edge_is_wall: bool = True,
+) -> bool:
+    """Whether the step from a floor's rim out to its own wall's start is printed.
+
+    No longer than ``reach``, inside the wall's outer face or reaching a wall
+    that stands off its floor (:func:`_inside_its_wall`), and never through the
+    floor it has just left.  ``edge_is_wall`` is whether the floor was filled
+    inside its own wall; one that kept the outline is held to the reaching
+    rule alone.
+    """
+
+    (start, end) = route
+    length = math.hypot(end[0] - start[0], end[1] - start[1])
+    if length > reach:
+        return False
+    if length <= 1e-9:
+        return True
+    try:
+        proved = (
+            _inside_its_wall(area, start, end, bead_width=bead_width, tolerance=tolerance)
+            if edge_is_wall
+            else _reaching_connector(area, start, end, tolerance=tolerance)
+        )
+        if proved is None:
+            return False
+        return not _crosses_its_own_fill(fill, np.asarray(route, dtype=np.float64))
+    except ShapelyError:
+        return False
+
+
+def _inside_its_wall(
+    area: Polygon,
+    start: tuple[float, float],
+    end: tuple[float, float],
+    *,
+    bead_width: float,
+    tolerance: float | None,
+) -> np.ndarray | None:
+    """The straight step out from a floor filled inside its own wall to that wall's start.
+
+    The floor's edge is the wall's own line, so the wall starts on that edge,
+    and the straight step to it may cut a little outside the floor where the
+    weave dents the edge between them.  It may leave the floor by up to half a
+    coil: inside the wall's outer face, over the wall's own bead, never across
+    open air.  A wall that starts farther out than that — where the weave
+    loops at a sharp hollow — is reached as any wall standing off its floor
+    is (:func:`reaching_connector`).  ``None`` where neither holds, or the
+    step cannot be measured.
+    """
+
+    try:
+        reached = _reaching_connector(area, start, end, tolerance=tolerance)
+        if reached is not None:
+            return reached
+        line = LineString((start, end))
+        slack = bead_width / 2.0 + (0.0 if tolerance is None else tolerance)
+        if not area.buffer(slack).covers(line):
+            return None
+    except ShapelyError:
+        return None
+    return np.asarray((start, end), dtype=np.float64)
+
+
+def _crosses_its_own_fill(fill: _RingPath, step: np.ndarray) -> bool:
+    """Whether the bead ``step`` runs through the bottom path it steps out from.
+
+    ``step`` leaves ``fill`` at its last point, so meeting it there is no
+    crossing.  Nor is meeting its FIRST point: a spiral that goes in and comes
+    back out begins at the wall's start when the wall starts inside its rim,
+    and the step out ends there, the two sides of a V.  Anywhere else is clay
+    already laid on this layer.
+    """
+
+    laid = LineString([(point.x, point.y) for point in fill.points])
+    met = LineString(step).intersection(laid)
+    if met.is_empty:
+        return False
+    ends = (
+        ShapelyPoint(fill.points[-1].x, fill.points[-1].y),
+        ShapelyPoint(fill.points[0].x, fill.points[0].y),
+    )
+    return any(
+        part.geom_type != "Point" or min(part.distance(end) for end in ends) > 1e-6
+        for part in getattr(met, "geoms", (met,))
+    )
+
+
+def _first_turn(path: _RingPath) -> np.ndarray:
+    """The (x, y) points of a wall path's first turn round the form.
+
+    A wall laid flat is one turn already.  A wall that climbs as it goes round
+    is one path for the whole pot from its last bottom layer up — tens of
+    thousands of points lying over one another — and what a floor is measured
+    against is only the turn it is joined to.  Every point of a turn carries
+    that turn's own layer but the last, which already carries the next.
+    """
+
+    layer = path.points[0].layer
+    turn = [(path.points[0].x, path.points[0].y)]
+    for point in path.points[1:]:
+        if point.layer != layer:
+            break
+        turn.append((point.x, point.y))
+    return np.asarray(turn, dtype=np.float64)
+
+
+def _a_little_farther_along(path: _RingPath, distance: float) -> tuple[float, float] | None:
+    """The first point of ``path`` at least ``distance`` along it from its start.
+
+    Enough to say which way round a wall runs from its seam.  ``None`` for a
+    path too short to say.
+    """
+
+    travelled = 0.0
+    for previous, point in zip(path.points, path.points[1:], strict=False):
+        travelled += math.hypot(point.x - previous.x, point.y - previous.y)
+        if travelled >= distance:
+            return (point.x, point.y)
+    return None
+
+
 def _bottom_seed_ring(sliced: SlicedForm, entry: BottomStroke) -> Ring:
     """The wall ring on the bottom stroke's OWN layer with its own provenance.
 
@@ -2815,7 +3865,9 @@ def _bottom_seed_ring(sliced: SlicedForm, entry: BottomStroke) -> Ring:
     return matches[0]
 
 
-def _bottom_unwelded_wall_warning(layer_index: int, plan: BottomStroke) -> FormWarning:
+def _bottom_unwelded_wall_warning(
+    layer_index: int, plan: BottomStroke, *, too_far: bool = False
+) -> FormWarning:
     """Say out loud that a bottom skin had to lift to reach its own wall.
 
     One-based layer and one-based SORTED region ordinal in the sentence, because
@@ -2823,18 +3875,104 @@ def _bottom_unwelded_wall_warning(layer_index: int, plan: BottomStroke) -> FormW
     provenance in ``ring``, because that is what addresses the ring.  Only a
     refused SAME-REGION weld reaches here: cross-island travel, hole-wall travel
     and already-separate fill segments are intentional and stay quiet.
+
+    Every fill ends beside its wall's start, so the lift is one short step.
+
+    ``too_far`` is a spiral whose wall starts beyond a short step from its end,
+    so no join was even asked for.
     """
 
+    if too_far:
+        return FormWarning(
+            code=FormWarningCode.BOTTOM_UNWELDED_WALL,
+            severity=Severity.WARNING,
+            message=(
+                f"layer {layer_index + 1}: the wall of island "
+                f"{plan.region_ordinal + 1} of {plan.region_count} starts too far from where "
+                "its bottom fill ends to be joined by a short step, so the printer lifts and "
+                "travels there instead of laying a joining bead. Expect one extra lift and a "
+                "start mark where the wall begins."
+            ),
+            ring=RingProvenance(layer_index, plan.outer_island_index),
+            layer_span=LayerSpan(layer_index, layer_index),
+        )
     return FormWarning(
         code=FormWarningCode.BOTTOM_UNWELDED_WALL,
         severity=Severity.WARNING,
         message=(
             f"layer {layer_index + 1}: the bottom fill of island "
-            f"{plan.region_ordinal + 1} of {plan.region_count} cannot reach that island's "
-            "own wall through its own clay, so the printer lifts and travels there instead "
-            "of laying a joining bead. Expect one extra lift and a start mark where the "
-            "wall begins; a wider bottom overlap, or a seam nearer the fill's end, closes "
-            "the gap."
+            f"{plan.region_ordinal + 1} of {plan.region_count} ends beside its own wall "
+            "but cannot reach it through its own clay, so the printer lifts for that "
+            "short step instead of laying a joining bead. Expect a small start mark "
+            "where the wall begins."
+        ),
+        ring=RingProvenance(layer_index, plan.outer_island_index),
+        layer_span=LayerSpan(layer_index, layer_index),
+    )
+
+
+def _bottom_outline_warning(layer_index: int, plan: BottomStroke) -> FormWarning:
+    """Say that one layer's floor could not follow its woven wall and kept the outline."""
+
+    return FormWarning(
+        code=FormWarningCode.BOTTOM_ON_OUTLINE,
+        severity=Severity.WARNING,
+        message=(
+            f"layer {layer_index + 1}: the bottom of island {plan.region_ordinal + 1} of "
+            f"{plan.region_count} could not be fitted inside its woven wall, so on this layer "
+            "it fills the form's outline instead. Where the weave swings in, a little of it "
+            "may show outside the wall."
+        ),
+        ring=RingProvenance(layer_index, plan.outer_island_index),
+        layer_span=LayerSpan(layer_index, layer_index),
+    )
+
+
+def _base_turns_lifted(sliced: SlicedForm, walls_by_layer: Sequence[tuple[_RingPath, ...]]) -> bool:
+    """Whether any wall turn under the top base layer stands off its own layer's height."""
+
+    return any(
+        abs(point.z - sliced.layers[layer_index].z) > _LEVEL_TURN_SLACK_MM
+        for layer_index, walls in enumerate(walls_by_layer[:-1])
+        for point in walls[0].points
+    )
+
+
+def _bottom_layer_by_layer_warning(cause: str) -> FormWarning:
+    """Say that this base could not be laid taking turns, and why."""
+
+    why = (
+        "Z-blend follows this form's split top, which keeps every turn of the wall climbing"
+        if cause == "split_top"
+        else "this pattern's profile blend rides the wall under the base up and down, so a "
+        "floor laid after its wall would sit below it"
+    )
+    return FormWarning(
+        code=FormWarningCode.BOTTOM_LAYER_BY_LAYER,
+        severity=Severity.WARNING,
+        message=(
+            f"The bottom layers cannot take turns here: {why}. Each bottom layer is laid on "
+            "its own instead, ending beside its own wall."
+        ),
+    )
+
+
+def _bottom_base_lift_warning(layer_index: int, plan: BottomStroke, step: str) -> FormWarning:
+    """Say that a base laid taking turns had to lift between two of its pieces."""
+
+    where = (
+        "its wall turn ends too far from where its bottom starts, or the step between them "
+        "would leave the clay"
+        if step == "wall_to_floor"
+        else "the middle of the bottom below is too far from the middle of this one, or the "
+        "step between them would leave the clay or run across a line of one of those bottoms"
+    )
+    return FormWarning(
+        code=FormWarningCode.BOTTOM_UNWELDED_WALL,
+        severity=Severity.WARNING,
+        message=(
+            f"layer {layer_index + 1}: {where}, so the printer lifts there instead of laying "
+            "a joining bead. Expect one extra lift and a small start mark."
         ),
         ring=RingProvenance(layer_index, plan.outer_island_index),
         layer_span=LayerSpan(layer_index, layer_index),

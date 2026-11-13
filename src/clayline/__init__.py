@@ -1,6 +1,6 @@
 """Clayline's stable public contracts and one-true-pipeline facade."""
 
-__version__ = "0.12.2"
+__version__ = "0.14.0"
 
 from clayline.api import (
     DesignFacade,
@@ -42,6 +42,14 @@ from clayline.models import (
     deposition_run_key,
 )
 from clayline.plan import PlanningError
+from clayline.support_models import (
+    CurtainPlacement,
+    FootSettings,
+    RepeatedCurtainSettings,
+    SupportAnchor,
+    SupportSettings,
+    SupportStyle,
+)
 from clayline.textures import (
     TexturePreset,
     load_texture_preset,
@@ -82,7 +90,12 @@ from clayline.weave_models import (
     WeaveSettings,
 )
 from clayline.weave_range import select_layer_range
-from clayline.weave_workflow import WeaveEmission, WeaveResult, WeaveWorkflowError
+from clayline.weave_workflow import (
+    SupportPlanRefused,
+    WeaveEmission,
+    WeaveResult,
+    WeaveWorkflowError,
+)
 from clayline.workflow import (
     OutputArtifacts,
     OutputRequest,
@@ -95,11 +108,13 @@ from clayline.workflow import (
 
 __all__ = [
     "Bounds",
+    "CurtainPlacement",
     "CurvePoint",
     "Design",
     "DesignFacade",
     "ExtraWeave",
     "ExtrusionMode",
+    "FootSettings",
     "FormWarning",
     "FormWarningCode",
     "Intersection",
@@ -129,6 +144,7 @@ __all__ = [
     "Polyline",
     "Profile",
     "Provenance",
+    "RepeatedCurtainSettings",
     "Ring",
     "RingProvenance",
     "SeamPolicy",
@@ -138,6 +154,10 @@ __all__ = [
     "SlicedForm",
     "SlicedFormFacade",
     "Stroke",
+    "SupportAnchor",
+    "SupportPlanRefused",
+    "SupportSettings",
+    "SupportStyle",
     "TexturePreset",
     "ThreadProtectionModel",
     "Travel",

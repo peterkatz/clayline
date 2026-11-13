@@ -63,6 +63,7 @@
   const TAIL_COLOR = 0xa3342e;
   const TRAVEL_COLOR = 0x74736d;
   const WARNING_COLOR = 0xa14c23;
+  const SUPPORT_GUIDE_COLOR = 0x765583;
   const START_MARKER_COLOR = 0x5e605b; // reuses LABEL_COLOR — no new hue
   const PULSE_COLOR = 0xa14c23; // reuses WARNING_COLOR — no new hue
   // The layers above the scrubber, ghosted.  Each coil is faint, but dozens
@@ -138,6 +139,8 @@
   let traceTail = null; // {mesh, geometry}
   let traceTravel = null; // {mesh, geometry}
   let traceWarnings = null; // THREE.Points | null
+  let supportWarnings = null; // THREE.Points | null
+  let supportGuides = null; // THREE.Group | null
   let traceStartMarker = null; // THREE.Points | null
   let traceLineMaterials = []; // every LineMaterial in play — resolution sync
 
@@ -1518,6 +1521,32 @@
     return { mesh, geometry };
   }
 
+  function buildSupportGuide(sections, selected) {
+    const positions = [];
+    const railInterval = Math.max(1, Math.ceil(sections.length / 8));
+    sections.forEach(([root, tip], index) => {
+      const previous = sections[index - 1];
+      if (previous) positions.push(...previous[0], ...root, ...previous[1], ...tip);
+      if (index % railInterval === 0 || index === sections.length - 1) {
+        positions.push(...root, ...tip);
+      }
+    });
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    const material = new THREE.LineDashedMaterial({
+      color: SUPPORT_GUIDE_COLOR,
+      dashSize: 2.2,
+      gapSize: 1.25,
+      transparent: true,
+      opacity: selected ? 1 : 0.55,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const guide = new THREE.LineSegments(geometry, material);
+    guide.computeLineDistances();
+    return guide;
+  }
+
   function buildPointsMarker(points, colorHex, sizePx) {
     if (!points || !points.length) return null;
     const positions = new Float32Array(points.length * 3);
@@ -1735,6 +1764,8 @@
     traceTail = null;
     traceTravel = null;
     traceWarnings = null;
+    supportWarnings = null;
+    supportGuides = null;
     traceStartMarker = null;
     if (overlayGroup) {
       if (scene) scene.remove(overlayGroup);
@@ -2104,6 +2135,49 @@
       traceActive = false;
       sourceMeshGhostActive = false;
       applyMeshPresentation();
+    },
+
+    setSupportWarnings(points) {
+      if (!traceGroup) return;
+      if (supportWarnings) {
+        traceGroup.remove(supportWarnings);
+        disposeObject3D(supportWarnings);
+      }
+      supportWarnings = buildPointsMarker(points, WARNING_COLOR, 7);
+      if (supportWarnings) {
+        supportWarnings.material.depthTest = false;
+        supportWarnings.material.depthWrite = false;
+        traceGroup.add(supportWarnings);
+      }
+      requestRender();
+    },
+
+    setSupportGuides(guides, selectedId) {
+      if (!traceGroup) return;
+      if (supportGuides) {
+        traceGroup.remove(supportGuides);
+        disposeObject3D(supportGuides);
+        supportGuides = null;
+      }
+      if (guides.length) {
+        supportGuides = new THREE.Group();
+        for (const guide of guides) {
+          supportGuides.add(buildSupportGuide(guide.sections, guide.id === selectedId));
+        }
+        traceGroup.add(supportGuides);
+      }
+      requestRender();
+    },
+
+    focusTracePoint(point, span) {
+      if (!traceActive || !Array.isArray(point) || !point.every(Number.isFinite)) return;
+      cam.target = { x: point[0], y: point[1], z: point[2] };
+      if (Number.isFinite(span)) {
+        const halfFov = (camera.fov * Math.PI) / 360;
+        const fitRadius = (Math.max(span, 22) * 0.9) / Math.tan(halfFov);
+        cam.radius = clamp(fitRadius, MIN_RADIUS, MAX_RADIUS);
+      }
+      applyCameraPose();
     },
 
     // Flow-color toggle: rewrites the deposit line's per-point color buffer

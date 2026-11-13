@@ -2,6 +2,135 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.14.0 — 2026-11-12
+
+### Supports that follow the form
+- **Supports** is a new Mesh Mode step. Add a reinforced base, choose a number of
+  radial curtains, or pick local attachments on the wall. Curtains stay outside the
+  piece and follow its contour beneath outward overhangs. Clayline sizes them from
+  **Allowable overhang (%)**; placement and dimension overrides are under **Advanced**.
+- The overhang check uses the piece profile without Weaves. Intentional drips and
+  ripples do not raise warnings or make automatic supports grow. A lower allowable
+  percentage asks for more contact with the clay underneath.
+- Bases and curtains each have independent **Weaves** and **Images** switches. Their
+  patterns ease where needed to keep the added clay connected and clear of other
+  paths. The original sculpture wall stays complete at each curtain attachment.
+- The preview shows the actual support clay in blue. **Span warnings** in the preview
+  legend and **Show span warnings (red dots)** in the inspection panel switch the
+  markers on or off without rebuilding the path. The choice survives a restart.
+- The final check distinguishes supported attachment targets from spans still needing
+  support between curtains. A route without a verified foundation or clearance cannot
+  be exported, and its inspection points to the failed support segment.
+- Projects retain support placement and appearance. Supported G-code can restore its
+  editable job when the original model is supplied. Printed-coil OBJ exports include
+  the supports; Designed surface exports remain the sculpture's surface.
+- Larger decorated support jobs fit the bounded session cache, and completed checks
+  release planning data they no longer need. Complex jobs can take several minutes
+  to check before Download becomes available.
+
+The percentage describes nominal geometric contact, not a guarantee about wet clay.
+Check the final path and test the material and flow for the intended print.
+
+## 0.13.6 — 2026-11-11
+
+### The wall stands on the base again
+- With **Vase mode** on and bottom layers that take turns, the first turn of wall that
+  climbs now stands on the clay under it. Since 0.13.3 the turns under it were laid flat
+  on their own layer's outline, and the bottom beside it stopped at where that turn
+  started; on a foot that flares out, the turn's far side leaned out past both, over
+  nothing, and a tall piece could fail there. Now the flat turns keep the same path round
+  as the turns that climb, so every turn steps out from the one under it as the turns
+  above do, and the top bottom layer reaches out under the first climbing turn.
+- The same goes for a bottom whose layers do not take turns: its first layer reaches out
+  under the wall's first turn as it climbs off the bed.
+- **Form from a print file** reads a Vase print whose bottom layers take turns, however
+  many there are, where before it read two at most; one with a weave still makes no
+  form. A print made by 0.13.3 to 0.13.5 with those flat turns may now not make one.
+
+## 0.13.5 — 2026-11-11
+
+### Every bottom laid the new way
+- The **Rim in, centre out** switch is gone. Every bottom is laid that way now: each
+  layer ends beside its wall, and where the layers can take turns, the whole base is one
+  unbroken line. A job saved before lays its bottom this way when you slice it again.
+- **Alternate bottom direction** is off for a new job, so a new job's bottom layers take
+  turns. Turn it on for rows that cross the layer below.
+
+## 0.13.4 — 2026-11-11
+
+### Bottoms a weave pinches
+- Where weaves loop tightly enough to poke sharp points into a bottom, that bottom still
+  goes in as one spiral inside the wall. Before, the points could cut a turn of the
+  spiral in two, and that layer fell back to the form's outline, showing outside the
+  wall.
+
+## 0.13.3 — 2026-11-11
+
+### Mesh Mode bottoms that take turns
+- **Rim in, centre out** replaces Spiral in and back out, under Inside and floor, on for
+  a new job. The bottom layers take turns: one goes from the wall in to the centre, the
+  next from the centre back out to the wall, and the top one always ends at the wall,
+  where the wall carries on up. A layer laid from the wall in puts its turn of wall down
+  first and starts right where that turn ends. So each layer starts where the one below
+  ended, and the whole base is one unbroken line with no lift and no line printed
+  through a floor.
+- With **Vase mode** on, the wall's turns under the base are now laid level, each
+  stepping up a layer where it starts. Only the turn on the top bottom layer climbs, as
+  every turn above it does. The small gap that sat under the first turn, where it
+  climbed off the bed, moves up under that top turn.
+- This needs every bottom layer to be one plain spiral: **Alternate bottom direction**
+  off, one piece, and no hole through the bottom; with Vase mode on, it also needs a top
+  that does not split into pieces for **Z-blend** to follow, and with Vase mode off, a seam
+  that is not scattered. A pattern fitted with profile blend, which rides the wall up and
+  down, must leave the wall under the base level. Alternate bottom direction is on for a
+  new job. Otherwise each layer ends beside its own wall, and the nozzle lifts to reach the
+  next one; where Clayline can say why, it does. Past a short step the nozzle lifts rather
+  than print a line through clay.
+- A project saved with Spiral in and back out on opens with Rim in, centre out on. An
+  older Clayline cannot open a project saved with it on.
+
+### Every bottom laid inside its wall
+- Each bottom layer is now laid inside the wall as it actually prints, not to the form's
+  outline. Where a weave swings the wall in and out, the edge of the floor follows it:
+  no floor shows outside the wall, and the gap that opened where the wall swings out is
+  closed. This is always on. A woven job saved before lays its bottom inside its wall
+  when you slice it again; a wall with no weave prints exactly as before.
+- Where a weave loops too tightly at a sharp hollow for the floor to follow it, that
+  layer stops at the form's outline where the wall swings out, still inside the wall.
+  Where even that cannot be done, the layer keeps the outline, and Clayline says so.
+
+## 0.13.1 — 2026-11-10
+
+### Mesh Mode bottoms with nothing crossing them
+- **Spiral in and back out**, a new switch under Inside and floor, on for a new job. A
+  bottom spiral now goes in to the centre and comes back out between its own rings, so
+  it starts and ends beside the wall. Before, it ended at the centre and the nozzle
+  printed a line back out to the wall, at the same height, through the spiral it had
+  just laid.
+- The rings of such a spiral are joined along one line that runs in from where the
+  wall starts to the centre. You will see that line in the floor.
+- Each ring is left open where it is joined, and what closes those openings is the
+  width of the lines either side. Clayline measures each layer and lays the spiral only
+  where it covers the floor as well as a spiral laid the old way, to within about a
+  square millimetre. With Fill overlap near 50% that is nearly every round bottom. With
+  less it is some layers and not others: about half of them at the 20% a new job starts
+  with, and none under 10%.
+- Any other layer is laid from the centre outward instead, and the nozzle lifts and
+  crosses to the centre over the layer already finished, before any of the new layer is
+  down. A bottom with a hole through it always is. So, usually, is one whose wall starts
+  well outside the bottom's edge, or on a corner when Fill overlap is under 40%.
+- Where every bottom layer is laid in and back out, which needs **Alternate bottom
+  direction** off, and **Vase mode** is on, the nozzle steps straight from the wall into
+  the next bottom layer. The whole base and the wall above it are then one unbroken line
+  with no lift. With Vase mode off the nozzle lifts once per layer, in place, to step up.
+- Where the pattern swings the wall's start a little outside the bottom, the bottom
+  now joins it with a short step instead of lifting.
+- With **Alternate bottom direction** on, only the first bottom layer is a spiral. The
+  rows above it are laid in whichever direction ends nearer the wall. The nozzle still
+  lifts to reach them and to leave them, rather than print across them.
+- A job or print file saved before this release opens with the switch off and prints
+  the bottom it always did. Turn the switch on to change it.
+
 ## 0.12.2 — 2026-11-05
 
 ### Plainer words

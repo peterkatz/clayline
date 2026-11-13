@@ -25,6 +25,7 @@ from clayline.weave_models import (
 )
 
 if TYPE_CHECKING:
+    from clayline.support_models import SupportSettings
     from clayline.weave_workflow import WeaveResult
 
 
@@ -89,6 +90,7 @@ class SlicedFormFacade(SlicedForm):
         job_id: str | None = None,
         layer_range: tuple[int, int] | None = None,
         keep_clay_flowing: bool = False,
+        support_settings: SupportSettings | None = None,
     ) -> WeaveResult:
         """Modulate this cached slice and finalize its exact audited output.
 
@@ -189,6 +191,7 @@ class SlicedFormFacade(SlicedForm):
             job_id=job_id,
             layer_range=layer_range,
             keep_clay_flowing=keep_clay_flowing,
+            support_settings=support_settings,
         )
 
 

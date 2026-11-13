@@ -275,7 +275,8 @@ def test_removed_controls_have_no_dangling_static_script_queries() -> None:
         assert queried <= parser.ids, sorted(queried - parser.ids)
     restore = _block("function restoreDrawSettings", "function syncHistoryButtons")
     assert ".removeItem?.(" in restore
-    assert "loadMode(" not in restore
+    assert "validDrawSettings" not in restore
+    assert "applyDrawSettings" not in restore
 
 
 def test_every_unit_aware_dimension_field_exists() -> None:

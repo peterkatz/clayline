@@ -276,6 +276,12 @@ def render_body(
             }:
                 raise ValueError("unknown terrain segment kind")
             line += f" terrain={terrain_kind.replace(' ', '_')}"
+        role = event.source_move.role
+        if role is not None:
+            line += f" role={_metadata_comment_value('role', role)}"
+            if event.source_move.support_id is not None:
+                support_id = _metadata_comment_value("support_id", event.source_move.support_id)
+                line += f" support_id={support_id}"
         if event.comment:
             line += f" note={_comment_value(event.comment)}"
         motion_offsets.append(len(body))

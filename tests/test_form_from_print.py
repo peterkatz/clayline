@@ -10,6 +10,7 @@ the bead, both ways.
 from __future__ import annotations
 
 import asyncio
+import gzip
 import hashlib
 import re
 from dataclasses import replace
@@ -146,6 +147,64 @@ def test_prints_come_back_as_printed(
     assert min(form.new_samples_per_layer) >= printed_samples
     assert form.worst_mm is not None and 0.0 <= form.worst_mm <= quarter_bead_mm(5.0)
     assert form.name == f"{name}-as-printed.obj"
+
+
+def test_a_vase_print_whose_base_takes_turns_reads_its_level_lap() -> None:
+    # Two bottom layers take turns, so the wall's first lap is laid level under
+    # the top one, at its own layer's height, and the next lap starts a layer
+    # up, straight above where it ended.  The level lap keeps the climb's path
+    # round, so the shell reads it like any other lap, and the print comes back
+    # as printed (above, within a quarter bead).
+    from clayline.weave_restore import parse_weave_gcode
+
+    text = _print("bowl-vase-plain")
+    recipe = parse_weave_gcode(text)
+    lines = text.splitlines()
+    body = ffp._checked_body(lines, ffp._header(lines))
+    printed = ffp._read_wall(ffp._motions_from_gcode(body), recipe, spiral=True)
+    assert printed.laps is not None
+    level = ffp._level_laps(printed.laps)
+    assert level[0] and not level[1:].any()
+    assert _form("bowl-vase-plain").kind == AS_PRINTED
+
+
+@pytest.mark.parametrize(
+    ("mesh", "bottoms", "worst_mm"),
+    [
+        ("lobed-tumbler.obj", 2, 0.05),
+        ("lobed-tumbler.obj", 3, 0.05),
+        ("bowl.obj", 3, quarter_bead_mm(5.0)),
+        ("bowl.obj", 4, quarter_bead_mm(5.0)),
+    ],
+)
+def test_a_vase_print_whose_base_takes_turns_makes_its_form_with_more_bottoms(
+    mesh: str, bottoms: int, worst_mm: float
+) -> None:
+    # Each level lap ends straight under the next lap's start, so from above
+    # its own last point repeats that start; dropped, every lap is cut to the
+    # same samples, and the first lap, reached by a travel, gets the travel's
+    # end back.  Read a sample out of step instead, a foot with sharp corners
+    # came back 0.47 mm off (measured); 0.13.5 refused three bottoms or more.
+    job = _slice(mesh).modulate("flat", z_blend=True, bottom_layers=bottoms, level_rim=True)
+    form = form_from_print(job.emission.gcode, print_file=f"{mesh}-{bottoms}.gcode")
+    assert form.kind == AS_PRINTED, form
+    assert form.worst_mm is not None and form.worst_mm <= worst_mm
+
+
+def test_a_vase_print_laid_in_the_old_bottom_order_still_makes_its_form() -> None:
+    # Printed by 0.13.4 with its base laid the old way: every lap climbs, the
+    # bottoms laid between them.  Today the same job lays its base taking
+    # turns, with a level lap under it, so the check re-prints the wall without
+    # its bottom layers, as the print laid it, and the form comes back.
+    frozen = ROOT / "tests" / "fixtures" / "historical-weave-output"
+    text = gzip.decompress((frozen / "bowl-vase-plain-0.13.4.gcode.gz").read_bytes()).decode()
+    assert hashlib.sha256(text.encode("utf-8")).hexdigest() == (
+        "434be9efd7dc3bb4d7be4ffdd5ae5965d6631ef7da02ec1fb65b84190c31699c"
+    )
+    form = form_from_print(text, print_file="bowl-vase-plain-0.13.4.gcode")
+    assert form.kind == AS_PRINTED, form
+    assert form.layers == 16
+    assert form.worst_mm is not None and form.worst_mm <= quarter_bead_mm(5.0)
 
 
 def test_a_plain_wall_with_sharp_corners_reprints_its_own_samples() -> None:

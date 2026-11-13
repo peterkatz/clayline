@@ -1317,7 +1317,19 @@ def test_a_wall_band_that_starts_above_the_bed_prints_the_fill_exactly_once() ->
     assert len(expected) == 3
 
     deposited = Counter(move.comment for move in stream.moves if move.comment.startswith("bottom "))
-    assert deposited == expected
+    assert set(deposited) == set(expected)
+    # Each floor is laid again from where it meets its wall, so its count of
+    # points differs a little from the plan's; a second copy would double it.
+    for label, count in expected.items():
+        assert 0.5 * count <= deposited[label] <= 1.5 * count, label
+    # And each floor is one unbroken block of the stream, at its own layer.
+    positions: dict[str, list[int]] = {}
+    for index, move in enumerate(stream.moves):
+        if move.comment.startswith("bottom "):
+            positions.setdefault(move.comment, []).append(index)
+    for label, indices in positions.items():
+        assert indices == list(range(indices[0], indices[-1] + 1)), label
+        assert len({stream.moves[index].layer_index for index in indices}) == 1, label
 
     # And each bottom stroke lives in exactly one run, welded to one wall.
     runs: dict[str, set[str]] = {}

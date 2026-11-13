@@ -642,6 +642,8 @@ def prepared_trace_sha256(prepared: PreparedEmission) -> str:
                 f"{event.tp_release_geometric_e!r}|{event.tp_deferred_run_e!r}|"
                 f"{event.tp_release_commanded_e!r}"
             )
+        if event.source_move.role is not None:
+            row += f"|role|{event.source_move.role}|{event.source_move.support_id or ''}"
         rows.append(row)
     return hashlib.sha256("\n".join(rows).encode()).hexdigest()
 

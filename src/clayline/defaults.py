@@ -102,7 +102,7 @@ DEFAULT_WEAVE_Z_BLEND = False
 DEFAULT_WEAVE_TOP_FOLLOW_SLOPE_MULTIPLIER = 1.0
 DEFAULT_WEAVE_LEVEL_RIM = True
 DEFAULT_WEAVE_BOTTOM_LAYERS = 0
-DEFAULT_WEAVE_BOTTOM_ALTERNATE = True
+DEFAULT_WEAVE_BOTTOM_ALTERNATE = False
 DEFAULT_WEAVE_LAYER_SKIP_ENABLED = False
 DEFAULT_WEAVE_LAYER_SKIP_START = 0
 DEFAULT_WEAVE_LAYER_SKIP_ON = 2
@@ -312,12 +312,12 @@ def ui_defaults() -> dict[str, Any]:
             "top_follow_slope_multiplier": DEFAULT_WEAVE_TOP_FOLLOW_SLOPE_MULTIPLIER,
             "level_rim": DEFAULT_WEAVE_LEVEL_RIM,
             "bottom_layers": DEFAULT_WEAVE_BOTTOM_LAYERS,
-            # UI-on encourages crossed base passes; the engine/dataclass default
-            # remains false so API, CLI, legacy patterns, and goldens do not move.
+            # Off for a new job, as in the engine, so a new job's bottom layers
+            # take turns and the base is one unbroken line (Pete chose this,
+            # 2026-11-11); crossed passes are one click away.
             "bottom_alternate": DEFAULT_WEAVE_BOTTOM_ALTERNATE,
-            # Interior settings have no UI-vs-engine split like bottom_alternate
-            # above: there is no reason for the served default to diverge from
-            # the dataclass default, so these are the same constants.
+            # Interior settings, like bottom_alternate above, serve the
+            # dataclass default, so these are the same constants.
             "interior": DEFAULT_WEAVE_INTERIOR,
             "solid_pattern": DEFAULT_WEAVE_SOLID_PATTERN,
             "infill_pattern": DEFAULT_WEAVE_INFILL_PATTERN,

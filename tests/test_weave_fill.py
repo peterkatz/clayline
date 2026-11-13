@@ -1037,7 +1037,9 @@ def test_the_bottom_names_a_tolerance_per_fill_kind() -> None:
     assert "spiral" in kinds
 
     # And the spiral layer is byte-identical to the neutral entry point called
-    # with the bottom's own derived distances and the exact proof.
+    # with the bottom's own derived distances and the exact proof, laid from
+    # the middle out so it ends at the rim (a floor with a hole cannot go in
+    # and come back out).
     spacing = donut.bead_width * (1.0 - 0.2)
     direct = fill_region(
         lowest_slice_regions(donut)[0],
@@ -1048,7 +1050,7 @@ def test_the_bottom_names_a_tolerance_per_fill_kind() -> None:
         tolerance=None,
     )
     first = next(path for path in alternating if path.bottom_layer_index == 0)
-    assert first.points.tobytes() == direct[0].tobytes()
+    assert first.points.tobytes() == direct[0][::-1].tobytes()
 
 
 def test_the_bottom_hands_each_fill_kind_its_historical_tolerance(

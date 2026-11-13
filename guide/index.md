@@ -46,6 +46,8 @@ Draw directly on the bed, bring a line drawing from any vector app as an SVG, or
 
 Open a 3D model and shape its wall with up to three Weaves and three Images together. Draw a wave for ribs and spirals, wrap one of 80 relief tiles around the form, or place your own image as a single stamp. Adjust depth and clay flow independently, choose a hollow, solid or ribbed interior, and inspect the resulting nozzle path.
 
+Add an external reinforced base or curtains beneath outward overhangs. Supports follow the form, with independent Weaves and Images for their appearance. [Explore Supports](weave.md#07-supports).
+
 </div>
 
 </div>
@@ -61,6 +63,7 @@ Both modes show the nozzle path in 2D and 3D, with a move-by-move scrubber and a
 | Shape the surface of a vessel | Three independent Weaves: editable waveforms, ribs, spirals, Noise and textures traced from real prints. [Pattern controls](weave.md#04-pattern) |
 | Put a motif or an all-over relief on a form | Three Images with 80 catalogue depth maps, including 20 paisleys, plus grayscale and color uploads. Repeat around the wall or place a single stamp, then move, resize, rotate, flip or invert it. [Images](weave.md#05-images) |
 | Control the wall and its interior | Depth and clay flow, skips and fades for each effect; spiral Vase mode; hollow walls, solid fill or sparse ribs, with floors and roof skins where needed. [Mesh Mode workflow](weave.md#the-workflow-top-to-bottom) |
+| Support an outward overhang | A reinforced base, radial curtains or local attachments, sized from the underlying form. Inspect the added clay and any remaining spans that need support. [Supports](weave.md#07-supports) |
 | Keep working on a design later | Portable projects include the drawings or model, settings and uploaded artwork. Save a surface pattern separately to use it on another form, or export G-code and the sliced coils as an OBJ. [Saving your work](weave.md#saving-your-project) |
 
 ## Out of the kiln

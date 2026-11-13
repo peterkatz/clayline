@@ -657,8 +657,9 @@ def test_defect_9_restoring_every_setting_from_a_print_file_is_one_step() -> Non
     restore = _weave_function("restoreFromGcode", "function ensureRestoreProfileOption")
     everything = restore[restore.index("if (everything) {") :]
     assert everything.index(
-        "weaveStateWriter?.suspend(() => applyWeaveSettings(snapshot, { settle: true }));"
-    ) < (everything.index("commitPendingWeaveEdit();\n        const source"))
+        "weaveStateWriter?.suspend(() => "
+        "applyWeaveSettings(snapshot, { settle: true, supportedRestore }));"
+    ) < everything.index("commitPendingWeaveEdit();\n        const modelName")
 
 
 def test_defect_8_a_cancelled_draw_drag_ends_its_gesture() -> None:

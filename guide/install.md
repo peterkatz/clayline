@@ -15,7 +15,7 @@ Clayline does not need an internet connection, an account, or anything else inst
 3. Drag **Clayline** into your Applications folder.
 4. Open it. It starts in a moment and opens the studio in its own window.
 
-To update, save any job you want to continue as a **Clayline project**, quit the app, then download the new version and drag it over the old one. Your saved projects and source files stay where you saved them. Open a project to bring back its design and settings. Images and effect fades are available in Clayline 0.10.0 and later.
+To update, save any job you want to continue as a **Clayline project**, quit the app, then download the new version and drag it over the old one. Your saved projects and source files stay where you saved them. Open a project to bring back its design and settings. Images and effect fades are available in Clayline 0.10.0 and later. Supports are available in 0.14.0 and later; use the current version when opening a project or print file that contains them.
 
 ## The studio at a glance
 

@@ -3590,11 +3590,15 @@ function applyDrawSettings(snapshot) {
 
 function restoreDrawSettings() {
   // Relaunch is intentionally a clean slate. Snapshots still power undo/redo
-  // during this session, but stale settings never cross a restart boundary.
+  // during this session, but stale job settings never cross a restart boundary.
+  // Display preferences belong to the artist, independently of the open job.
   state.drawSettingsRestored = true;
-  window.ClaylineStudioState?.settingsStorage(window)?.removeItem?.(
-    window.ClaylineStudioState.STORAGE_KEY ?? "clayline-ui-state.v1",
-  );
+  const studio = window.ClaylineStudioState;
+  const storage = studio?.settingsStorage(window);
+  const display = studio?.loadMode(storage, "weave_display", (row) =>
+    row?.schema === "clayline.weave-display.v1" && typeof row.show_span_warnings === "boolean");
+  storage?.removeItem?.(studio?.STORAGE_KEY ?? "clayline-ui-state.v1");
+  if (display) studio.saveMode(storage, "weave_display", display);
   return false;
 }
 

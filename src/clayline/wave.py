@@ -96,6 +96,10 @@ _OPTIONAL_SETTINGS_KEYS = {
     "nozzle_clearance_mm",
     "wave_on",
     "hold_wave_count",
+    # Written from 0.13.1 to 0.13.4, when how a bottom is laid was a switch.
+    # It is how every bottom is laid now (Pete asked, 2026-11-11), so a file
+    # that carries the key opens and the key is ignored; nothing writes it.
+    "bottom_outward",
 }
 # One extra weave: only what a weave owns, never a whole-wall key.  Its Skip
 # layers group is all five keys or none.  Its Clay along the wall
@@ -1395,6 +1399,9 @@ def pattern_from_json(text: str) -> Pattern:
             "settings",
             optional=_OPTIONAL_SETTINGS_KEYS,
         )
+    if "bottom_outward" in settings_payload:
+        # Ignored, but still a switch: a file that holds anything else is damaged.
+        _strict_bool(settings_payload["bottom_outward"], "settings.bottom_outward")
     settings = WeaveSettings(
         amplitude=_strict_number(settings_payload["amplitude"], "settings.amplitude"),
         wavelength=_strict_number(settings_payload["wavelength"], "settings.wavelength"),

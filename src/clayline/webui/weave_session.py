@@ -25,8 +25,12 @@ DEFAULT_TTL_SECONDS = 8 * 60 * 60
 DEFAULT_TOUCH_INTERVAL_SECONDS = 3 * 60
 DEFAULT_ITEMS_PER_KIND = 2
 DEFAULT_MAX_SESSIONS = 4
-DEFAULT_SESSION_BYTES = 256 * 1024 * 1024
-DEFAULT_TOTAL_BYTES = 768 * 1024 * 1024
+# A supported job retains both its decorated trace and an independent
+# underlying-form trace. A complete wide base can require about 426 MiB;
+# retain that bounded working set through finalization instead of rejecting
+# a valid job after its geometry has already been built.
+DEFAULT_SESSION_BYTES = 512 * 1024 * 1024
+DEFAULT_TOTAL_BYTES = 1024 * 1024 * 1024
 
 
 class WeaveSessionError(LookupError):
@@ -172,6 +176,13 @@ class WeaveSessionCache:
         with self._lock:
             for bucket in self._items.values():
                 bucket.clear()
+
+    def discard(self, kind: CacheKind, item_id: str) -> None:
+        """Release a consumed intermediate without disturbing the active source."""
+
+        self._require_kind(kind)
+        with self._lock:
+            self._items[kind].pop(item_id, None)
 
     @property
     def estimated_bytes(self) -> int:
@@ -382,6 +393,7 @@ def estimate_cache_bytes(value: Any) -> int:
             end_early_mm=value.end_early_mm,
             reproducible=value.reproducible,
             job_id=value.job_id,
+            support_settings=value.support_settings,
         )
         return len(capsule.encode("ascii")) + 16_384
     if isinstance(value, MeshForm):
@@ -396,7 +408,37 @@ def estimate_cache_bytes(value: Any) -> int:
     if isinstance(value, PreparedWeaveResult):
         prepared_motions = len(value.prepared.events) * 320
         stream_moves = len(value.stream.moves) * 256
-        return estimate_cache_bytes(value.sliced) + prepared_motions + stream_moves + 16_384
+        source = value.support_source
+        source_bytes = 0
+        counted_streams = {id(value.stream.moves)}
+        if source is not None:
+            # The unchanged body moves are shared with the candidate. A split
+            # Vase job also retains a separately sampled helical wall.
+            source_bytes = 8 * len(source.stream.moves)
+            if source.helical_stream is not None:
+                source_bytes += 256 * (len(source.stream.moves) + len(source.helical_stream.moves))
+                counted_streams.update((id(source.stream.moves), id(source.helical_stream.moves)))
+        reference = value.support_reference
+        reference_bytes = (
+            len(reference.events) * 320
+            if reference is not None and reference.events is not value.prepared.events
+            else 0
+        )
+        reference_streams = [reference.source_stream] if reference is not None else []
+        if source is not None:
+            reference_streams.extend((source.reference_stream, source.reference_helical_stream))
+        for stream in reference_streams:
+            if stream is not None and id(stream.moves) not in counted_streams:
+                reference_bytes += len(stream.moves) * 256
+                counted_streams.add(id(stream.moves))
+        return (
+            estimate_cache_bytes(value.sliced)
+            + prepared_motions
+            + stream_moves
+            + source_bytes
+            + reference_bytes
+            + 32_768
+        )
     if isinstance(value, WeaveResult):
         prepared_motions = len(value.emission.prepared.events) * 320
         stream_moves = len(value.emission.stream.moves) * 256
@@ -405,7 +447,19 @@ def estimate_cache_bytes(value: Any) -> int:
             + len(value.emission.gcode.encode("utf-8"))
             + prepared_motions
             + stream_moves
-            + 16_384
+            + 32_768
+            + (
+                0
+                if value.job_report.support_analysis is None
+                else 512
+                * (
+                    len(value.job_report.support_analysis.diagnostics)
+                    + sum(
+                        1 + len(target.diagnostics)
+                        for target in value.job_report.support_analysis.target_results
+                    )
+                )
+            )
         )
     return max(1, sys.getsizeof(value))
 

@@ -120,6 +120,53 @@
   // own clay. The floor an artist reads is now the floor the engine enforces.
   const RIB_SPACING_FLOOR_BEADS = 1.0;
 
+  const SUPPORT_CURTAIN_LIMIT = 12;
+  const SUPPORT_STYLE_DEFAULTS = Object.freeze({
+    bases_apply_weaves: false,
+    bases_apply_images: false,
+    curtains_apply_weaves: false,
+    curtains_apply_images: false,
+  });
+
+  function supportSettings(saved = {}) {
+    return {
+      schema_version: 1,
+      enabled: saved.enabled ?? false,
+      metric: "unsupported_bead_width_v1",
+      max_unsupported_fraction: saved.max_unsupported_fraction ?? 0.4,
+      foot: {
+        enabled: false, extent_mode: "auto", extra_width_mm: 10, height_mm: 10, outline: "smooth",
+        ...saved.foot,
+      },
+      repeated_curtains: {
+        enabled: false, count: 4, distribution: "perimeter", offset: 0,
+        extent_mode: "auto", reach_mm: 15, top_height_mm: null, thickness_mm: 5,
+        ...saved.repeated_curtains,
+      },
+      placements: Array.isArray(saved.placements)
+        ? saved.placements.map((row) => curtainPlacement(row.id, row.origin, row))
+        : [],
+      style: { ...SUPPORT_STYLE_DEFAULTS, ...saved.style },
+      mapping_version: 1,
+    };
+  }
+
+  function curtainPlacement(id, origin, saved = {}) {
+    return {
+      id,
+      origin,
+      enabled: saved.enabled ?? true,
+      anchor: saved.anchor ? { ...saved.anchor } : null,
+      direction_deg: saved.direction_deg ?? null,
+      reach_mm: saved.reach_mm ?? null,
+      top_height_mm: saved.top_height_mm ?? null,
+      thickness_mm: saved.thickness_mm ?? null,
+      automatic_fields: Array.isArray(saved.automatic_fields) ? [...saved.automatic_fields] : [],
+    };
+  }
+
+  const DEFAULT_SUPPORT_SETTINGS_JSON = JSON.stringify(supportSettings());
+
   const metrics = {
     "event→JSON": null,
     "event→render": null,
@@ -169,6 +216,15 @@
     imageCatalogueStatus: "idle",
     selectedImage: 0,
     imageFits: [],
+    supports: supportSettings(),
+    supportAnalysis: null,
+    supportError: "",
+    supportPreview: { guides: [], curtainMoves: new Map(), hasSupportPath: false },
+    supportSpanIndex: 0,
+    supportPlacementId: "",
+    supportPick: null,
+    supportPickMessage: "",
+    supportedRestore: null,
     // Which weave the Pattern controls show, counted from 0 (Weave 1). Never
     // saved and never an Undo step.
     selectedWeave: 0,
@@ -401,8 +457,30 @@
   // Plain-language caption for the export line once the exact path has
   // settled and passed its export checks. The short id lets an artist
   // confirm the preview and the downloaded file are the same build.
-  function exportReadyText(hash) {
-    return `This is the exact file you'll download · id ${(hash || "audited").slice(0, 12)}`;
+  function supportReviewState(payload) {
+    const analysis = payload?.support_analysis;
+    if (analysis?.unresolved || analysis?.complete === false
+        || analysis?.target_results?.some((target) => target.unresolved)) return "unresolved";
+    if (analysis?.targets_met === false
+        || (analysis?.diagnostic_count || analysis?.diagnostics?.length || 0) > 0) return "remaining";
+    return "clear";
+  }
+
+  function exportReadyText(hash, payload) {
+    const review = supportReviewState(payload);
+    const note = review === "unresolved" ? "Support check unresolved. "
+      : review === "remaining" ? "Some spans still need support. " : "";
+    return `${note}This is the exact file you'll download · id ${(hash || "audited").slice(0, 12)}`;
+  }
+
+  function setFinalPathStatus(payload) {
+    if (payload.support_error) setStatus("Support route blocked", "error");
+    else if (supportReviewState(payload) === "unresolved") setStatus("Final path · support unresolved", "warning");
+    else if (payload.support_analysis?.targets_met === false) setStatus("Support targets not reached", "warning");
+    else if (payload.support_analysis?.targets_met === true && supportReviewState(payload) === "remaining") {
+      setStatus("Support targets reached · other spans remain", "warning");
+    } else if (supportReviewState(payload) === "remaining") setStatus("Final path · support still needed", "warning");
+    else setStatus("Ready to print · final path", "exact");
   }
 
   function errorMessage(payload, response) {
@@ -472,6 +550,7 @@
   function activateMode(mode) {
     if (!['tiles', 'weave'].includes(mode)) return;
     cancelLayFlat();
+    cancelSupportPick();
     S.activeMode = mode;
     $("#tilesWorkspace").hidden = mode !== "tiles";
     $("#weaveWorkspace").hidden = mode !== "weave";
@@ -524,7 +603,7 @@
     setControlValue("#weaveTwist", root.twist);
     setControlValue("#weaveExtrusionPhase", root.extrusion_phase_offset);
     setControlValue("#weaveBottomLayers", root.bottom_layers);
-    $("#weaveBottomAlternate").checked = root.bottom_alternate !== false;
+    $("#weaveBottomAlternate").checked = root.bottom_alternate === true;
     $("#weaveKeepFlowing").checked = root.keep_clay_flowing !== false;
     setStackControls(root);
     setInteriorControls(root);
@@ -605,6 +684,7 @@
       up: $("#weaveUpAxis").value,
       profile: $("#weaveProfile").value,
     });
+    if (S.supportedRestore?.id) query.set("restore_id", S.supportedRestore.id);
     const fit = numberValue("#weaveFitHeight");
     const scale = numberValue("#weaveScale", 1);
     if (fit !== null && fit > 0) query.set("fit_height", String(fit));
@@ -655,6 +735,8 @@
     // Vase mode's one continuous spiral cannot print past a split of any
     // length, so the server reads the form strictly while it is on.
     if ($("#weaveZBlend").checked) request.z_blend = true;
+    if (S.supports.enabled) request.supports_enabled = true;
+    if (S.supportedRestore?.id) request.restore_id = S.supportedRestore.id;
     return request;
   }
 
@@ -719,6 +801,9 @@
       pattern.settings.wavelength_follows_nozzle = S.wavelengthFollows;
       if ($("#weaveBottomAlternate").checked) pattern.settings.bottom_alternate = true;
       else delete pattern.settings.bottom_alternate;
+      // How a bottom is laid was a switch from 0.13.1 to 0.13.4; it is how
+      // every bottom is laid now, so a restored file's old key is not kept.
+      delete pattern.settings.bottom_outward;
       applyLayerRhythmSettings(pattern.settings);
       applyInteriorSettings(pattern.settings);
       applyStackSettings(pattern.settings);
@@ -805,8 +890,13 @@
       reproducible: true,
       layer_range: autoCrown ? null : rangePayload(),
       island_range_auto: S.rangeAutoIslandStop,
+      support_settings: supportSettings(S.supports),
     };
     if (S.islandStopDeclined) request.island_stop = false;
+    if (quality === "settle" && S.supportedRestore?.id) {
+      request.restore_id = S.supportedRestore.id;
+      request.verify_supported_restore = true;
+    }
     return request;
   }
 
@@ -1026,13 +1116,17 @@
   // first, byte for byte (multi-weave plan §4, steady wave count plan §3).
   // This studio opens both.
   const WEAVE_SETTINGS_SCHEMA_V2 = "clayline.weave-settings.v2";
-  const WEAVE_SETTINGS_SCHEMAS = Object.freeze([WEAVE_SETTINGS_SCHEMA, WEAVE_SETTINGS_SCHEMA_V2]);
+  const WEAVE_SETTINGS_SCHEMA_V3 = "clayline.weave-settings.v3";
+  const WEAVE_SETTINGS_SCHEMAS = Object.freeze([
+    WEAVE_SETTINGS_SCHEMA, WEAVE_SETTINGS_SCHEMA_V2, WEAVE_SETTINGS_SCHEMA_V3,
+  ]);
 
   // v2 exactly when the pattern carries something Clayline 0.8.3 cannot read:
   // extra weaves, Weave 1's own switch turned off, or any weave keeping the
   // same number of waves (with extra weaves it is v2 already, so Weave 1's
   // own switch is the one left to ask).
-  function weaveSettingsSchemaFor(patternJson) {
+  function weaveSettingsSchemaFor(patternJson, supports = null) {
+    if (supports && typeof supports === "object") return WEAVE_SETTINGS_SCHEMA_V3;
     try {
       const pattern = JSON.parse(patternJson);
       const weaves = pattern?.extra_weaves;
@@ -1109,7 +1203,11 @@
       },
     };
     // The version follows the very pattern it carries, read in one place.
-    snapshot.schema = weaveSettingsSchemaFor(snapshot.pattern_json);
+    const supports = supportSettings(S.supports);
+    if (JSON.stringify(supports) !== DEFAULT_SUPPORT_SETTINGS_JSON) {
+      snapshot.support_settings = supports;
+    }
+    snapshot.schema = weaveSettingsSchemaFor(snapshot.pattern_json, snapshot.support_settings);
     return snapshot;
   }
 
@@ -1121,6 +1219,11 @@
       || !snapshot.placement
       || !snapshot.slice
       || !snapshot.export
+      || (snapshot.schema === WEAVE_SETTINGS_SCHEMA_V3) !== Boolean(snapshot.support_settings)
+      || (snapshot.support_settings && (
+        snapshot.support_settings.schema_version !== 1
+        || (snapshot.support_settings.mapping_version ?? 1) !== 1
+      ))
     ) return false;
     try {
       const pattern = JSON.parse(snapshot.pattern_json);
@@ -1277,7 +1380,9 @@
     if (!weaveHistoryGestureActive) weaveStateWriter?.flush();
   }
 
-  function applyWeaveSettings(snapshot, { settle = false, modelChanged = false, land = null } = {}) {
+  function applyWeaveSettings(snapshot, {
+    settle = false, modelChanged = false, land = null, supportedRestore = null,
+  } = {}) {
     const current = weaveSettingsSnapshot();
     const placement = snapshot.placement;
     const slice = snapshot.slice;
@@ -1288,7 +1393,12 @@
     });
     // Another model came back with this step: it is placed afresh, whatever
     // its numbers say.
-    if (modelChanged && S.file) restoreAction = "mesh";
+    if ((modelChanged || supportedRestore) && S.file) restoreAction = "mesh";
+    cancelSupportPick();
+    S.supports = supportSettings(snapshot.support_settings);
+    S.supportPlacementId = "";
+    S.supportedRestore = supportedRestore;
+    syncSupportSettings({ force: true });
 
     ensureRestoreProfileOption(slice.profile);
     setControlValue("#weaveProfile", slice.profile);
@@ -1647,6 +1757,7 @@
     S.inspectorRevealed = revealed;
     const quiet = $("#weaveInspectorQuiet");
     if (quiet) quiet.hidden = revealed;
+    if (!revealed) $("#weaveSupportInspection").hidden = true;
     ["#weaveSafetyCallout", "#weaveReportSummary", "#weaveWarningSection", "#weaveExportActions"]
       .forEach((selector) => {
         const el = $(selector);
@@ -1720,6 +1831,7 @@
     if (kind !== "active") {
       showRoughPreview(false);
       cancelLayFlat();
+      cancelSupportPick();
     }
     syncLayFlatButton();
     if (kind === "empty" || kind === "error") scheduleBaseLine();
@@ -1795,10 +1907,13 @@
     chip.classList.toggle("is-transient", kind === "transient");
     chip.classList.toggle("is-exact", kind === "exact");
     chip.classList.toggle("is-error", kind === "error");
+    chip.classList.toggle("is-warning", kind === "warning");
   }
 
   function invalidateExact(message = "Inputs changed — rebuilding the final path.") {
+    dropFinalPath();
     S.exactResult = null;
+    clearSupportResult();
     setExactExportsEnabled(false);
     $("#weaveExportIdentity").textContent = message;
     if (S.activeMode === "weave") window.claylineScrubber?.detach();
@@ -1860,6 +1975,10 @@
       const payload = await jsonResponse(response);
       if (sequence !== S.sequence.mesh) return;
       markJsonReceived();
+      if (S.supportedRestore?.source && payload.source_sha256 !== S.supportedRestore.source) {
+        showWeaveState("error", "This mesh is different from the source of the supported print. Load its original mesh to restore the toolpath.");
+        return;
+      }
       S.mesh = payload;
       renderMeshFacts(payload, { adopt: !fromHistory });
       noteChosenModel(payload);
@@ -2185,21 +2304,26 @@
       // downloads, so the replacement trace is drawn before anything else.
       await renderResult(finalized, "settle");
     } else {
-      renderWarnings(finalized.warnings || [], true);
+      renderWarnings(pathWarnings(finalized), true, finalized.support_analysis, finalized.support_error);
       renderReport(finalized.report, finalized);
     }
     const exportable = finalized.exportable === true && Boolean(finalized.result_id);
+    if (exportable) S.supportedRestore = null;
     setExactExportsEnabled(exportable);
     $("#weaveExportIdentity").textContent = exportable
-      ? exportReadyText(finalized.gcode_sha256)
-      : "Artifact audit did not produce an exportable exact result.";
-    setStatus(exportable ? "Ready to print \u00b7 final path" : "Audit stopped", exportable ? "exact" : "error");
+      ? exportReadyText(finalized.gcode_sha256, finalized)
+      : (finalized.support_error
+        ? "The support route could not be verified. Adjust Supports to rebuild it."
+        : "Artifact audit did not produce an exportable exact result.");
+    if (exportable) setFinalPathStatus(finalized);
+    else setStatus(finalized.support_error ? "Support route blocked" : "Audit stopped", "error");
     syncGcodeButton();
     if ((GPANEL.open || GPANEL.reopen) && exportable && GPANEL.resultId !== finalized.result_id) {
       GPANEL.reopen = false;
       openGcodePanel();
     }
     if (exportable && S.activeMode === "weave") attachWeaveScrubber();
+    renderSupportResult(finalized);
   }
 
   // A job reopened from a 0.5.1 print file keeps that file's top, the layers
@@ -2221,6 +2345,7 @@
   }
 
   function scheduleMesh() {
+    S.supportedRestore = null;
     releaseOldTopRule();
     invalidateExact();
     window.clearTimeout(S.timers.mesh);
@@ -2229,6 +2354,7 @@
   }
 
   function invalidateSlice() {
+    S.supportedRestore = null;
     dropSliceAndPath();
     S.slice = null;
     // A stale settled trace must never keep coloring the view or the flow
@@ -2255,6 +2381,7 @@
   }
 
   function scheduleModulation(quality) {
+    S.supportedRestore = null;
     invalidateExact();
     window.clearTimeout(S.timers.modulate);
     if (quality === "settle") {
@@ -2719,11 +2846,17 @@
   // entry per move) — this is also the exact shape setTraceColors expects
   // back from the flow-color toggle, so the two call sites share one
   // function instead of two slightly different color passes.
+  function supportColorsRequested() {
+    return $("#weaveSupportColors")?.checked === true;
+  }
+
   function depositColors(norm, flowRange) {
     const colors = new Float32Array((norm.n + 1) * 3);
+    const supportColor = supportColorsRequested();
     for (let i = 0; i < norm.n; i += 1) {
       const o = (i + 1) * 3;
-      const rgb = flowRange && norm.KIND[i] === 1 ? flowColorRgb(norm.FLOW[i], flowRange) : CLAY_RGB;
+      const rgb = supportColor && norm.SUPPORT?.[i] ? SUPPORT_RGB
+        : flowRange && norm.KIND[i] === 1 ? flowColorRgb(norm.FLOW[i], flowRange) : CLAY_RGB;
       colors[o] = rgb[0]; colors[o + 1] = rgb[1]; colors[o + 2] = rgb[2];
     }
     // Point 0 is the true start (no preceding move to classify it by) —
@@ -2732,6 +2865,15 @@
     colors[1] = norm.n ? colors[4] : CLAY_RGB[1];
     colors[2] = norm.n ? colors[5] : CLAY_RGB[2];
     return colors;
+  }
+
+  const SUPPORT_RGB = hexToRgb01("#2F6F8F");
+
+  function recolorWeaveTrace() {
+    if (!S.lastTrace || !window.claylineViewport3d) return;
+    const norm = window.claylineNormalizeTraceMoves(S.lastTrace);
+    const flowRange = flowColorRequested() ? traceFlowRange(S.lastTrace) : null;
+    window.claylineViewport3d.setTraceColors(depositColors(norm, flowRange));
   }
 
   // Builds the setTrace() payload for a sliced toolpath (trace.moves).
@@ -3211,6 +3353,7 @@
       return;
     }
     if (!(await placedMeshSettled()) || $("#weaveActiveState").hidden) return;
+    cancelSupportPick();
     const began = window.claylineViewport3d?.beginSurfacePick({
       regionAt: surfaceRegionAtFace,
       onPick: laySurfaceDown,
@@ -3304,9 +3447,10 @@
     const plot = await renderTrace(displayTrace);
     syncFlowControls();
     showRoughPreview(quality === "drag");
-    setStatus(quality === "drag" ? "Rough preview" : "Ready to print \u00b7 final path", quality === "drag" ? "transient" : "exact");
+    if (quality === "drag") setStatus("Rough preview", "transient");
+    else setFinalPathStatus(payload);
     $("#weaveFitButton").disabled = !plot;
-    renderWarnings(payload.warnings || [], quality === "settle");
+    renderWarnings(pathWarnings(payload), quality === "settle", payload.support_analysis, payload.support_error, payload.finalizing === true);
     renderReport(payload.report, payload);
     if (quality === "settle") {
       const exportable = payload.exportable === true && Boolean(payload.result_id);
@@ -3319,13 +3463,21 @@
       $("#weaveExportIdentity").textContent = payload.finalizing === true
         ? "Checking the final path — download unlocks when it passes."
         : (exportable
-          ? exportReadyText(payload.gcode_sha256)
+          ? exportReadyText(payload.gcode_sha256, payload)
           : "This result isn't exportable yet — check the warnings below.");
       if (payload.finalizing === true) setStatus("Checking\u2026", "exact");
+      else if (payload.support_error) setStatus("Support route blocked", "error");
       if (S.activeMode === "weave") attachWeaveScrubber();
     } else if (S.activeMode === "weave") {
       window.claylineScrubber?.detach();
     }
+    renderSupportResult(quality === "settle" ? payload : null);
+  }
+
+  function pathWarnings(payload) {
+    const warnings = payload.warnings || [];
+    if (!payload.support_analysis) return warnings;
+    return warnings.filter((warning) => (warning.code?.value || warning.code) !== "overhang");
   }
 
   function attachWeaveScrubber() {
@@ -3339,6 +3491,7 @@
       surface: window.claylineViewport3d.getScrubSurface(),
       planHost: null,
       activeView: "toolpath",
+      supportColors: supportColorsRequested(),
     });
   }
 
@@ -3422,15 +3575,23 @@
     });
   }
 
-  function renderWarnings(warnings, settled) {
+  function renderWarnings(warnings, settled, supportAnalysis = null, supportError = "", pending = false) {
     const list = $("#weaveWarningList");
     list.replaceChildren();
-    $("#weaveWarningBadge").textContent = String(warnings.length);
+    const supportCount = supportAnalysis?.diagnostic_count || supportAnalysis?.diagnostics?.length || 0;
+    const supportUnresolved = Boolean(supportError)
+      || supportReviewState({ support_analysis: supportAnalysis }) === "unresolved"
+      || supportAnalysis?.targets_met === false;
+    $("#weaveWarningBadge").textContent = String(warnings.length + (supportCount || Number(supportUnresolved)));
     $("#weaveWarningScope").textContent = settled ? "on the final path" : "source layers";
     if (!warnings.length) {
       const empty = document.createElement("p");
       empty.className = "quiet-empty";
-      empty.textContent = settled ? "No warnings on the final path." : "No mesh or slice warnings.";
+      empty.textContent = pending ? "Final path checks are still running."
+        : supportCount
+        ? `${supportCount} ${supportCount === 1 ? "span needs" : "spans need"} support. See Supports below.`
+        : supportUnresolved ? "Support check needs attention. See Supports below."
+        : settled ? "No warnings on the final path." : "No mesh or slice warnings.";
       list.append(empty);
       return;
     }
@@ -4788,6 +4949,643 @@
   // lock each other out. Bottom layers itself belongs to
   // syncBottomAvailability, which weighs the interior against the slice and
   // the print range in one place.
+  function supportControls(attribute) {
+    return $$(`[data-support-${attribute}]`, $("#weaveSupports"));
+  }
+
+  function supportDiagnosticSet(analysis = S.supportAnalysis, blocked = Boolean(S.supportError)) {
+    const failures = blocked ? (analysis?.actual_generated_diagnostics || []).filter((span) =>
+      span.reason === "missing_foundation" || span.reason === "unresolved_contact" || span.unresolved) : [];
+    return {
+      diagnostics: failures.length ? failures : analysis?.diagnostics || [],
+      reference: !failures.length && analysis?.warning_basis === "underlying_form_without_weaves",
+    };
+  }
+
+  function supportDiagnostic() {
+    return supportDiagnosticSet().diagnostics[S.supportSpanIndex] || null;
+  }
+
+  function supportWallPoint(moveIndex) {
+    const row = S.exactResult?.trace?.moves?.[moveIndex];
+    if (!row || row[3] !== 1 || (row[9] && row[9] !== "wall")) return null;
+    const point = row.slice(0, 3);
+    return point.every(Number.isFinite) ? point : null;
+  }
+
+  function supportDiagnosticsUseReference() {
+    return supportDiagnosticSet().reference;
+  }
+
+  function diagnosticWallPoint(diagnostic) {
+    if (!diagnostic || diagnostic.role !== "wall") return null;
+    if (supportDiagnosticsUseReference()) {
+      return [diagnostic.point, diagnostic.end].find(isSupportPoint) || null;
+    }
+    return supportWallPoint(diagnostic.end_move);
+  }
+
+  function isSupportPoint(point) {
+    return Array.isArray(point) && point.length === 3 && point.every(Number.isFinite);
+  }
+
+  function supportPreview(payload) {
+    const curtainMoves = new Map();
+    let hasSupportPath = false;
+    const moves = payload?.trace?.moves || [];
+    moves.forEach((row, index) => {
+      if (row[3] !== 1 || !row[9]?.startsWith("support_")) return;
+      hasSupportPath = true;
+      const id = row[10];
+      if (row[9] !== "support_curtain" || !id) return;
+      const point = row.slice(0, 3);
+      if (!isSupportPoint(point)) return;
+      const preceding = moves[index - 1]?.slice(0, 3);
+      const start = isSupportPoint(preceding) ? preceding : point;
+      const curtain = curtainMoves.get(id);
+      if (!curtain) {
+        curtainMoves.set(id, { index, point,
+          min: point.map((coordinate, axis) => Math.min(coordinate, start[axis])),
+          max: point.map((coordinate, axis) => Math.max(coordinate, start[axis])),
+        });
+        return;
+      }
+      for (let axis = 0; axis < 3; axis += 1) {
+        curtain.min[axis] = Math.min(curtain.min[axis], point[axis], start[axis]);
+        curtain.max[axis] = Math.max(curtain.max[axis], point[axis], start[axis]);
+      }
+      if (point[2] > curtain.point[2]) {
+        curtain.index = index;
+        curtain.point = point;
+      }
+    });
+    const guides = (payload?.support_guides || []).flatMap(({ id, sections }) => {
+      if (!id || !Array.isArray(sections) || (!S.supportError && curtainMoves.has(id))) return [];
+      const usable = sections.filter((section) =>
+        Array.isArray(section) && section.length === 2 && section.every(isSupportPoint));
+      return usable.length ? [{ id, sections: usable }] : [];
+    });
+    return { guides, curtainMoves, hasSupportPath };
+  }
+
+  function updateSupportLegend() {
+    const { guides, hasSupportPath } = S.supportPreview;
+    const hasNeeds = Boolean(S.supportAnalysis?.diagnostics?.length);
+    const showNeeds = $("#weaveShowSupportNeeds").checked;
+    const showClay = supportColorsRequested() && hasSupportPath;
+    $("#weaveSupportLegendNeeds").hidden = !hasNeeds;
+    $("#weaveSupportWarningsToggle").setAttribute("aria-pressed", String(showNeeds));
+    $("#weaveSupportWarningsToggle").title = `${showNeeds ? "Hide" : "Show"} span warnings (red dots)`;
+    $("#weaveSupportWarningsLabel").textContent = `Span warnings ${showNeeds ? "on" : "off"}`;
+    $("#weaveSupportLegendClay").hidden = !showClay;
+    $("#weaveSupportLegendClayLabel").textContent = S.supportError
+      ? "Unverified support path"
+      : "Added support clay";
+    $("#weaveSupportLegendGuide").hidden = !guides.length;
+    $("#weaveSupportLegend").hidden = !(hasNeeds || showClay || guides.length);
+    $("#weavePreviewTruth").textContent = S.supportError
+      ? "Support preview only. Download unavailable."
+      : guides.length ? "Dashed guides show curtain placement."
+      : "The preview is the exact path the export writes";
+  }
+
+  function updateSupportMarkers() {
+    const diagnostics = S.supportAnalysis?.diagnostics || [];
+    const points = $("#weaveShowSupportNeeds").checked
+      ? diagnostics.flatMap((span) => [span.start, span.end].filter(isSupportPoint))
+      : [];
+    window.claylineViewport3d?.setSupportWarnings?.(points);
+    updateSupportLegend();
+  }
+
+  function restoreSupportDisplay() {
+    const state = window.ClaylineStudioState;
+    const saved = state?.loadMode(state.settingsStorage(window), "weave_display", (row) =>
+      row?.schema === "clayline.weave-display.v1" && typeof row.show_span_warnings === "boolean");
+    if (saved) $("#weaveShowSupportNeeds").checked = saved.show_span_warnings;
+    updateSupportMarkers();
+  }
+
+  function setSupportNeedsVisible(visible) {
+    $("#weaveShowSupportNeeds").checked = visible;
+    updateSupportMarkers();
+    const state = window.ClaylineStudioState;
+    state?.saveMode(state.settingsStorage(window), "weave_display", {
+      schema: "clayline.weave-display.v1", show_span_warnings: visible,
+    });
+  }
+
+  function updateSupportGuides() {
+    window.claylineViewport3d?.setSupportGuides?.(S.supportPreview.guides, S.supportPlacementId);
+  }
+
+  function supportCurtainLocation() {
+    const selected = chosenSupportCurtain();
+    if (!selected?.enabled) return null;
+    const { curtainMoves, guides } = S.supportPreview;
+    const printed = curtainMoves.get(selected.id);
+    const guide = guides.find(({ id }) => id === selected.id);
+    if (guide && (S.supportError || !printed)) {
+      const points = guide.sections.flat();
+      const min = [0, 1, 2].map((axis) => Math.min(...points.map((point) => point[axis])));
+      const max = [0, 1, 2].map((axis) => Math.max(...points.map((point) => point[axis])));
+      return { point: points.at(-1), min, max };
+    }
+    return printed || null;
+  }
+
+  function locateSupportCurtain() {
+    const location = supportCurtainLocation();
+    if (!location) return;
+    if (Number.isInteger(location.index)) window.claylineScrubber?.locate(location.index);
+    const center = location.min.map((coordinate, axis) => (coordinate + location.max[axis]) / 2);
+    const span = Math.max(...location.min.map((coordinate, axis) => location.max[axis] - coordinate));
+    window.claylineViewport3d?.focusTracePoint?.(center, span);
+    window.claylineScrubber?.pulseAt?.(...location.point);
+  }
+
+  function updateSupportCurtainReadout() {
+    const selected = chosenSupportCurtain();
+    const readout = $("#weaveSupportCurtainDimensions");
+    const targetReadout = $("#weaveSupportCurtainTarget");
+    const target = S.supportAnalysis?.target_results?.find((row) => row.support_id === selected?.id);
+    const curtain = S.supportPreview.curtainMoves.get(selected?.id);
+    const bedZ = S.supportAnalysis?.bead_model?.bed_z_mm || 0;
+    const showTarget = target && (!target.target_met || target.unresolved || (!S.supportError && curtain));
+    targetReadout.hidden = !selected?.enabled || !showTarget;
+    targetReadout.textContent = "";
+    if (selected?.enabled && showTarget) {
+      const range = [target.min_z, target.max_z].every(Number.isFinite)
+        ? " · height " + [target.min_z, target.max_z].map((height) => window.claylineUnits.fmt(height - bedZ, 1)).join("–")
+        : "";
+      const measured = Number.isFinite(target.max_unsupported_fraction)
+        ? ` · ${(target.max_unsupported_fraction * 100).toFixed(1)}% maximum unsupported` : "";
+      targetReadout.textContent = (target.unresolved ? "Target support unresolved"
+        : target.target_met ? "Target supported" : "Target still needs support") + range + measured;
+    }
+    readout.hidden = !selected?.enabled;
+    if (!selected?.enabled) return;
+    if (!curtain) {
+      readout.textContent = S.supportAnalysis
+        ? "No curtain clay generated at this placement."
+        : "Curtain dimensions appear after the path is built.";
+      return;
+    }
+    const fmt = (value) => window.claylineUnits.fmt(value, 1);
+    const prefix = S.supportError ? "Unverified path" : "Generated curtain";
+    const result = S.supportError ? prefix : target ? target.unresolved ? "support unresolved"
+      : target.target_met ? "target supported" : "target still needs support" : prefix;
+    readout.textContent = `${fmt(curtain.max[2] - bedZ)} high · ${result}`;
+  }
+
+  function renderSupportInspection(status, count, unresolved) {
+    const section = $("#weaveSupportInspection");
+    const blocked = Boolean(S.supportError);
+    section.hidden = !S.slice || !(S.supports.enabled || count || unresolved || blocked);
+    section.classList.toggle("is-refused", blocked);
+    $("#weaveSupportInspectionTitle").textContent = blocked ? "Support route blocked"
+      : unresolved ? "Support check unresolved"
+      : S.supportAnalysis?.targets_met === false ? "Support targets not reached"
+      : count ? "Support still needed" : "Supports";
+    $("#weaveSupportInspectionStatus").textContent = status;
+    $("#weaveSupportInspectSpan").hidden = !isSupportPoint(supportDiagnostic()?.end);
+  }
+
+  function renderSupportDiagnostic() {
+    const span = supportDiagnostic();
+    $("#weaveSupportDiagnostic").hidden = !span;
+    if (!span) return;
+    const total = supportDiagnosticSet().diagnostics.length;
+    $("#weaveSupportSpanIndex").textContent = `${S.supportSpanIndex + 1} / ${total}`;
+    $("#weaveSupportPrevious").disabled = S.supportSpanIndex <= 0;
+    $("#weaveSupportNext").disabled = S.supportSpanIndex >= total - 1;
+    $("#weaveSupportLocate").disabled = !Array.isArray(span.end);
+    const role = {
+      wall: "Wall", floor: "Floor",
+      support_foot: span.support_id === "curtain-foundation" ? "Curtain footing" : "Reinforced foot",
+      support_curtain: "Curtain", support_root: "Support base",
+    }[span.role] || "Print path";
+    const measured = Number.isFinite(span.max_unsupported_fraction)
+      ? `${(span.max_unsupported_fraction * 100).toFixed(1)}% unsupported` : "Support indication unresolved";
+    const limit = S.supportAnalysis.threshold_fraction;
+    const threshold = Number.isFinite(limit) ? ` · ${Math.round(limit * 100)}% limit` : "";
+    const reason = {
+      lower_contact: "Too little clay underneath",
+      missing_foundation: "No verified foundation",
+      unresolved_contact: "Contact could not be verified",
+    }[span.reason] || String(span.reason || "").replaceAll("_", " ");
+    $("#weaveSupportDiagnosticMessage").textContent =
+      [role, span.support_id, measured + threshold, reason].filter(Boolean).join(" · ");
+    const point = Array.isArray(span.point) ? supportCoordinates(span.point)
+      : Array.isArray(span.end) ? supportCoordinates(span.end) : "";
+    const length = Number.isFinite(span.length_mm) ? `span ${window.claylineUnits.fmt(span.length_mm, 1)}` : "";
+    $("#weaveSupportDiagnosticLocation").textContent = [point, length].filter(Boolean).join(" · ");
+  }
+
+  function locateSupportDiagnostic() {
+    const span = supportDiagnostic();
+    if (!Array.isArray(span?.end)) return;
+    if (!supportDiagnosticsUseReference() && Number.isInteger(span.end_move)) {
+      window.claylineScrubber?.locate(span.end_move);
+    }
+    const point = span.point || span.end;
+    window.claylineViewport3d?.focusTracePoint?.(point);
+    window.claylineScrubber?.pulseAt?.(...point);
+  }
+
+  function stepSupportDiagnostic(delta) {
+    const last = (supportDiagnosticSet().diagnostics.length || 1) - 1;
+    S.supportSpanIndex = Math.max(0, Math.min(last, S.supportSpanIndex + delta));
+    renderSupportDiagnostic();
+    syncSupportPickControls();
+    locateSupportDiagnostic();
+  }
+
+  function clearSupportResult() {
+    cancelSupportPick();
+    S.supportAnalysis = null;
+    S.supportError = "";
+    S.supportSpanIndex = 0;
+    renderSupportResult(null);
+  }
+
+  function renderSupportResult(payload) {
+    const analysis = payload?.support_analysis ?? null;
+    const supportError = typeof payload?.support_error === "string" ? payload.support_error : "";
+    if (S.supportAnalysis !== analysis || S.supportError !== supportError) {
+      const diagnostics = supportDiagnosticSet(analysis, Boolean(supportError)).diagnostics;
+      const routeFailure = supportError
+        ? diagnostics.findIndex((span) => span.reason === "missing_foundation" || span.unresolved)
+        : -1;
+      S.supportSpanIndex = Math.max(0, routeFailure);
+    }
+    S.supportError = supportError;
+    S.supportAnalysis = analysis;
+    S.supportPreview = supportPreview(payload);
+    const model = analysis?.bead_model;
+    const beadWidth = model?.width_mm ?? S.slice?.centerline?.meta?.bead_width;
+    $("#weaveSupportBasis").textContent = beadWidth > 0
+      ? `${window.claylineUnits.fmt(beadWidth, 2)} ${model?.basis === "calibrated" ? "calibrated" : "nominal"} bead`
+      : "";
+    const count = analysis?.diagnostics?.length || 0;
+    const totalCount = analysis?.diagnostic_count || count;
+    const unresolved = supportReviewState(payload) === "unresolved";
+    let status = S.slice ? "Checking support on the current path…" : "Slice the form to inspect support needs.";
+    if (S.supportError) status = S.supportError;
+    else if (unresolved) status = analysis?.message || "Support indication unresolved.";
+    else if (analysis?.targets_met === false) status = "Added supports have not reached all of their target areas.";
+    else if (totalCount) {
+      const remaining = analysis?.diagnostics_truncated
+        ? `Showing ${count} of ${totalCount} remaining spans.`
+        : `${totalCount} ${totalCount === 1 ? "span still needs" : "spans still need"} support.`;
+      status = analysis?.targets_met === true
+        ? `Support targets reached. ${remaining} Curtains support only the areas they touch.`
+        : `Support target exceeded. ${remaining}`;
+    } else if (analysis?.targets_met === true) status = "Support targets reached. No remaining indications at this threshold.";
+    else if (analysis) status = "No support indications at the selected threshold.";
+    $("#weaveSupportStatus").textContent = status;
+    $("#weaveSupportStatus").classList.toggle("is-refused", Boolean(S.supportError));
+    const added = $("#weaveSupportAdded");
+    const additions = [];
+    if (analysis?.added_volume_ml > 0) additions.push(`${analysis.added_volume_ml.toFixed(1)} mL of clay`);
+    if (analysis?.added_time_seconds > 0) additions.push(formatDuration(analysis.added_time_seconds));
+    const addedLabel = S.supportError ? "Unverified support path" : "Added supports";
+    added.textContent = additions.length ? `${addedLabel} · ${additions.join(" · ")}` : "";
+    added.hidden = !additions.length || !S.supports.enabled;
+    $("#weaveSupportColorRow").hidden = !S.supportPreview.hasSupportPath;
+    renderSupportInspection(status, totalCount, unresolved);
+    renderSupportDiagnostic();
+    updateSupportCurtainReadout();
+    updateSupportMarkers();
+    updateSupportGuides();
+    syncSupportPickControls();
+  }
+
+  function supportValueAt(record, path) {
+    return path.split(".").reduce((value, key) => value?.[key], record);
+  }
+
+  function setSupportValueAt(record, path, value) {
+    const [group, key] = path.split(".");
+    if (key === undefined) record[group] = value;
+    else if (group === "anchor") record.anchor = value === null ? null : { [key]: value };
+    else record[group][key] = value;
+  }
+
+  function writeSupportControl(control, value) {
+    if (control.type === "checkbox") control.checked = value === true;
+    else if (value == null) control.value = "";
+    else if (control.dataset.unit === "mm") {
+      const units = window.claylineUnits;
+      control.value = String(units.roundDisplay(units.fromMm(value)));
+    } else {
+      const factor = Number(control.dataset.supportFactor || 1);
+      control.value = factor === 1 ? String(value) : String(Number((value * factor).toFixed(5)));
+    }
+  }
+
+  function readSupportControl(control, fallback) {
+    if (control.type === "checkbox") return control.checked;
+    if (control.tagName === "SELECT") return control.value;
+    if (control.value === "") return control.placeholder === "Auto" ? null : fallback;
+    const number = Number(control.value);
+    if (!Number.isFinite(number)) return fallback;
+    const clamped = Math.max(control.min === "" ? -Infinity : Number(control.min),
+      Math.min(control.max === "" ? Infinity : Number(control.max), number));
+    const value = control.step === "1" ? Math.round(clamped) : clamped;
+    if (control.dataset.unit === "mm") return window.claylineUnits.toMm(value);
+    return value / Number(control.dataset.supportFactor || 1);
+  }
+
+  function repeatedCurtainId(index) {
+    return `repeated-${index + 1}`;
+  }
+
+  function supportCurtains(settings = S.supports) {
+    const overrides = new Map(settings.placements.map((row) => [row.id, row]));
+    const repeated = settings.repeated_curtains;
+    const rows = repeated.enabled
+      ? Array.from({ length: repeated.count }, (_, index) => {
+        const id = repeatedCurtainId(index);
+        return overrides.get(id) || curtainPlacement(id, "repeated");
+      })
+      : [];
+    return rows.concat(settings.placements.filter((row) => row.origin === "local"));
+  }
+
+  function activeSupportCurtains(settings = S.supports) {
+    return supportCurtains(settings).filter((row) => row.enabled).length;
+  }
+
+  function chosenSupportCurtain() {
+    return supportCurtains().find((row) => row.id === S.supportPlacementId) || null;
+  }
+
+  function setSupportCurtain(settings, row) {
+    const index = settings.placements.findIndex((placement) => placement.id === row.id);
+    if (index === -1) settings.placements.push(row);
+    else settings.placements[index] = row;
+  }
+
+  function supportCurtainName(row) {
+    const number = row.id.split("-").at(-1);
+    return row.origin === "local" ? `Local curtain ${number}` : `Repeated curtain ${number}`;
+  }
+
+  function syncSupportSettings({ force = false } = {}) {
+    const settings = S.supports;
+    supportControls("setting").forEach((control) => {
+      if (!force && control === document.activeElement && control.type === "number") return;
+      const path = control.dataset.supportSetting;
+      const value = supportValueAt(settings, path);
+      writeSupportControl(control, path.endsWith(".enabled") ? settings.enabled && value : value);
+    });
+    const threshold = Math.round(settings.max_unsupported_fraction * 100);
+    $("#weaveSupportThresholdHint").textContent =
+      `Checks the piece profile without weaves. Requires at least ${100 - threshold}% bead overlap; lower values build more support.`;
+    $("#weaveSupportRepeatedOptions").hidden = !(settings.enabled && settings.repeated_curtains.enabled);
+    const rows = supportCurtains(settings);
+    const activeCount = rows.filter((row) => row.enabled).length;
+    $("#weaveSupportCurtainCount").textContent = `${activeCount} of ${SUPPORT_CURTAIN_LIMIT} supports`;
+    $("#weaveSupportCurtainCount").hidden = !settings.enabled || !activeCount;
+    const select = $("#weaveSupportPlacement");
+    const signature = JSON.stringify(rows.map((row) => [row.id, row.enabled]));
+    if (select.dataset.supportRows !== signature) {
+      select.replaceChildren(...rows.map((row) => {
+        const option = document.createElement("option");
+        option.value = row.id;
+        option.textContent = supportCurtainName(row) + (row.enabled ? "" : " · off");
+        return option;
+      }));
+      select.dataset.supportRows = signature;
+    }
+    if (!rows.some((row) => row.id === S.supportPlacementId)) {
+      S.supportPlacementId = rows[0]?.id || "";
+    }
+    select.value = S.supportPlacementId;
+    const chosen = chosenSupportCurtain();
+    $("#weaveSupportPlacementField").hidden = !settings.enabled || !chosen;
+    $("#weaveSupportPlacementOptions").hidden = !settings.enabled || !chosen;
+    $("#weaveSupportAdvancedPlacement").hidden = !settings.enabled || !chosen;
+    if (chosen) {
+      $("#weaveSupportRemove").hidden = chosen.origin !== "local";
+      $("#weaveSupportFractionField").hidden = chosen.origin !== "repeated";
+      supportControls("placement").forEach((control) => {
+        if (!force && control === document.activeElement && control.type === "number") return;
+        writeSupportControl(control, supportValueAt(chosen, control.dataset.supportPlacement));
+      });
+    }
+    updateSupportCurtainReadout();
+    syncSupportPickControls();
+  }
+
+  function supportCoordinates(point) {
+    return ["X", "Y", "Z"].map((axis, index) =>
+      `${axis} ${window.claylineUnits.fmt(point[index], 1)}`).join(" · ");
+  }
+
+  function syncSupportPickControls() {
+    const canPick = Array.isArray(S.exactResult?.trace?.moves) && Boolean(window.claylineViewport3d);
+    const atActiveLimit = activeSupportCurtains() >= SUPPORT_CURTAIN_LIMIT;
+    const atPlacementLimit = S.supports.placements.length >= 2 * SUPPORT_CURTAIN_LIMIT;
+    const available = !atActiveLimit && !atPlacementLimit;
+    const add = $("#weaveSupportAddLocal");
+    const curtainLocatable = Boolean(supportCurtainLocation());
+    $("#weaveSupportLocateCurtain").disabled = !curtainLocatable;
+    $("#weaveSupportInspectCurtain").hidden = !curtainLocatable;
+    add.disabled = !canPick || !available;
+    add.setAttribute("aria-pressed", String(S.supportPick?.kind === "add"));
+    add.classList.toggle("is-active", S.supportPick?.kind === "add");
+    $("#weaveSupportAddAtSpan").hidden = !available || !diagnosticWallPoint(supportDiagnostic());
+    $("#weaveSupportPickHint").textContent = S.supportPickMessage
+      || (atPlacementLimit ? "Remove a local support to add another."
+        : atActiveLimit ? "Reduce the radial count or remove a local support to add another."
+        : canPick ? "" : "Wait for the sliced path to pick an attachment.");
+    $("#weaveToolpathHost")?.classList.toggle("is-picking-support", Boolean(S.supportPick));
+  }
+
+  function cancelSupportPick() {
+    if (!S.supportPick) return;
+    S.supportPick = null;
+    S.supportPickMessage = "";
+    syncSupportPickControls();
+  }
+
+  function beginSupportPick(kind) {
+    if (S.supportPick?.kind === kind) {
+      cancelSupportPick();
+      return;
+    }
+    cancelLayFlat();
+    S.supportPick = { kind, id: S.supportPlacementId };
+    S.supportPickMessage = "Click the sculpture's wall to set the attachment. Esc cancels.";
+    syncSupportPickControls();
+  }
+
+  function supportAnchor(point) {
+    const bounds = activeWorkBounds();
+    const center = S.mesh?.placement_center_mm || (bounds
+      ? [(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2]
+      : [0, 0]);
+    const x = point[0] - center[0] - numberValue("#weaveOffsetX", 0);
+    const y = point[1] - center[1] - numberValue("#weaveOffsetY", 0);
+    const angle = numberValue("#weaveRotate", 0) * Math.PI / 180;
+    const round = (value) => Number(value.toFixed(6));
+    const source = S.mesh?.source_sha256;
+    return {
+      x_mm: round(x * Math.cos(angle) + y * Math.sin(angle)),
+      y_mm: round(y * Math.cos(angle) - x * Math.sin(angle)),
+      z_mm: round(point[2]),
+      ...(source ? { source_sha256: source } : {}),
+    };
+  }
+
+  function attachSupportCurtain(point, pick) {
+    if (pick.kind === "add") {
+      const ids = new Set(S.supports.placements.map((row) => row.id));
+      let number = 1;
+      while (ids.has(`local-${number}`)) number += 1;
+      const id = `local-${number}`;
+      const row = curtainPlacement(id, "local", { anchor: supportAnchor(point) });
+      S.supportPlacementId = id;
+      changeSupportSettings((settings) => setSupportCurtain(settings, row), { automatic: true });
+    } else {
+      const selected = chosenSupportCurtain();
+      if (!selected || selected.id !== pick.id) return;
+      const row = curtainPlacement(selected.id, selected.origin, selected);
+      row.anchor = supportAnchor(point);
+      changeSupportSettings((settings) => setSupportCurtain(settings, row), { automatic: true });
+    }
+    commitWeaveStep();
+  }
+
+  function changeSupportSettings(edit, { automatic = false } = {}) {
+    const previous = S.supports;
+    const next = supportSettings(S.supports);
+    if (automatic && !previous.enabled) {
+      next.foot.enabled = false;
+      next.repeated_curtains.enabled = false;
+      next.placements = [];
+    }
+    edit(next);
+    // Main controls ask the planner to size supports. Appearance and
+    // Advanced edits preserve any explicitly chosen manual geometry.
+    if (automatic) {
+      next.foot.extent_mode = "auto";
+      next.repeated_curtains.extent_mode = "auto";
+      next.repeated_curtains.top_height_mm = null;
+      next.placements = next.placements.map((row) => ({
+        ...row, reach_mm: null, top_height_mm: null, thickness_mm: null,
+        automatic_fields: [...new Set([...row.automatic_fields, "reach_mm", "top_height_mm", "thickness_mm"])],
+      }));
+    }
+    next.enabled = (previous.enabled || automatic) && (next.foot.enabled
+      || next.repeated_curtains.enabled || next.placements.some((row) => row.enabled));
+    if (activeSupportCurtains(next) > SUPPORT_CURTAIN_LIMIT) {
+      S.supportPickMessage = "Up to 12 supports can be active. Reduce the radial count or remove a local support.";
+      syncSupportSettings({ force: true });
+      return;
+    }
+    cancelSupportPick();
+    S.supportPickMessage = "";
+    S.supports = next;
+    if (next.enabled !== previous.enabled) syncAutomaticIslandRangeForPattern();
+    syncSupportSettings({ force: true });
+    if (JSON.stringify(next) === JSON.stringify(previous)) return;
+    beginMetric();
+    scheduleModulation("settle");
+    if (S.slice) setStatus("Checking support settings…", "transient");
+  }
+
+  function bindSupportControls() {
+    restoreSupportDisplay();
+    supportControls("setting").forEach((control) => {
+      control.addEventListener("change", () => {
+        const path = control.dataset.supportSetting;
+        const value = readSupportControl(control, supportValueAt(S.supports, path));
+        const automatic = !control.closest("#weaveSupportAdvanced") && !path.startsWith("style.");
+        changeSupportSettings((settings) => {
+          setSupportValueAt(settings, path, value);
+          if (automatic && ["repeated_curtains.enabled", "repeated_curtains.count"].includes(path)) {
+            settings.repeated_curtains.distribution = "angular";
+            settings.repeated_curtains.offset = 0;
+            settings.placements = settings.placements.filter((row) => row.origin === "local");
+          }
+          if (!automatic && ["foot.extra_width_mm", "foot.height_mm"].includes(path)) settings.foot.extent_mode = "manual";
+          if (!automatic && ["repeated_curtains.reach_mm", "repeated_curtains.top_height_mm", "repeated_curtains.thickness_mm"].includes(path)) {
+            settings.repeated_curtains.extent_mode = "manual";
+          }
+        }, { automatic });
+      });
+    });
+    supportControls("placement").forEach((control) => {
+      control.addEventListener("change", () => {
+        const selected = chosenSupportCurtain();
+        if (!selected) return;
+        const path = control.dataset.supportPlacement;
+        const row = curtainPlacement(selected.id, selected.origin, selected);
+        const value = readSupportControl(control, supportValueAt(row, path));
+        setSupportValueAt(row, path, value);
+        row.automatic_fields = row.automatic_fields.filter((field) => field !== path);
+        changeSupportSettings((settings) => setSupportCurtain(settings, row));
+      });
+    });
+    $("#weaveSupportPlacement").addEventListener("change", (event) => {
+      cancelSupportPick();
+      S.supportPlacementId = event.target.value;
+      syncSupportSettings();
+      updateSupportGuides();
+    });
+    $("#weaveSupportRemove").addEventListener("click", () => {
+      changeSupportSettings((settings) => {
+        settings.placements = settings.placements.filter((row) => row.id !== S.supportPlacementId);
+      }, { automatic: true });
+    });
+    $("#weaveSupportAddLocal").addEventListener("click", () => beginSupportPick("add"));
+    $("#weaveSupportLocateCurtain").addEventListener("click", locateSupportCurtain);
+    $("#weaveSupportInspectSpan").addEventListener("click", locateSupportDiagnostic);
+    $("#weaveSupportInspectCurtain").addEventListener("click", locateSupportCurtain);
+    $("#weaveSupportInspectSettings").addEventListener("click", () => {
+      $("#weaveSupports").scrollIntoView({ block: "start" });
+      $("#weaveSupportThreshold").focus({ preventScroll: true });
+    });
+    $("#weaveSupportAddAtSpan").addEventListener("click", () => {
+      const point = diagnosticWallPoint(supportDiagnostic());
+      if (point) attachSupportCurtain(point, { kind: "add" });
+    });
+    $("#weaveShowSupportNeeds").addEventListener("change", (event) => setSupportNeedsVisible(event.target.checked));
+    $("#weaveSupportWarningsToggle").addEventListener("click", () =>
+      setSupportNeedsVisible(!$("#weaveShowSupportNeeds").checked));
+    $("#weaveSupportColors").addEventListener("change", () => {
+      recolorWeaveTrace();
+      window.claylineScrubber?.setSupportColors?.(supportColorsRequested());
+      updateSupportLegend();
+    });
+    $("#weaveSupportPrevious").addEventListener("click", () => stepSupportDiagnostic(-1));
+    $("#weaveSupportNext").addEventListener("click", () => stepSupportDiagnostic(1));
+    $("#weaveSupportLocate").addEventListener("click", locateSupportDiagnostic);
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") cancelSupportPick();
+    });
+    const host = $("#weaveToolpathHost");
+    let start = null;
+    host.addEventListener("pointerdown", (event) => {
+      start = [event.clientX, event.clientY];
+    }, true);
+    host.addEventListener("click", (event) => {
+      const pick = S.supportPick;
+      if (!pick || !start || Math.hypot(event.clientX - start[0], event.clientY - start[1]) > 6) return;
+      const viewportIndex = window.claylineViewport3d?.pickTracePoint(event);
+      const point = supportWallPoint(viewportIndex == null ? -1 : viewportIndex - 1);
+      if (!point) {
+        S.supportPickMessage = "Choose a deposited wall coil.";
+        syncSupportPickControls();
+        return;
+      }
+      attachSupportCurtain(point, pick);
+    });
+  }
+
   function syncInteriorControls() {
     const interior = interiorValues();
     const fills = interior.interior !== "hollow";
@@ -4880,15 +5678,16 @@
 
     // Bottom is the floor of a hollow vessel, and a filled interior already
     // prints material at the base. Bottom layers is grayed by
-    // syncBottomAvailability; its alternate-direction switch follows here,
-    // last, because syncControls has already answered it for the hollow case.
+    // syncBottomAvailability; its switch follows here, last, because
+    // syncControls has already answered it for the hollow case.
     if (fills) {
+      const noBottomReason = interior.interior === "solid"
+        ? DISABLED_REASONS.solidBottom
+        : DISABLED_REASONS.infillBottom;
       setDependencyDisabled(
         "#weaveBottomAlternate",
         true,
-        interior.interior === "solid"
-          ? DISABLED_REASONS.solidBottom
-          : DISABLED_REASONS.infillBottom,
+        noBottomReason,
         "#weaveBottomAlternateHint",
       );
     }
@@ -5090,6 +5889,7 @@
     // Last, so the interior has the final word on the alternate-direction
     // switch that the hollow-case rules above have already answered.
     syncInteriorControls();
+    syncSupportSettings();
     syncPresetChips();
     syncWeaveStrip();
     syncFollowChips();
@@ -5288,12 +6088,13 @@
     const emergence = S.islandEmergence;
     if (!S.rangeAutoIslandStop || !emergence || !Number.isInteger(S.rangeTotal)) return;
     const crown = $("#weaveZBlend").checked && $("#weaveFollowTop").checked && !$("#weaveLevelRim").checked;
+    const throughSplit = S.supports.enabled;
     setControlValue("#weaveRangeFrom", 1);
     setControlValue(
       "#weaveRangeTo",
-      crown ? S.rangeTotal : emergence.default_stop_to_layer,
+      crown || throughSplit ? S.rangeTotal : emergence.default_stop_to_layer,
     );
-    $("#weaveRangeEnabled").checked = !crown;
+    $("#weaveRangeEnabled").checked = !crown && !throughSplit;
     if (!crown) S.crownFinish = null;
     syncRangeControls();
   }
@@ -5889,9 +6690,11 @@
     const to = Number.isInteger(range.to) ? range.to : (total ?? 1);
     const number = (value, fallback) => (Number.isFinite(value) ? value : fallback);
     const patternJson = payload.pattern?.canonical_json ?? current.pattern_json;
+    const supports = payload.support_settings || null;
     return {
-      schema: weaveSettingsSchemaFor(patternJson),
+      schema: weaveSettingsSchemaFor(patternJson, supports),
       pattern_json: patternJson,
+      ...(supports ? { support_settings: supports } : {}),
       placement: {
         up_axis: saved.up ?? current.placement.up_axis,
         scale: number(saved.scale, 1),
@@ -5980,13 +6783,21 @@
         // file was sliced from: the new print file's form takes its place.
         // It leaves the table now, so the restore's step is made on no model
         // and Undo brings that form back.
-        const overForm = Boolean(meshId) && formFromPrintOnTable()
-          && payload.source_mesh?.match === false;
-        const needsMesh = Boolean(payload.needs_mesh) || overForm;
-        if (overForm) switchWeaveModel(null);
-        weaveStateWriter?.suspend(() => applyWeaveSettings(snapshot, { settle: true }));
-        commitPendingWeaveEdit();
         const source = payload.source_mesh || {};
+        const supportedPrint = snapshot.support_settings?.enabled === true
+          || payload.form_from_print?.reason === "generated_supports"
+          || payload.form_from_print?.code === "generated_supports";
+        const supportedRestore = supportedPrint ? {
+          id: payload.restore_id || null,
+          source: source.sha256 || null,
+        } : null;
+        const overForm = Boolean(meshId) && formFromPrintOnTable()
+          && source.match === false;
+        const wrongSupportMesh = supportedPrint && source.match === false;
+        const needsMesh = Boolean(payload.needs_mesh) || overForm || wrongSupportMesh;
+        if (overForm || wrongSupportMesh) switchWeaveModel(null);
+        weaveStateWriter?.suspend(() => applyWeaveSettings(snapshot, { settle: true, supportedRestore }));
+        commitPendingWeaveEdit();
         const modelName = source.filename || "the model";
         let sentence;
         // The model to come is the file's own whether none is loaded or the one
@@ -5995,7 +6806,7 @@
         S.restoreAwaitingModel = needsMesh ? { model: modelName, file: file.name } : null;
         // With no model on the table the form comes from the printed wall
         // itself, while the model the file names can still be chosen instead.
-        const making = needsMesh && !S.file && generation === S.formGeneration
+        const making = needsMesh && !S.file && generation === S.formGeneration && !supportedPrint
           ? formFromPrintWaiting(file, payload, snapshot)
           : null;
         // With no model, the empty preview takes over from any error panel an
@@ -6005,7 +6816,10 @@
         if (making) {
           sentence = "";
         } else if (needsMesh) {
-          sentence = `Every setting came back from ${file.name}. Load ${modelName}, the model it was sliced from, to go on with the job.`;
+          sentence = supportedPrint
+            ? `The print file includes generated supports. Load ${modelName} to restore the editable sculpture.`
+            : `Every setting came back from ${file.name}. Load ${modelName}, the model it was sliced from, to go on with the job.`;
+          if (supportedPrint) S.restoreAwaitingModel.sentence = sentence;
         } else if (source.match === false) {
           sentence = `Every setting came back from ${file.name}, but the loaded model is not ${modelName}, the one it was sliced from.`;
         } else {
@@ -7276,12 +8090,7 @@
       if ($("#weaveFlowColorButton").disabled) return;
       S.flowColorUserOverride = !flowColorRequested();
       syncFlowControls();
-      // In-place vertex-color rewrite — no geometry rebuild, camera untouched.
-      if (S.lastTrace && window.claylineViewport3d) {
-        const norm = window.claylineNormalizeTraceMoves(S.lastTrace);
-        const flowRange = flowColorRequested() ? traceFlowRange(S.lastTrace) : null;
-        window.claylineViewport3d.setTraceColors(depositColors(norm, flowRange));
-      }
+      recolorWeaveTrace();
     });
     $("#weaveFitButton").addEventListener("click", () => {
       window.claylineViewport3d?.resetView();
@@ -7351,6 +8160,11 @@
         S.crownFinish = null;
         S.flowColorAutoArmed = false;
         S.flowColorUserOverride = null;
+        S.supports = supportSettings();
+        S.supportedRestore = null;
+        S.supportPlacementId = "";
+        S.supportPickMessage = "";
+        syncSupportSettings({ force: true });
         $("#weaveRangeEnabled").checked = false;
         $("#weaveRangeEnabled").disabled = true;
         if (S.defaults) applyWeaveDefaults(S.defaults);
@@ -8376,7 +9190,10 @@
       renderImageLabels();
       syncProfileFacts();
       if (S.result) renderReport(S.result.report, S.result);
-      if (S.lastTrace) renderTrace(S.lastTrace);
+      if (S.lastTrace) {
+        renderTrace(S.lastTrace);
+        renderSupportResult(S.exactResult);
+      }
       else if (S.lastMeshPreview) renderMeshPreview(S.lastMeshPreview);
     });
     restoreStatusDefault = $("#weaveRestoreStatus")?.textContent || "";
@@ -8405,6 +9222,7 @@
     bindSliceControls();
     bindPatternControls();
     bindImageControls();
+    bindSupportControls();
     bindActions();
     bindHistoryFieldCommits();
     bindHistoryCommitPoints();

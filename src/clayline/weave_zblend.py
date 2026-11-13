@@ -30,12 +30,17 @@ from clayline.wave import (
     settings_wave_count,
     shapes_clay,
 )
+from clayline.weave_bottom import takes_turns
 from clayline.weave_models import Pattern, Ring, SeamPolicy, SlicedForm, WeaveSettings
 
 # This dimensionless ratio becomes ``layer_height / bead_width`` for each
 # slice.  It is a physical clay-overhang limit, deliberately named because it
 # must be tuned against real prints rather than hidden as a geometry epsilon.
 SLOPE_MAX_RATIO = 1.0
+# How far a level base turn's points may stray from its one height, in
+# millimetres: the arithmetic that takes the climb out, and nothing a printer
+# could lay.
+_LEVEL_BASE_HEIGHT_SLACK = 1e-9
 
 
 class ZBlendGeometryError(ValueError):
@@ -156,6 +161,14 @@ class ZBlendRevolution:
 
     ``extra_wave_counts`` is each printed extra weave's own whole count on
     this lap, matching every point's ``extra_weaves``; empty with one weave.
+
+    ``is_level_base`` is a turn under a base laid taking turns (rim to centre,
+    then centre to rim): the same lap, point for point round, laid level at
+    its own layer's height instead of climbing to the next.  It keeps the lap's
+    lean out toward the next layer's ring, as every turn above leans, so it
+    ends straight under where the next turn starts, one layer up.  Only the
+    turns under the base are ever level, so a floor laid after its wall turn
+    never runs beside a wall taller than itself.
     """
 
     index: int
@@ -166,6 +179,8 @@ class ZBlendRevolution:
     points: tuple[ZBlendPoint, ...]
     is_crown: bool = False
     extra_wave_counts: tuple[int, ...] = ()
+    is_level_base: bool = False
+    holds_source_outline: bool = False
 
     def __post_init__(self) -> None:
         if self.index < 0 or self.source_layer_index < 0 or self.target_layer_index < 0:
@@ -192,7 +207,18 @@ class ZBlendRevolution:
             for point in self.points
         ):
             raise ValueError("every revolution point must retain its layer provenance")
-        if self.is_level_rim:
+        if self.is_level_base:
+            if self.is_level_rim or self.is_crown:
+                raise ValueError("a level base turn is neither a level rim nor a crown")
+            if self.target_layer_index != self.source_layer_index + 1:
+                raise ValueError("a level base turn stands under the next layer's turn")
+            height = self.points[0].z - self.points[0].profile_z_offset
+            if any(
+                abs((point.z - point.profile_z_offset) - height) > _LEVEL_BASE_HEIGHT_SLACK
+                for point in self.points[1:]
+            ):
+                raise ValueError("a level base turn must stay at its own layer's height")
+        elif self.is_level_rim:
             if self.source_layer_index != self.target_layer_index:
                 raise ValueError("a level rim stays on the top layer")
             if not any(abs(point.profile_z_offset) > 1e-12 for point in self.points) and any(
@@ -265,17 +291,42 @@ class ZBlendPath:
         if tuple(item.index for item in self.revolutions) != tuple(range(len(self.revolutions))):
             raise ValueError("z-blend revolution indices must be contiguous and zero-based")
         for previous, following in zip(self.revolutions, self.revolutions[1:], strict=False):
-            _assert_continuous_boundary(previous.points[-1], following.points[0])
+            # A level base turn ends a layer below where the next turn starts:
+            # the step up between them is the one place the path is not
+            # continuous in space.  Its weave still is.
+            _assert_continuous_boundary(
+                previous.points[-1], following.points[0], in_space=not previous.is_level_base
+            )
         if any(item.is_level_rim for item in self.revolutions[:-1]):
             raise ValueError("only the final z-blend revolution may be a level rim")
+        if self.revolutions[-1].is_level_base or any(
+            following.is_level_base and not previous.is_level_base
+            for previous, following in zip(self.revolutions, self.revolutions[1:], strict=False)
+        ):
+            raise ValueError("only the turns under a base may be level, and never the last")
 
     @property
     def points(self) -> tuple[ZBlendPoint, ...]:
-        """Return one emission sequence with shared revolution boundaries de-duplicated."""
+        """Return one emission sequence with shared revolution boundaries de-duplicated.
 
-        return self.revolutions[0].points + tuple(
-            point for revolution in self.revolutions[1:] for point in revolution.points[1:]
-        )
+        A turn after a level base turn shares no point with it, so its first
+        point is kept: the step up between them is part of the sequence.
+        """
+
+        if not self.revolutions[0].is_level_base:
+            return self.revolutions[0].points + tuple(
+                point for revolution in self.revolutions[1:] for point in revolution.points[1:]
+            )
+        sequence = list(self.revolutions[0].points)
+        for previous, revolution in zip(self.revolutions, self.revolutions[1:], strict=False):
+            sequence.extend(revolution.points if previous.is_level_base else revolution.points[1:])
+        return tuple(sequence)
+
+    @property
+    def level_base_count(self) -> int:
+        """How many turns under the base are laid level (a base taking turns)."""
+
+        return sum(1 for revolution in self.revolutions if revolution.is_level_base)
 
     @property
     def has_level_rim(self) -> bool:
@@ -612,6 +663,7 @@ def _wall_revolutions(
     layer_height: float,
     compensate_thickness: bool,
     pattern_line_count: int,
+    hold_outline_layers: frozenset[int],
 ) -> tuple[list[ZBlendRevolution], float, tuple[float, ...]]:
     """Build ordinary vase revolutions at one resolved top-follow scale.
 
@@ -650,6 +702,7 @@ def _wall_revolutions(
             _extra_lap(extra, source, cursor, revolution_index, pattern_line_count)
             for extra, cursor in zip(extras, extra_cursors, strict=True)
         )
+        hold_outline = source.provenance.layer_index in hold_outline_layers
         points = _blend_revolution(
             source,
             target,
@@ -668,6 +721,7 @@ def _wall_revolutions(
             previous_pattern_active=previous_pattern_active,
             extra_laps=laps,
             fade_layer_count=pattern_line_count,
+            hold_source_outline=hold_outline,
         )
         if top_follow and compensate_thickness:
             points = _with_thickness_compensation(
@@ -687,6 +741,7 @@ def _wall_revolutions(
                 points=points,
                 is_crown=False,
                 extra_wave_counts=tuple(lap.wave_count for lap in laps),
+                holds_source_outline=hold_outline,
             )
         )
         phase_cursor = points[-1].wave_phase
@@ -893,6 +948,7 @@ def build_zblend_path(
     pattern: Pattern,
     *,
     top_follow_slope_headroom: float = 0.0,
+    hold_outline_layers: frozenset[int] = frozenset(),
 ) -> ZBlendPath:
     """Morph one closed ring track into a continuous-Z Weave path.
 
@@ -902,7 +958,9 @@ def build_zblend_path(
 
     ``top_follow_slope_headroom`` is climb held back from the rim relief. It is
     zero everywhere except on a rebuild that a final check asked for, so an
-    ordinary path is unchanged.
+    ordinary path is unchanged. A supported split can hold the source
+    outline until the seam so its previous handle wall stays beneath the
+    first detached course.
     """
 
     if not math.isfinite(top_follow_slope_headroom) or top_follow_slope_headroom < 0.0:
@@ -925,18 +983,7 @@ def build_zblend_path(
             "turn off the level rim so the crown can follow the form's top."
         )
 
-    if crown_layer_index is None:
-        band = sliced.wall_bands[0]
-        rings = tuple(
-            sliced.layers[address.layer_index].rings[address.island_index]
-            for address in band.tracks[0].rings
-        )
-    else:
-        # Every prefix band has exactly one ring per layer (guaranteed by
-        # _crown_split_layer_index), so indexing directly is both correct
-        # and immune to the closed/hole classification quirks that can
-        # affect the crown region itself above this point.
-        rings = tuple(sliced.layers[index].rings[0] for index in range(crown_layer_index))
+    rings = _track_rings(sliced, crown_layer_index)
     if len(rings) < 2 and not pattern.settings.level_rim:
         raise ZBlendGeometryError(
             "Vase mode needs at least two closed-ring layers when the level-rim finish is off."
@@ -971,6 +1018,7 @@ def build_zblend_path(
             layer_height=sliced.layer_height,
             compensate_thickness=False,
             pattern_line_count=pattern_line_count,
+            hold_outline_layers=hold_outline_layers,
         )
         top_follow_scale = _top_follow_support_scale(
             tuple(raw_revolutions),
@@ -994,6 +1042,7 @@ def build_zblend_path(
         layer_height=sliced.layer_height,
         compensate_thickness=follow_top,
         pattern_line_count=pattern_line_count,
+        hold_outline_layers=hold_outline_layers,
     )
 
     if pattern.settings.level_rim:
@@ -1063,11 +1112,155 @@ def build_zblend_path(
     )
     if pattern.images:
         revolutions = _with_image_relief(revolutions, pattern, rings)
+    if not follow_top:
+        revolutions = _with_level_base(revolutions, rings, sliced, pattern)
     return ZBlendPath(
         form_id=sliced.id,
         revolutions=tuple(revolutions),
         top_follow=top_follow_plan,
     )
+
+
+def _track_rings(sliced: SlicedForm, crown_layer_index: int | None) -> tuple[Ring, ...]:
+    """The one ring per layer a continuous-Z wall morphs through, bottom first."""
+
+    if crown_layer_index is None:
+        band = sliced.wall_bands[0]
+        return tuple(
+            sliced.layers[address.layer_index].rings[address.island_index]
+            for address in band.tracks[0].rings
+        )
+    # Every prefix band has exactly one ring per layer (guaranteed by
+    # _crown_split_layer_index), so indexing directly is both correct
+    # and immune to the closed/hole classification quirks that can
+    # affect the crown region itself above this point.
+    return tuple(sliced.layers[index].rings[0] for index in range(crown_layer_index))
+
+
+def level_turn_xy(sliced: SlicedForm, revolution: ZBlendRevolution) -> np.ndarray:
+    """One turn of a Vase-mode wall seen at its own layer's height, as (x, y) points.
+
+    A turn that climbs leans from its own layer's ring to the next one's as it
+    goes round.  What stands at its own layer's height is its weave on its own
+    layer's ring: the turn with that lean taken out, point by point.  This is
+    the line a floor meets beside a turn that stands on a climbing turn, and on
+    a wall with no weave it is the sliced ring exactly.  A level turn is laid
+    level and returns its own line, lean and all, and so does anything this
+    cannot match to its rings.
+    """
+
+    points = np.asarray([(point.x, point.y) for point in revolution.points], dtype=np.float64)
+    if revolution.is_level_base or revolution.is_level_rim:
+        return points
+    rings = {
+        ring.provenance.layer_index: ring
+        for ring in _track_rings(sliced, _crown_split_layer_index(sliced))
+    }
+    source = rings.get(revolution.source_layer_index)
+    target = rings.get(revolution.target_layer_index)
+    if (
+        source is None
+        or target is None
+        or not len(points) == len(source.points) == len(target.points)
+    ):
+        return points
+    lean = np.asarray(target.points, dtype=np.float64) - np.asarray(source.points, dtype=np.float64)
+    u = np.asarray([point.revolution_u for point in revolution.points], dtype=np.float64)
+    blend = _outline_blend(u) if revolution.holds_source_outline else u
+    return points - blend[:, None] * lean
+
+
+def floor_line_xy(sliced: SlicedForm, path: ZBlendPath, layer_index: int) -> np.ndarray:
+    """The wall line a Vase-mode base floor on ``layer_index`` is filled inside, as (x, y) points.
+
+    A turn standing on something flat — the bed, or a level turn under it — has
+    nothing under its climb but this floor, so the floor reaches out under the
+    turn's own line as laid, lean and all: on a foot that flares, a floor
+    stopped where the turn starts leaves its far side over nothing (Pete's
+    report, 2026-11-11).  A turn standing on a climbing turn stands on that
+    turn, and the floor meets it at its own layer's height
+    (:func:`level_turn_xy`).  The print and the drag preview both take this
+    line, so the preview draws the floor that prints.
+    """
+
+    revolution = path.revolutions[layer_index]
+    if layer_index == 0 or path.revolutions[layer_index - 1].is_level_base:
+        return np.asarray([(point.x, point.y) for point in revolution.points], dtype=np.float64)
+    return level_turn_xy(sliced, revolution)
+
+
+def _with_level_base(
+    revolutions: list[ZBlendRevolution],
+    rings: tuple[Ring, ...],
+    sliced: SlicedForm,
+    pattern: Pattern,
+) -> list[ZBlendRevolution]:
+    """Lay the turns under a base that takes turns level, each at its own layer.
+
+    A base laid rim to centre, then centre to rim puts
+    some layers' wall turn down BEFORE their floor.  A floor laid after a turn
+    that climbs would run its nozzle beside wall up to a layer taller than
+    itself, so every turn under the top base layer is laid level: the same lap
+    at its own layer's height, flat instead of climbing.  It keeps its path
+    round point for point, lean out toward the next layer's ring and all, so
+    each level turn steps out from the one under it exactly as the climbing
+    turns above step out from theirs, and the top base layer's turn, which
+    climbs, steps out from the last level turn by no more than that either.
+    Taking the lean out as well (0.13.3 to 0.13.5) laid each level turn on its
+    own layer's ring, and on a foot that flares the first climbing turn then
+    stood up to two layers' lean out from the turn under it, with nothing
+    under its far side (Pete's report, 2026-11-11).
+
+    A level turn cannot follow a climbing one without running into the end of
+    its climb, so they are the bottom turns and only those; the top base
+    layer's turn climbs exactly as before, and so does everything above it.
+
+    Nothing changes unless the base takes turns, and never on a form whose top
+    edge is followed, whose climb is measured column by column at the rim.
+    """
+
+    settings = pattern.settings
+    count = settings.bottom_layers - 1
+    if count < 1 or count >= len(revolutions):
+        return revolutions
+    if not takes_turns(
+        sliced,
+        bottom_layers=settings.bottom_layers,
+        bottom_alternate=settings.bottom_alternate,
+    ):
+        return revolutions
+    if any(
+        revolution.is_level_rim
+        or revolution.is_crown
+        or revolution.source_layer_index != position
+        or revolution.target_layer_index != position + 1
+        for position, revolution in enumerate(revolutions[: count + 1])
+    ):
+        return revolutions
+    # A turn Profile blend lifts in relief is not level, and a floor laid after
+    # it would be laid below it: such a base is laid one layer at a time.
+    if any(
+        point.profile_z_offset != 0.0
+        for revolution in revolutions[:count]
+        for point in revolution.points
+    ):
+        return revolutions
+    by_layer = {ring.provenance.layer_index: ring for ring in rings}
+    output = list(revolutions)
+    for position in range(count):
+        revolution = revolutions[position]
+        source = by_layer[revolution.source_layer_index]
+        target = by_layer[revolution.target_layer_index]
+        if not len(revolution.points) == len(source.points) == len(target.points):
+            return revolutions
+        output[position] = replace(
+            revolution,
+            points=tuple(
+                replace(point, z=source.z + point.profile_z_offset) for point in revolution.points
+            ),
+            is_level_base=True,
+        )
+    return output
 
 
 def _with_image_relief(
@@ -1081,7 +1274,8 @@ def _with_image_relief(
         source = by_layer[revolution.source_layer_index]
         target = by_layer[revolution.target_layer_index]
         u = source.u
-        blend = np.zeros_like(u) if revolution.is_level_rim else u
+        height_blend = np.zeros_like(u) if revolution.is_level_rim else u
+        blend = _outline_blend(u) if revolution.holds_source_outline else height_blend
         source_height = (
             source.surface_height_mm
             if source.surface_height_mm is not None
@@ -1096,7 +1290,7 @@ def _with_image_relief(
             source,
             pattern,
             around=u - ((1.0 - blend) * source.hold_u_offset + blend * target.hold_u_offset),
-            surface_height_mm=(1.0 - blend) * source_height + blend * target_height,
+            surface_height_mm=(1.0 - height_blend) * source_height + height_blend * target_height,
             layer_position=source.provenance.layer_index + u,
             circumference_mm=(1.0 - blend) * source.circumference + blend * target.circumference,
             curvature_ring=target,
@@ -1146,6 +1340,13 @@ def _with_image_relief(
     return output
 
 
+def _outline_blend(u: np.ndarray) -> np.ndarray:
+    """Hold the fused wall under its new branch and merge near the seam."""
+    t = np.clip((u - 0.90) / 0.10, 0.0, 1.0)
+    t[-1] = 1.0
+    return t * t * (3.0 - 2.0 * t)
+
+
 def _blend_revolution(
     source: Ring,
     target: Ring,
@@ -1165,6 +1366,7 @@ def _blend_revolution(
     previous_pattern_active: bool,
     extra_laps: tuple[_ExtraLap, ...] = (),
     fade_layer_count: int = 0,
+    hold_source_outline: bool = False,
 ) -> tuple[ZBlendPoint, ...]:
     if source.sample_count != target.sample_count:
         raise ZBlendGeometryError(
@@ -1181,6 +1383,7 @@ def _blend_revolution(
     # Each extra weave's own Wave depth and Clay along the wall, blended from
     # one ring to the next as Weave 1's are.
     lap_u = np.asarray(source.u, dtype=np.float64)
+    outline_u = _outline_blend(lap_u) if hold_source_outline else lap_u
     extra_scales = tuple(
         (
             ring_curvature_scales(source, lap.weave.settings),
@@ -1192,12 +1395,13 @@ def _blend_revolution(
         extra_laps,
         lap_u,
         tuple(
-            (1.0 - lap_u) * from_ring[0] + lap_u * to_ring[0] for from_ring, to_ring in extra_scales
+            (1.0 - outline_u) * from_ring[0] + outline_u * to_ring[0]
+            for from_ring, to_ring in extra_scales
         ),
         # A weave whose Clay along the wall is neutral keeps exact ones, so
         # its clay is the track alone, as it was before the setting was its own.
         tuple(
-            (1.0 - lap_u) * from_ring[1] + lap_u * to_ring[1]
+            (1.0 - outline_u) * from_ring[1] + outline_u * to_ring[1]
             if has_wall_clay(lap.weave)
             else np.ones(len(lap_u), dtype=np.float64)
             for lap, (from_ring, to_ring) in zip(extra_laps, extra_scales, strict=True)
@@ -1206,11 +1410,12 @@ def _blend_revolution(
     points: list[ZBlendPoint] = []
     for index, u_value in enumerate(source.u):
         u = float(u_value)
-        base = (1.0 - u) * source.points[index] + u * target.points[index]
+        wall_u = float(outline_u[index])
+        base = (1.0 - wall_u) * source.points[index] + wall_u * target.points[index]
         normal = _interpolated_unit_normal(
             source.outward_normals[index],
             target.outward_normals[index],
-            u,
+            wall_u,
             source_layer=source.provenance.layer_index,
             sample_index=index,
         )
@@ -1259,7 +1464,7 @@ def _blend_revolution(
                 revolution_u=u,
                 wave_count=wave_count,
                 phase=phase_start + u * (wave_count + pattern.settings.twist),
-                amplitude_scale=(1.0 - u) * source_scale[index] + u * target_scale[index],
+                amplitude_scale=(1.0 - wall_u) * source_scale[index] + wall_u * target_scale[index],
                 profile_scale=profile_amplitude_scale(
                     nominal_z,
                     bottom_z,
@@ -1267,7 +1472,7 @@ def _blend_revolution(
                     pattern.settings,
                 ),
                 curvature_flow_scale=(
-                    (1.0 - u) * source_flow_scale[index] + u * target_flow_scale[index]
+                    (1.0 - wall_u) * source_flow_scale[index] + wall_u * target_flow_scale[index]
                 ),
                 is_level_rim=is_level_rim,
                 is_crown=False,
@@ -1762,11 +1967,26 @@ def _layer_span_text(sliced: SlicedForm, first: int, last: int) -> str:
     return f"Layers {public_first}\N{EN DASH}{public_last}"
 
 
-def _assert_continuous_boundary(previous: ZBlendPoint, following: ZBlendPoint) -> None:
+def _assert_continuous_boundary(
+    previous: ZBlendPoint, following: ZBlendPoint, *, in_space: bool = True
+) -> None:
+    """Refuse a seam between two turns that is not one continuous point.
+
+    ``in_space=False`` is the step up after a level base turn: the two points
+    stand a layer apart, so only the weave is held to be continuous there.
+    """
+
+    placed = (
+        (
+            (previous.x, following.x, "X"),
+            (previous.y, following.y, "Y"),
+            (previous.z, following.z, "Z"),
+        )
+        if in_space
+        else ()
+    )
     values = (
-        (previous.x, following.x, "X"),
-        (previous.y, following.y, "Y"),
-        (previous.z, following.z, "Z"),
+        *placed,
         (previous.wave_phase, following.wave_phase, "wave phase"),
         (previous.extrusion_phase, following.extrusion_phase, "extrusion phase"),
         (previous.wave_value, following.wave_value, "wave value"),
@@ -1813,6 +2033,8 @@ __all__ = [
     "ZBlendPoint",
     "ZBlendRevolution",
     "build_zblend_path",
+    "floor_line_xy",
+    "level_turn_xy",
     "profile_silhouette_shapes",
     "top_follow_rounding_slope",
     "zblend_disabled_hint",

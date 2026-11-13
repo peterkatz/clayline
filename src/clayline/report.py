@@ -36,6 +36,7 @@ from clayline.models import (
 from clayline.preview import PreviewData, build_deposition_parts, build_preview_data
 
 if TYPE_CHECKING:
+    from clayline.support_analysis import SupportAnalysis
     from clayline.weave_models import MeshHonesty
 
 
@@ -285,6 +286,7 @@ class JobReport:
     mesh_honesty: MeshHonesty | None = None
     thread_protection: ThreadProtectionReport | None = None
     passes: tuple[PassReport, ...] | None = None
+    support_analysis: SupportAnalysis | None = None
 
     def __post_init__(self) -> None:
         if (self.mesh_source_path is None) != (self.mesh_honesty is None):
@@ -322,6 +324,8 @@ class JobReport:
             payload["mesh"] = _mesh_honesty_dict(self.mesh_source_path, self.mesh_honesty)
         if self.thread_protection is not None:
             payload["thread_protection"] = self.thread_protection.to_dict()
+        if self.support_analysis is not None:
+            payload["support_analysis"] = self.support_analysis.to_dict()
         if self.source_stream.settle_outcome is not None:
             outcome = self.source_stream.settle_outcome
             payload["settle_outcome"] = {
@@ -728,6 +732,22 @@ def render_report_text(report: JobReport) -> str:
         f"{report.construction.laps} laps",
         f"warnings: {totals.warning_count}",
     ]
+    if report.support_analysis is not None:
+        analysis = report.support_analysis
+        lines.append(f"maximum unsupported bead setting: {analysis.threshold:.0%}")
+        if analysis.max_unsupported_fraction is not None:
+            lines.append(f"peak unsupported bead width: {analysis.max_unsupported_fraction:.1%}")
+        lines.append(f"located support indications: {len(analysis.diagnostics)}")
+        for target in analysis.target_results:
+            state = "unresolved" if target.unresolved else "met" if target.target_met else "not met"
+            detail = (
+                ""
+                if target.max_unsupported_fraction is None
+                else f"; peak unsupported bead {target.max_unsupported_fraction:.1%}"
+            )
+            lines.append(f"curtain {target.support_id} support target: {state}{detail}")
+        if analysis.message:
+            lines.append(analysis.message)
     if report.thread_protection is not None:
         protection = report.thread_protection
         lines.extend(

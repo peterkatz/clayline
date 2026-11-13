@@ -9,6 +9,7 @@ original hash was changed.
 | --- | --- | --- |
 | `m11/*.gcode.gz` | `086a62a85f4716a1290842a5d507755a1e8bd6f5` (2026-08-02), original `test_m11_emission._result` | `tests/golden/weave/m11-gcode.sha256.json` |
 | `m12/*.gcode.gz` | `1d5f46bd41c643a2265e40e7d2f7a4359258743b` (2026-08-03), original `test_m12_goldens._gcode` | `tests/golden/weave/m12-gcode.sha256.json` |
+| `bowl-vase-plain-0.13.4.gcode.gz` | `042c55974a3b18542efb15b91699fe3496420a0c` (2026-11-11, Clayline 0.13.4), `test_form_from_print` job `bowl-vase-plain` (bowl, flat, Vase mode, 2 bottom layers, level rim) laid in the old bottom order | `test_form_from_print.py`: an old Vase print still makes its form (SHA-256 of the G-code `434be9efd7dc3bb4d7be4ffdd5ae5965d6631ef7da02ec1fb65b84190c31699c`) |
 | `zellige-settle-off-two-pass.gcode.gz` | `f58ec426a78b62bb0642a0f8f4720fc9c3598304` (2026-08-02), original `_request(0.0, 12.0, settle=False)` | `SETTLE_OFF_GCODE_SHA256[2]`, `tests/test_zellige_clearance_convergence.py` |
 
 Every uncompressed artifact was verified against its existing SHA-256 before

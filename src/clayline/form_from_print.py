@@ -94,6 +94,7 @@ NO_FORM = "none"
 # Why there is no form.  The page owns the sentence each one gets.
 CHANGED_FILE = "changed_file"
 STACK_PIECES = "stack_pieces"
+GENERATED_SUPPORTS = "generated_supports"
 SPLITS_OR_JOINS = "splits_or_joins"
 PROFILE_MISSING = "profile_missing"
 PROFILE_CHANGED = "profile_changed"
@@ -103,6 +104,7 @@ UNREADABLE = "unreadable"
 REASONS = (
     CHANGED_FILE,
     STACK_PIECES,
+    GENERATED_SUPPORTS,
     SPLITS_OR_JOINS,
     PROFILE_MISSING,
     PROFILE_CHANGED,
@@ -308,6 +310,8 @@ def form_from_print(
         facts = _header(lines)
         body = _checked_body(lines, facts)
         timing["body"] = _ms(started)
+        if recipe.support_settings is not None and recipe.support_settings.enabled:
+            raise _NoForm(GENERATED_SUPPORTS)
         if recipe.pattern.settings.stack_pieces:
             raise _NoForm(STACK_PIECES)
         _check_profile(recipe)
@@ -771,6 +775,22 @@ def _spiral_wall(runs: list[_Run], recipe: Any) -> _PrintedWall:
         start = 1 if _same(points[-1], following.points[0]) else 0
         points.extend(following.points[start:])
         labels.extend(following.labels[start:])
+    # A lap laid level under a base taking turns ends straight under the next
+    # lap's start (0.13.6 on): seen from above, its own last point repeats that
+    # start, which already closes it.  Dropped, every lap is cut to the same
+    # samples, and a first lap reached by a travel gets the travel's end back.
+    height = float(recipe.layer_height)
+    keep = [
+        index == len(points) - 1
+        or not (
+            labels[index + 1] == labels[index] + 1
+            and math.dist(points[index][:2], points[index + 1][:2]) <= _SAME_POINT_MM
+            and 0.5 * height <= points[index + 1][2] - points[index][2] <= 1.5 * height
+        )
+        for index in range(len(points))
+    ]
+    points = [point for point, kept in zip(points, keep, strict=True) if kept]
+    labels = [label for label, kept in zip(labels, keep, strict=True) if kept]
     if any(later < earlier for earlier, later in pairwise(labels)):
         raise _NoForm(CHECK_FAILED, "the vase-mode wall steps back a layer")
     rising = np.diff(np.asarray(points, dtype=np.float64)[:, 2])
@@ -890,6 +910,21 @@ def _shell(
     )
 
 
+def _level_laps(laps: np.ndarray) -> np.ndarray:
+    """Which laps were laid level: every sample at one height, short of the next lap's start.
+
+    A base laid taking turns (rim to centre, then centre to rim) lays the
+    wall's turns under its top bottom layer level, each at its own layer's
+    height, stepping up a layer where the next one starts.
+    """
+
+    return np.ptp(laps[:, :-1, 2], axis=1) <= _LEVEL_LAP_MM
+
+
+# How far a level lap's samples may stray in height: rounding, not a climb.
+_LEVEL_LAP_MM = 1e-6
+
+
 def _spiral_rings(laps: np.ndarray, rim: np.ndarray | None) -> np.ndarray:
     """Rings, one per layer, that vase mode's blend lays back into ``laps``.
 
@@ -902,6 +937,13 @@ def _spiral_rings(laps: np.ndarray, rim: np.ndarray | None) -> np.ndarray:
     what the laps barely see: the end of the first lap, where ring 1 has
     almost no say, and a wave that would alternate from ring to ring.  The
     printed weave stays in the rings, so the form carries the pattern.
+
+    A lap laid level, under a base laid taking turns, keeps that same path
+    round and is only flat in height, so seen from above it is read like any
+    other.  (0.13.3 to 0.13.5 laid such a lap on ring k itself; a print from
+    one of those builds is read as if it had leaned, which puts its foot off
+    by up to how far the outline moves between its first layers, out or in,
+    and where that passes the bar the print is refused.)
 
     Cutting the printed surface level between laps instead lays every lap
     back off by up to a quarter of how much the pattern changes from one lap
@@ -1352,9 +1394,18 @@ def _check(
         )
         if len(sliced.layers) != expected_layers or len(sliced.layers) != printed.layer_count:
             raise _NoForm(CHECK_FAILED, f"{len(sliced.layers)} layers")
+        pattern = weaves_off(recipe.pattern)
+        if spiral and printed.laps is not None and not _level_laps(printed.laps).any():
+            # A Vase print with no lap laid level climbs from its first lap, as a
+            # wall with no base taking turns does: printed before every base was
+            # laid that way (0.13.4 and earlier), or by a base that cannot take
+            # turns.  Today a base that can is laid with level turns under it,
+            # so the wall is re-printed without its bottom layers, which leaves
+            # the climbing wall the print laid.
+            pattern = replace(pattern, settings=replace(pattern.settings, bottom_layers=0))
         prepared = prepare_weave_result(
             sliced,
-            weaves_off(recipe.pattern),
+            pattern,
             profile=recipe.profile,
             profile_prime_mm=recipe.profile_prime_mm,
             profile_end_early_mm=recipe.profile_end_early_mm,
@@ -1460,7 +1511,9 @@ def _check_volume(shell: _Shell, recipe: Any, printed: _PrintedWall, *, spiral: 
     (A_k + A_k+1) / 2 x layer height, where A is the clay area of the
     printed walls on that plane (outer walls less their holes).  Vase mode:
     the lap printed from ring k to ring k + 1, its area times the layer
-    height.  Open walls hold no clay and are left out.  The tube's volume is
+    height, a lap laid level under a base taking turns included, since it
+    keeps the same path round.  Open walls hold no clay and are left out.
+    The tube's volume is
     the mesh's own: the flux of (0, 0, z) through its triangles, plus each
     plane's ring area at its height.
     """

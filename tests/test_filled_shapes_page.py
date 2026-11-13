@@ -1716,7 +1716,9 @@ assert.equal(file.linesFailed, false);
     )
 
 
-def test_waiting_for_a_coil_follows_the_pass_through_undo_and_never_makes_lines_of_its_own() -> None:
+def test_waiting_for_a_coil_follows_the_pass_through_undo_and_never_makes_lines_of_its_own() -> (
+    None
+):
     _run_section(
         """
 answers["/api/svg/examine"] = CONVERT;

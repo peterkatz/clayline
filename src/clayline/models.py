@@ -474,6 +474,8 @@ class Move:
     flow_multiplier: float = 1.0
     comment: str | None = None
     metadata: tuple[tuple[str, Any], ...] = ()
+    role: str | None = None
+    support_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

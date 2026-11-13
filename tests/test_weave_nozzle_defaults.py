@@ -100,7 +100,8 @@ def test_ui_defaults_serve_resolved_values_with_follow_flags() -> None:
     assert weave["bead_width_follows_nozzle"] is True
     assert weave["wavelength"] == 17.5
     assert weave["wavelength_follows_nozzle"] is True
-    assert weave["bottom_alternate"] is True
+    # Off for a new job since 2026-11-11, so its bottom layers take turns.
+    assert weave["bottom_alternate"] is False
     assert (
         weave["top_follow_slope_multiplier"]
         == defaults.DEFAULT_WEAVE_TOP_FOLLOW_SLOPE_MULTIPLIER

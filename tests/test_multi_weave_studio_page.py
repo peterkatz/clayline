@@ -1,12 +1,14 @@
 """The Pattern section with up to three weaves (docs/plan-multi-weave.md step 5).
 
 The page runs whole under node (tests/weave_page_rig.py), its requests answered
-by the studio app itself. The invariant comes first: with one weave every
-pattern the page composes, every settings snapshot it saves and every Undo step
-it records is what Clayline 0.8.3's page made, byte for byte, through every
-shipped preset and texture. Then the four rules that keep one weave's numbers
-out of another's (§7, risk 1), the strip, Use this weave and Remove, per-weave
-Auto spacing and readouts, and the project file's settings version.
+by the studio app itself. The invariant comes first: with one weave, and a new
+job started the way 0.8.3 started it, every pattern the page composes, every
+settings snapshot it saves and every Undo step it records is what Clayline
+0.8.3's page made, byte for byte, through every shipped preset and texture; a
+new job today differs only in starting with Alternate bottom direction off.
+Then the four rules that keep one weave's numbers out of another's (§7, risk
+1), the strip, Use this weave and Remove, per-weave Auto spacing and readouts,
+and the project file's settings version.
 """
 
 from __future__ import annotations
@@ -32,7 +34,17 @@ PROJECT_FILE = (STATIC / "project-file.js").read_text(encoding="utf-8")
 # One weave, every shipped preset and texture, the follow chips, the vase and
 # floor switches, Undo, Redo and Reset. Noise seeds are dealt in order so two
 # runs deal the same waves.
-ONE_WEAVE_SCENARIO = r"""
+# 0.8.3 started a new job, and Reset, with Alternate bottom direction on.  A new
+# job starts with it off now, so its bottom layers take turns (Pete chose this,
+# 2026-11-11).  Started the way 0.8.3 started it, the page composes what that
+# page composed, so the pins below keep guarding all of it.  Only the start is
+# set: a texture still sets the switch from its own pattern, as it did then.
+# What a new job composes today is the next test's.
+NEW_JOB_AS_0_8_3_STARTED_IT = r"""
+  page.S.defaults = { ...page.S.defaults, bottom_alternate: true };
+  $("#weaveBottomAlternate").checked = true;
+"""
+ONE_WEAVE_STEPS = r"""
   let seedCounter = 4000;
   Object.defineProperty(window.crypto, "getRandomValues", {
     configurable: true,
@@ -96,6 +108,7 @@ ONE_WEAVE_SCENARIO = r"""
     .filter((request) => request.url === "/api/weave/pattern")
     .map((request) => request.body);
 """
+ONE_WEAVE_SCENARIO = NEW_JOB_AS_0_8_3_STARTED_IT + ONE_WEAVE_STEPS
 
 # What 0.8.3's own weave.js (26a9e03) and index.html composed for the scenario
 # above, step by step: the pattern, the settings snapshot and the Undo step
@@ -249,6 +262,148 @@ def test_one_weave_composes_what_0_8_3_composed_through_every_preset_and_texture
         assert "extra_weaves" not in step["pattern"]
         assert "wave_on" not in step["pattern"]
         assert json.loads(step["snapshot"])["schema"] == "clayline.weave-settings.v1"
+
+
+def _without(value: object, key: str, found: list[object]) -> object:
+    """``value`` with every ``key`` taken out, text that holds JSON read through.
+
+    What was taken out is appended to ``found``, so a caller can say both that
+    nothing else differs and exactly what that key held.
+    """
+
+    if isinstance(value, dict):
+        kept = {}
+        for name, item in value.items():
+            if name == key:
+                found.append(item)
+            else:
+                kept[name] = _without(item, key, found)
+        return kept
+    if isinstance(value, list):
+        return [_without(item, key, found) for item in value]
+    if isinstance(value, str) and value[:1] in "{[":
+        try:
+            return _without(json.loads(value), key, found)
+        except ValueError:
+            return value
+    return value
+
+
+def test_a_new_job_composes_what_0_8_3_did_with_alternate_bottom_direction_off() -> None:
+    held = run_page(ONE_WEAVE_SCENARIO)
+    live = run_page(ONE_WEAVE_STEPS)
+
+    names = [name for name, _pin in ONE_WEAVE_PINS]
+    assert [step["name"] for step in live["steps"]] == names
+    # 0.8.3's switch stayed on until the first texture set it from its own
+    # pattern, and Reset turned it on again.
+    first_texture = next(index for index, name in enumerate(names) if name.startswith("texture"))
+    for index, (today, then) in enumerate(zip(live["steps"], held["steps"], strict=True)):
+        written: list[object] = []
+        held_on: list[object] = []
+        # Pattern, saved settings and Undo count: what the pins hold, less the
+        # switch's own key wherever 0.8.3's new job had it on.
+        assert _without(today["pattern"], "bottom_alternate", written) == _without(
+            then["pattern"], "bottom_alternate", held_on
+        ), today["name"]
+        assert _without(today["snapshot"], "bottom_alternate", written) == _without(
+            then["snapshot"], "bottom_alternate", held_on
+        ), today["name"]
+        assert today["history"] == then["history"], today["name"]
+        # Off from the start and again after Reset, so nothing writes it.
+        assert written == [], today["name"]
+        on_then = index < first_texture or today["name"] == "reset"
+        assert held_on == ([True, True] if on_then else []), today["name"]
+        # The bottom's old order is no switch, and no step writes its key.
+        for text in (today["pattern"], today["snapshot"], then["pattern"], then["snapshot"]):
+            assert "bottom_outward" not in text, today["name"]
+    # Whatever the page asked the studio for on the way, it asked the same, less
+    # the switch in the five patterns it sent before the first texture: three
+    # boosts and two noise waves.
+    asked_today: list[object] = []
+    asked_then: list[object] = []
+    assert _without(live["patternRequests"], "bottom_alternate", asked_today) == _without(
+        held["patternRequests"], "bottom_alternate", asked_then
+    )
+    assert asked_today == []
+    assert asked_then == [True] * 5
+    for body in live["patternRequests"] + held["patternRequests"]:
+        assert "bottom_outward" not in body
+
+
+def test_a_pattern_or_project_saved_with_the_old_bottom_switch_opens_without_it() -> None:
+    """0.13.1 to 0.13.4 wrote ``bottom_outward`` while a bottom's order was a switch.
+
+    It is how every bottom is laid now (Pete asked, 2026-11-11), so a pattern
+    file or project carrying the key, true or false, opens exactly as one
+    without it, the page never saves the key back, and a value that is neither
+    is still refused.
+    """
+
+    cube = trimesh.creation.box(extents=(40.0, 40.0, 30.0))
+    out = run_page(
+        f"""
+  const ONE = {json.dumps(pattern_to_json(preset_pattern("sawtooth")))};
+  const bytes = new TextEncoder().encode({json.dumps(cube.export(file_type="obj"))});
+  const carrying = (text, value) => {{
+    const pattern = JSON.parse(text);
+    pattern.settings.bottom_outward = value;
+    return JSON.stringify(pattern);
+  }};
+  const state = () => [
+    JSON.stringify(page.patternObject()),
+    JSON.stringify(page.weaveSettingsSnapshot()),
+  ];
+  const load = async (text) => {{
+    const input = $("#weavePatternFile");
+    input.files = [new File([text], "saved.clayline-weave.json")];
+    input.dispatchEvent(new Event("change", {{ bubbles: true }}));
+    await settle(1000);
+    return state();
+  }};
+  // Something else on the table first, so each file has to bring its own back.
+  const elsewhere = async () => {{
+    click('[data-wave-preset="sine"]');
+    await settle(1000);
+  }};
+  const opened = async (text) => {{
+    await elsewhere();
+    return load(text);
+  }};
+  out.plain = await opened(ONE);
+  out.files = [await opened(carrying(ONE, true)), await opened(carrying(ONE, false))];
+  const saved = JSON.parse(out.plain[1]);
+  const project = await codec.read(await codec.write({{
+    mode: "weave",
+    settings: {{ ...saved, pattern_json: carrying(saved.pattern_json, true) }},
+    sources: [{{ name: "cube.obj", bytes }}],
+  }}));
+  out.projectCarries = project.settings.pattern_json.includes('"bottom_outward":true');
+  await elsewhere();
+  out.opened = await weaveMode.openProject(project, "saved.clayline");
+  await settle(1000);
+  out.project = state();
+  // Neither true nor false: refused, and what is on the table stays.
+  await elsewhere();
+  const before = state();
+  const after = await load(carrying(ONE, "yes"));
+  out.refused = {{
+    message: $("#weaveErrorMessage").textContent,
+    kept: JSON.stringify(after) === JSON.stringify(before),
+  }};
+"""
+    )
+    assert out["files"] == [out["plain"], out["plain"]]
+    assert out["projectCarries"] is True
+    assert out["opened"] is True
+    assert out["project"] == out["plain"]
+    for pattern, snapshot in (out["plain"], *out["files"], out["project"]):
+        assert "bottom_outward" not in pattern
+        assert "bottom_outward" not in snapshot
+    assert out["refused"] == {
+        "message": "Pattern load failed. settings.bottom_outward must be true or false",
+        "kept": True,
+    }
 
 
 def test_three_weaves_survive_every_weave_1_texture_preset_noise_and_slider() -> None:
@@ -775,7 +930,8 @@ def test_project_files_write_v1_for_one_weave_and_v2_for_extra_weaves() -> None:
     return codec.read(rewritten).then(() => "opened", (error) => error.code);
   }};
   out.read = {{
-    v3: await manifest("clayline.weave-settings.v3"),
+    v4: await manifest("clayline.weave-settings.v4"),
+    v3MissingSupports: await manifest("clayline.weave-settings.v3"),
     v0: await manifest("clayline.weave-settings.v0"),
   }};
   out.validPage = [
@@ -811,7 +967,11 @@ def test_project_files_write_v1_for_one_weave_and_v2_for_extra_weaves() -> None:
     assert out["three"] == {"schema": "clayline.weave-settings.v2", "same": True, "valid": True}
     assert out["one"] == {"schema": "clayline.weave-settings.v1", "same": True, "extra": False}
     assert out["mismatch"] == [True, True]
-    assert out["read"] == {"v3": "newer-version", "v0": "not-a-project"}
+    assert out["read"] == {
+        "v4": "newer-version",
+        "v3MissingSupports": "not-a-project",
+        "v0": "not-a-project",
+    }
     assert out["validPage"] == [True, False]
     assert out["open"] == {"opened": True, "pattern": True, "steps": 1, "extras": 0}
     assert out["openThree"] == {

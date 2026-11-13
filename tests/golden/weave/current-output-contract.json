@@ -54,12 +54,12 @@
     },
     "hollow-cylinder-bottom3.gcode": {
       "layer_count": 10,
-      "sha256": "34721da17ba7b7b298dcf6bcee44501996c506098f98ff4b99664f673ee9e4fd",
+      "sha256": "c92064f5f774ccc71e299a53e177e6803d2a81edd5bd7c7be058345b0b4b61cd",
       "warning_counts": {}
     },
     "lobed-weave-zblend-bottom3.gcode": {
       "layer_count": 15,
-      "sha256": "aeadab93955adbeff92c73f81aa1ae9bf49db503244312c42cd97880fd4465da",
+      "sha256": "bcf5ec720749a6cfe9525d987cfbb587a046c347110d03aed8d3202fdeda8bf9",
       "warning_counts": {
         "overhang": 1
       }

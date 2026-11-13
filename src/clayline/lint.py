@@ -26,6 +26,7 @@ from clayline.segment_clearance import (
     LinearSegment3D,
     replay_segment_clearance_violation,
 )
+from clayline.support_clearance import SupportClearanceReplay
 from clayline.thread_protection_audit import (
     ThreadProtectionAudit,
     validate_thread_protection_audit,
@@ -37,6 +38,8 @@ _WORD = re.compile(r"(?:^|\s)([XYZEF])(-?(?:\d+(?:\.\d*)?|\.\d+))(?=\s|$)")
 _SECONDS = re.compile(r"(?:^|\s)S(-?(?:\d+(?:\.\d*)?|\.\d+))(?=\s|$)", re.IGNORECASE)
 _PAGE = re.compile(r"\bpage=(\d+)\b")
 _LAYER = re.compile(r"\blayer=(\d+)\b")
+_SUPPORT_ROLE = re.compile(r"(?:^| )role=(support_foot|support_curtain|support_root)(?= |$)")
+_SUPPORT_ID = re.compile(r"(?:^| )support_id=[A-Za-z0-9_-]{1,64}(?= |$)")
 _PAGE_MARKER = re.compile(r"^; CLAYLINE_PAGE index=(\d+)$")
 _KIND = re.compile(r"\bkind=([a-z_]+)\b")
 _STROKE = re.compile(r"\bstroke=([^\s;]+)\b")
@@ -357,6 +360,9 @@ def lint_gcode(
     # against the nozzle cone over the clay laid so far.  Absent, nothing below
     # behaves any differently.
     cone_replay = _stack_pieces_replay(header, issue)
+    support_slope, support_replay = _support_path_replay(header, issue)
+    filament_area = math.pi * (profile.virtual_filament_diameter / 2.0) ** 2
+    support_height = _header_float(header, "layer_height_mm") if support_replay else None
     # With Stack pieces on, a line may start lower than the one before it only
     # after a crossing that rose the lift above all the clay laid so far: the
     # previous line's last height, and the highest the nozzle has been since
@@ -646,7 +652,28 @@ def lint_gcode(
                     line_number,
                 )
 
+        support_motion = False
         if block == "body" and not pressure:
+            support_motion = _SUPPORT_ROLE.search(comment) is not None
+            if support_motion and (
+                support_slope is None or kind != "print" or _SUPPORT_ID.search(comment) is None
+            ):
+                issue(
+                    "weave_support_role",
+                    "support motion needs a versioned path and ID",
+                    line_number,
+                )
+                support_motion = False
+            if support_motion and all(value is not None for value in (*old, *target)):
+                distance_xy = math.hypot(
+                    float(target[0]) - float(old[0]), float(target[1]) - float(old[1])
+                )
+                rise = abs(float(target[2]) - float(old[2]))
+                assert support_slope is not None
+                if rise > support_slope * distance_xy + coordinate_rounding_allowance(
+                    support_slope
+                ):
+                    issue("weave_support_slope", "support path Z changes too steeply", line_number)
             length = (
                 math.dist(old, target)
                 if all(value is not None for value in (*old, *target))
@@ -703,7 +730,7 @@ def lint_gcode(
                             line_number,
                         )
                     if (
-                        not shaped_motion
+                        not (shaped_motion or support_motion)
                         and last_weave_path_z is not None
                         and target_z < last_weave_path_z - 1e-7
                     ):
@@ -1010,6 +1037,44 @@ def lint_gcode(
             )
 
         if (
+            support_replay is not None
+            and block == "body"
+            and not pressure
+            and kind is not None
+            and all(value is not None for value in (*old, *target))
+        ):
+            start = (float(old[0]), float(old[1]), float(old[2]))
+            end = (float(target[0]), float(target[1]), float(target[2]))
+            finding = support_replay.check(start, end, support=support_motion)
+            if finding is not None:
+                issue("weave_support_clearance", finding, line_number)
+            if kind in {"print", "carry"} and (
+                (delta_e is not None and delta_e > 1e-9) or e_deferred
+            ):
+                length_mm = math.dist(start, end)
+                laid_width = 0.0
+                if delta_e is not None and support_height is not None and length_mm > 1e-6:
+                    laid_width = delta_e * filament_area / (length_mm * support_height)
+                if support_motion and laid_width > 0.0:
+                    half_width = laid_width / 2.0
+                    if (
+                        min(start[0], end[0]) - half_width < bounds.min_x - 1e-6
+                        or max(start[0], end[0]) + half_width > bounds.max_x + 1e-6
+                        or min(start[1], end[1]) - half_width < bounds.min_y - 1e-6
+                        or max(start[1], end[1]) + half_width > bounds.max_y + 1e-6
+                    ):
+                        issue(
+                            "weave_support_bounds",
+                            "support bead exceeds working bounds",
+                            line_number,
+                        )
+                # A deferred quantum can make a tiny single segment's inferred
+                # width unreliable. A laid width beyond the bed also cannot be
+                # indexed usefully, and is already refused for generated clay.
+                if laid_width <= max(bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y):
+                    support_replay.lay(start, end, support=support_motion, width_mm=laid_width)
+
+        if (
             cone_replay is not None
             and block == "body"
             and not pressure
@@ -1146,7 +1211,6 @@ def lint_gcode(
             f"first deposited Z {first_layer_z:.6g} != expected {expected_first_z:.6g}",
         )
 
-    filament_area = math.pi * (profile.virtual_filament_diameter / 2.0) ** 2
     actual_volume = body_e * filament_area
     header_volume = _header_float(header, "stats.body_volume_mm3")
     comparison_volume = expected_volume_mm3 if expected_volume_mm3 is not None else header_volume
@@ -1244,6 +1308,37 @@ def lint_gcode(
         bounds=_point_bounds(body_points),
     )
     return LintReport(profile.name, stats, tuple(issues), header)
+
+
+def _support_path_replay(
+    header: dict[str, str], issue: Any
+) -> tuple[float | None, SupportClearanceReplay | None]:
+    version = header.get("parameter.support_path_version")
+    if version is None:
+        return None, None
+    height = _header_float(header, "layer_height_mm")
+    width = _header_float(header, "bead_width_mm")
+    clearance = _header_float(header, "parameter.support_clearance_mm")
+    if (
+        version != "1"
+        or height is None
+        or height <= 0
+        or width is None
+        or width <= 0
+        or clearance is None
+        or clearance <= WIDE_PART_MARGIN_MM
+    ):
+        issue("weave_support_header", "support paths need version 1, bead dimensions and clearance")
+        return None, None
+    flow = _header_float(header, "flow_multiplier", fallback=1.0)
+    return height / width, SupportClearanceReplay(
+        bead_width=width * max(1.0, 1.0 if flow is None else flow),
+        tip_radius=tip_radius_mm(width),
+        max_lead=clearance - WIDE_PART_MARGIN_MM,
+        # Sub-course bedding at the joined root falls within the nominal
+        # layer-height tolerance. Other clay above the tip is replayed.
+        z_tolerance=min(0.15, 0.1 * height),
+    )
 
 
 def _validate_top_follow_path(

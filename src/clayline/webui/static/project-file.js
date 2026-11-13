@@ -34,12 +34,15 @@
     weave: "clayline.weave-settings.v1",
   });
   // Every settings version each mode opens, oldest first; the last is the
-  // newest this release knows. A Weave job with extra weaves is written as
-  // v2 and one weave as v1, so a one-weave project is the file it always was
-  // and a Clayline from before extra weaves answers a v2 one as newer.
+  // newest this release knows. Support settings require v3 so older studios
+  // refuse the job rather than drop its supports.
   const SETTINGS_SCHEMAS = Object.freeze({
     draw: Object.freeze(["clayline.draw-settings.v2"]),
-    weave: Object.freeze(["clayline.weave-settings.v1", "clayline.weave-settings.v2"]),
+    weave: Object.freeze([
+      "clayline.weave-settings.v1",
+      "clayline.weave-settings.v2",
+      "clayline.weave-settings.v3",
+    ]),
   });
   const MANIFEST_NAME = "project.json";
   const SOURCE_FOLDER = "sources";
@@ -420,6 +423,9 @@
   // or any weave keeping the same number of waves (with extra weaves it is v2
   // already, so Weave 1's own switch is the one left to ask).
   function weaveSettingsSchemaFor(settings) {
+    if (Object.hasOwn(settings, "support_settings")) {
+      return "clayline.weave-settings.v3";
+    }
     let pattern = null;
     try {
       pattern = JSON.parse(settings.pattern_json);
@@ -431,6 +437,14 @@
       || pattern?.settings?.hold_wave_count === true
       ? "clayline.weave-settings.v2"
       : "clayline.weave-settings.v1";
+  }
+
+  function validSupportSettings(settings) {
+    return settings?.schema_version === 1
+      && (settings.mapping_version ?? 1) === 1
+      && Array.isArray(settings.placements)
+      && settings.placements.length <= 24
+      && settings.placements.every((row) => row && typeof row.id === "string");
   }
 
   function plainName(path, folder) {
@@ -469,6 +483,10 @@
         `Clayline project: ${mode} settings must be ${expected}, `
         + `not ${JSON.stringify(settings.schema)}`,
       );
+    }
+    if (mode === "weave" && expected === "clayline.weave-settings.v3"
+      && !validSupportSettings(settings.support_settings)) {
+      throw new Error("Clayline project: support settings are missing or invalid");
     }
 
     const entries = [];
@@ -555,6 +573,14 @@
       throw refuse("settings are missing");
     }
     checkSettingsSchema(settings.schema, mode);
+    if (mode === "weave") {
+      const hasSupports = Object.hasOwn(settings, "support_settings");
+      const requiresSupports = settings.schema === "clayline.weave-settings.v3";
+      if (hasSupports !== requiresSupports
+        || (requiresSupports && !validSupportSettings(settings.support_settings))) {
+        throw refuse("support settings are missing or do not match the settings schema");
+      }
+    }
 
     const sourceRows = Array.isArray(manifest.sources) ? manifest.sources : [];
     const referenceRows = Array.isArray(manifest.references) ? manifest.references : [];

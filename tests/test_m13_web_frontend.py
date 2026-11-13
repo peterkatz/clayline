@@ -5,6 +5,7 @@ import re
 from html.parser import HTMLParser
 from pathlib import Path
 
+from clayline.defaults import ui_defaults
 from clayline.weave_models import WeaveSettings
 from clayline.webui.app import create_app
 
@@ -186,6 +187,7 @@ def test_weave_rail_order_and_complete_ui_states_are_explicit() -> None:
         "pattern",
         "images",
         "inside",
+        "supports",
         "print",
     ]
     headings = [
@@ -195,6 +197,7 @@ def test_weave_rail_order_and_complete_ui_states_are_explicit() -> None:
         "Pattern",
         "Images",
         "Inside and floor",
+        "Supports",
         "Print",
     ]
     workspace_start = HTML.index('id="weaveWorkspace"')
@@ -557,22 +560,63 @@ def test_wavelength_auto_follows_coil_thickness_not_nozzle() -> None:
     assert "Following the nozzle at 3.5×" not in HTML  # noqa: RUF001
 
 
-def test_bottom_alternation_is_ui_on_engine_optional_and_snapshot_backed() -> None:
+def test_bottom_alternation_starts_off_as_the_engine_has_it_and_is_snapshot_backed() -> None:
     apply_defaults = _function("applyWeaveDefaults", "async function loadDefaults")
     apply_pattern = _function("applyCanonicalPattern", "async function canonicalPatternRequest")
     pattern = _function("patternObject", "function modulationPayload")
     snapshot = _function("weaveSettingsSnapshot", "function validWeaveSettings")
 
-    assert 'id="weaveBottomAlternate"' in HTML
-    assert 'id="weaveBottomAlternate" type="checkbox" role="switch" checked' in HTML
+    # Off for a new job, as in the engine, so a new job's bottom layers take
+    # turns (Pete chose this, 2026-11-11); crossed passes are one click away.
+    switch = HTML[HTML.index('<input id="weaveBottomAlternate"') :]
+    assert switch[: switch.index(">") + 1] == (
+        '<input id="weaveBottomAlternate" type="checkbox" role="switch" '
+        'aria-describedby="weaveBottomAlternateHint">'
+    )
+    assert ui_defaults()["weave"]["bottom_alternate"] is False
+    assert WeaveSettings().bottom_alternate is False
+    assert "root.bottom_alternate === true" in apply_defaults
     assert "Alternate bottom direction" in HTML
     assert "Crossing passes bond the base stronger." in HTML
-    assert "root.bottom_alternate !== false" in apply_defaults
     assert "Boolean(settings.bottom_alternate)" in apply_pattern
     assert "pattern.settings.bottom_alternate = true" in pattern
     assert "delete pattern.settings.bottom_alternate" in pattern
     assert "settings.bottom_alternate = true" in pattern
     assert "pattern_json: JSON.stringify(patternObject())" in snapshot
+
+
+def test_rim_in_centre_out_is_how_every_bottom_is_laid_not_a_switch() -> None:
+    pattern = _function("patternObject", "function modulationPayload")
+
+    # Pete asked, 2026-11-11, that every bottom be laid this way rather than
+    # offer the old order beside the fixed one, so there is no switch to find:
+    # no control, no hint, nothing in a new job, and no account of the old order.
+    assert "weaveBottomOutward" not in HTML
+    assert "weaveBottomOutward" not in WEAVE
+    assert "Rim in, centre out" not in HTML
+    assert "Rim in, centre out" not in WEAVE
+    assert "bottom_outward" not in ui_defaults()["weave"]
+    assert "each layer ends at the centre" not in HTML
+    # A pattern saved while it was a switch still opens.  The page never reads
+    # the old key, and drops it from a kept pattern, so it is never saved back.
+    assert WEAVE.count("bottom_outward") == 1
+    assert "      delete pattern.settings.bottom_outward;\n" in pattern
+    # How every bottom is laid is said on hover over the one bottom switch
+    # left, in a potter's words: off, the layers take turns.
+    row = HTML[HTML.index('id="weaveBottomAlternateRow"') : HTML.index('id="weaveBottomAlternate"')]
+    assert "Off, the bottom layers take turns" in row
+    assert (
+        "one goes from the wall in to the centre, the next from the centre back out to the wall"
+    ) in row
+    assert "the top one ends at the wall, where the wall carries on up" in row
+    assert "the whole base is one unbroken line with no lift" in row
+    assert "the wall's turns under the base are laid level" in row
+    assert "only the turn on the top bottom layer climbs" in row
+    assert "Taking turns needs a bottom in one piece with no hole through it" in row
+    assert "Otherwise each layer ends beside its own wall" in row
+    assert "past a short step the nozzle lifts rather than print a line through clay" in row
+    for word in ("engine", "G-code", "travel", "toolpath", "stroke", "JSON", " run "):
+        assert word not in row
 
 
 def test_experimental_zblend_reach_is_optional_persisted_and_physically_explained() -> None:
@@ -693,7 +737,7 @@ _OVERLAP_COPY = (
 
 def _interior_section() -> str:
     return HTML[
-        HTML.index('data-weave-section="inside"') : HTML.index('data-weave-section="print"')
+        HTML.index('data-weave-section="inside"') : HTML.index('data-weave-section="supports"')
     ]
 
 
@@ -1035,7 +1079,9 @@ def test_a_filled_interior_grays_bottom_and_vase_mode_with_the_engines_reasons()
     assert WEAVE.count('"#weaveBottomLayers",\n      Boolean(reason),') == 1
     assert "DISABLED_REASONS.solidBottom" in sync
     assert "DISABLED_REASONS.infillBottom" in sync
+    # The bottom's one switch greys with the bottom it belongs to.
     assert '"#weaveBottomAlternate"' in sync
+    assert '"#weaveBottomAlternateHint"' in sync
     assert "classList" not in sync
 
     # Vase mode and a filled interior refuse each other in the engine, so the
@@ -1555,16 +1601,16 @@ def test_opening_a_weave_project_is_one_undo_step_then_mesh_then_slice() -> None
     assert "if (project.state.sliced && S.mesh) await runSlice();" in open_project
     assert open_project.index("await uploadMesh();") < open_project.index("await runSlice();")
 
-    # There is no whole-recipe restore left to ride along: the page keeps no
-    # emission, source-mesh or recipe identity from a print file at all.
+    # Project opening still uses its embedded source. G-code restore may
+    # temporarily carry a cached recipe for verifying a supported body.
     for field in (
         "restoreEmission",
         "restoreSource",
         "restoreRecipeId",
         "restoreProfileName",
-        "restore_id",
     ):
         assert field not in WEAVE
+    assert "restore_id" not in open_project
 
 
 def test_a_reopened_project_keeps_the_last_layer_the_artist_chose() -> None:
@@ -1607,9 +1653,7 @@ def test_a_reopened_project_keeps_the_last_layer_the_artist_chose() -> None:
         "      : Boolean(S.islandEmergence?.default_applied);"
     ) in facts
     # Undo and redo travel with the same snapshot, so the flag rides along.
-    assert (
-        "weaveStateWriter?.suspend(() => applyWeaveSettings(snapshot, { settle: true }));" in WEAVE
-    )
+    assert "applyWeaveSettings(snapshot, { settle: true, supportedRestore })" in WEAVE
 
 
 def test_the_page_routes_a_project_file_by_the_mode_it_was_saved_in() -> None:
@@ -1667,7 +1711,9 @@ def test_an_opened_print_file_keeps_its_rule_until_its_model_comes_or_the_job_ch
     # Waiting for the file's own model whether none is loaded, the loaded one is not
     # it, or a form made from another print stands in for it: loading it keeps the
     # file's top rule and its declined stop.
-    assert "const needsMesh = Boolean(payload.needs_mesh) || overForm;" in restore
+    assert (
+        "const needsMesh = Boolean(payload.needs_mesh) || overForm || wrongSupportMesh;" in restore
+    )
     assert "S.restoreAwaitingMesh = needsMesh || source.match === false;" in restore
     # A project brings its own model and job, so nothing is waiting after it opens.
     open_project = _function("openWeaveProject", "function bindHistoryFieldCommits")

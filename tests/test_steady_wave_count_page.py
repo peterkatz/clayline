@@ -664,10 +664,13 @@ def test_on_a_sliced_taper_the_line_under_the_switch_says_the_count_it_keeps() -
   out.sliced = Boolean(page.S.slice);
   out.unheld = line();
   out.warnedUnheld = warned();
+  out.unheldSupport = page.S.exactResult.support_analysis;
+  out.unheldWarningCount = Number($("#weaveWarningBadge").textContent);
   await hold(true);
   await settle(5000);
   out.held = line();
   out.warnedHeld = warned();
+  out.heldSupport = page.S.exactResult.support_analysis;
   // A finer Weave 2 on the same wall, its own switch off: its own line.
   click("#weaveAddWeave");
   await settle(5000);
@@ -696,10 +699,16 @@ def test_on_a_sliced_taper_the_line_under_the_switch_says_the_count_it_keeps() -
         "3 waves on every layer \N{MIDDLE DOT} 115 mm apart at the widest ring, "
         "84 mm at the narrowest"
     )
-    # The count step between layers 13 and 14 is the overhang; held, it is gone.
-    assert "Layers 13\N{EN DASH}14" in out["warnedUnheld"]
-    assert "worst local offset 5.980 mm exceeds 4.000 mm" in out["warnedUnheld"]
-    assert out["warnedHeld"] == "No warnings on the final path."
+    # Count stepping changes the decorative weave, but support checks use
+    # the underlying taper. Intentional weave drips do not ask for supports.
+    unheld = out["unheldSupport"]
+    held = out["heldSupport"]
+    assert unheld["warning_basis"] == held["warning_basis"] == "underlying_form_without_weaves"
+    assert unheld["diagnostic_count"] == held["diagnostic_count"] == 0
+    assert unheld["max_unsupported_fraction"] == held["max_unsupported_fraction"]
+    assert unheld["max_unsupported_fraction"] <= unheld["threshold_fraction"]
+    assert out["unheldWarningCount"] == 0
+    assert out["warnedUnheld"] == out["warnedHeld"] == "No warnings on the final path."
     assert "on every layer" not in out["twoUnheld"]["line"]
     assert out["twoUnheld"]["shown"] is False
     assert "waves on every layer" in out["twoHeld"]

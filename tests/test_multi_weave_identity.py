@@ -17,6 +17,21 @@ and vase), and the settings snapshot an error report carries.  Only
 ``prepared_id`` the route adds afterwards is not part of what is pinned.
 
 Never regenerate these.  If one moves, the change that moved it is wrong.
+
+One deliberate exception, made once: 0.13.3 lays every floor inside its own
+wall as laid, at Pete's asking (2026-11-10: no floor outside the wall it sits
+in), so a bottom under a woven wall moved.  The G-code hashes of the two jobs that have one —
+cylinder-hand-drawn and cylinder-ridge-boost-vase-bottom — were retaken then;
+their capsules and pattern files did not move, and nothing else did.  A second, made
+the same way: 0.13.5 lays every base the way the Rim in, centre out switch
+did, with no switch beside the old order (Pete asked, 2026-11-11), so those
+two jobs' G-code hashes were retaken again; again nothing else moved.  A
+third: 0.13.6 lays the flat turns under a Vase-mode base on the path round the
+climbing turns take (Pete's report, 2026-11-11: the first climbing turn stood
+over nothing on a foot that flares), and on the cylinder that path places its
+samples a little differently round the same circle, so the floor inside it is
+spiralled again; cylinder-ridge-boost-vase-bottom's G-code hash was retaken,
+and nothing else moved.
 """
 
 from __future__ import annotations
@@ -290,7 +305,7 @@ GCODE_DIGESTS: dict[str, dict[str, str]] = {
         "pattern": "e69b600d7fae700f7ededa1cbac26e6b4449d862b193942ecfc458901325fad5",
     },
     "cylinder-hand-drawn": {
-        "gcode": "4ff3cac0843164898ace7284f05a0a826b0a8757a0aee89361e39470947b82c9",
+        "gcode": "158815815e4756c6283eb3b124b6376b7afd4870bebadd512e893b1e90e152b1",
         "capsule": "1dccb8c8780281436c254626a89b5b3e72f07b5f260f81cac2a114c4cbf3b385",
         "pattern": "ef8ff8e7c2dd62cc345deee7af1f07f14db545aa58262abb6b37368fec5c5d9f",
     },
@@ -305,7 +320,7 @@ GCODE_DIGESTS: dict[str, dict[str, str]] = {
         "pattern": "d409ebb92121d4e19879cd832afba2357676939c398973a9462b7543a82afc0a",
     },
     "cylinder-ridge-boost-vase-bottom": {
-        "gcode": "f6301eef5d12b69647511de392fbf54ae01767dd957b2a84d14c58276dfb6d29",
+        "gcode": "3f1f587abdab787c95d3a5b3e743ab5ffdb509d512fb734720e78aa95e22aec1",
         "capsule": "2b40ebfea632011983e0de7d18735421ea64f28f8bb23711a22c8ba7647332a6",
         "pattern": "960554fe6a45725f9a2aea0a462234b441dd78dbe3126a90aecb04db6940089a",
     },

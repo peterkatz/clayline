@@ -15,7 +15,8 @@ from clayline.emit import (
 from clayline.mesh import mesh_content_sha256
 from clayline.models import Bounds, Point, Profile
 from clayline.profiles import load_profile_unregistered
-from clayline.wave import pattern_from_json, pattern_to_json
+from clayline.support_models import SupportSettings
+from clayline.wave import pattern_from_json
 from clayline.weave_api import load_mesh
 from clayline.weave_models import HOLLOWS_KEEP, TOP_LAYER_BELOW, MeshForm, Pattern, UpAxis
 from clayline.weave_range import LAYER_RANGE_SEMANTICS
@@ -23,8 +24,9 @@ from clayline.weave_restore_codec import (
     PATTERN_PARAMETER,
     RESTORE_CAPSULE_PARAMETER,
     DecodedWeaveRestore,
+    canonical_pattern_texts,
     decode_restore_capsule,
-    pattern_header_projection,
+    pattern_header_projections,
     reassemble_parameter_value,
 )
 from clayline.weave_workflow import WeaveResult
@@ -79,6 +81,8 @@ class WeaveRestoreRecipe:
     # Whether clay kept flowing on crossings.  Files 0.7.2 and earlier saved do
     # not say, and stopped it on every crossing, so that is how they rebuild.
     keep_clay_flowing: bool = False
+    support_settings: SupportSettings | None = None
+    supported_body_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,7 +109,15 @@ def parse_weave_gcode(value: str | bytes | Path) -> WeaveRestoreRecipe:
     if capsule is not None:
         decoded = decode_restore_capsule(capsule)
         _validate_capsule_projection(facts, decoded, pattern_text=pattern_text)
-        return replace(_recipe_from_decoded(decoded), start_charge_e=_optional_charge(facts))
+        recipe = replace(_recipe_from_decoded(decoded), start_charge_e=_optional_charge(facts))
+        if recipe.support_settings is not None and recipe.support_settings.enabled:
+            from clayline.lint import lint_gcode
+
+            body_hash = _required(facts, "body_sha256")
+            if _SHA256.fullmatch(body_hash) is None or not lint_gcode(text, recipe.profile).ok:
+                raise ValueError("supported G-code failed artifact validation")
+            recipe = replace(recipe, supported_body_sha256=body_hash)
+        return recipe
 
     source_name = _required(facts, "parameter.source_mesh")
     if Path(source_name).name != source_name or not source_name.strip():
@@ -216,6 +228,7 @@ def _recipe_from_decoded(decoded: DecodedWeaveRestore) -> WeaveRestoreRecipe:
         top_layer=decoded.top_layer,
         hollows=decoded.hollows,
         keep_clay_flowing=decoded.keep_clay_flowing,
+        support_settings=decoded.support_settings,
     )
 
 
@@ -322,9 +335,11 @@ def _validate_capsule_projection(
         actual = facts.get(key)
         if actual != project_header_value(key, wanted):
             raise ValueError(f"G-code readable header {key!r} disagrees with its restore capsule")
-    legacy_pattern = sanitize_header_value(pattern_to_json(decoded.pattern))
-    bounded_pattern = pattern_header_projection(decoded.pattern)
-    if pattern_text not in {legacy_pattern, bounded_pattern}:
+    allowed = {
+        *(sanitize_header_value(text) for text in canonical_pattern_texts(decoded.pattern)),
+        *pattern_header_projections(decoded.pattern),
+    }
+    if pattern_text not in allowed:
         raise ValueError("G-code readable header pattern disagrees with its restore capsule")
 
 
@@ -380,6 +395,8 @@ def restore_weave_result(
     )
     source = Path(mesh_path).expanduser().resolve()
     warning = mesh_restore_warning(recipe, source)
+    if warning is not None and recipe.supported_body_sha256 is not None:
+        raise ValueError(warning)
     mesh = load_mesh(
         source,
         up=recipe.up_axis,
@@ -421,9 +438,21 @@ def restore_weave_result(
         prime_mm=recipe.prime_mm,
         end_early_mm=recipe.end_early_mm,
         keep_clay_flowing=recipe.keep_clay_flowing,
+        support_settings=recipe.support_settings,
         job_id=recipe.job_id,
     )
+    verify_supported_restore(recipe, result.emission.gcode)
     return RestoredWeaveResult(result=result, mesh_warning=warning)
+
+
+def verify_supported_restore(recipe: WeaveRestoreRecipe, rebuilt_gcode: str) -> None:
+    """Require an exact supported deposition body when restoring a print recipe."""
+    expected = recipe.supported_body_sha256
+    if expected is not None and _header_facts(rebuilt_gcode).get("body_sha256") != expected:
+        raise ValueError(
+            "The restored support settings did not reproduce the saved toolpath. "
+            "Keep the original print file to retain that route."
+        )
 
 
 def _gcode_text(value: str | bytes | Path) -> str:

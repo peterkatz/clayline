@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 import trimesh
 
+from clayline.wave import load_pattern, pattern_to_json
 from clayline.weave_workflow import build_weave_result
 from clayline.weave_zblend import zblend_disabled_hint
 from clayline.webui.app import create_app
@@ -405,6 +406,79 @@ def _trace_layer_winding(moves: list[list[object]], layer: int) -> float:
     return sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in pairwise(points))
 
 
+def test_bottom_layers_take_turns_through_drag_and_settled_backend_paths() -> None:
+    """Every bottom is laid rim in, centre out; it is no longer a switch.
+
+    Pete asked, 2026-11-11, that this be how every bottom is laid, not a choice
+    between the old order and the fixed one.  With two bottom layers the first
+    lays its wall turn and then its bottom from the rim in to the middle, and
+    the second starts where the first ended and goes back out to its wall.  A
+    pattern saved while this was a switch (0.13.1 to 0.13.4) carries
+    ``bottom_outward``; true or false, it prints exactly like one without it,
+    and a value that is neither is still refused.
+    """
+
+    async def exercise() -> None:
+        async with _client(create_app()) as client:
+            _, sliced = await _upload_and_slice(
+                client,
+                "cylinder.obj",
+                layer_height=5.0,
+                sample_spacing=5.0,
+            )
+            flat = json.loads(pattern_to_json(load_pattern("flat")))
+
+            async def bottom_run(quality: str, **saved: object) -> httpx.Response:
+                return await client.post(
+                    "/api/weave/modulate",
+                    json={
+                        "slice_id": sliced["slice_id"],
+                        "quality": quality,
+                        "display_point_budget": 50_000,
+                        "pattern": {**flat, "settings": {**flat["settings"], **saved}},
+                        "bottom_layers": 2,
+                        "reproducible": True,
+                        "prime_mm": 0.0,
+                        "end_early_mm": 0.0,
+                    },
+                    headers=ORIGIN,
+                )
+
+            for quality in ("drag", "settle"):
+                plain = await bottom_run(quality)
+                assert plain.status_code == 200, plain.text
+                payload = plain.json()
+                assert "bottom_outward" not in payload["pattern"]["canonical_json"]
+                for value in (True, False):
+                    old = await bottom_run(quality, bottom_outward=value)
+                    assert old.status_code == 200, old.text
+                    assert old.json()["pattern"] == payload["pattern"]
+                    assert old.json()["trace"]["moves"] == payload["trace"]["moves"]
+                refused = await bottom_run(quality, bottom_outward="yes")
+                assert refused.status_code == 422, refused.text
+                assert "settings.bottom_outward" in refused.json()["detail"]
+
+                laid = [move for move in payload["trace"]["moves"] if int(move[3]) == 1]
+                first = [(float(move[0]), float(move[1])) for move in laid if int(move[4]) == 0]
+                second = [(float(move[0]), float(move[1])) for move in laid if int(move[4]) == 1]
+                centre = (
+                    sum(x for x, _ in first) / len(first),
+                    sum(y for _, y in first) / len(first),
+                )
+                inward = [math.dist(point, centre) for point in first]
+                outward = [math.dist(point, centre) for point in second]
+                # Within half a coil: on the wall's own line, not a fill ring in.
+                half = float(payload["trace"]["meta"]["bead_width"]) / 2
+                # The first starts on its wall and ends in its middle...
+                assert inward[0] > max(inward) - half
+                assert inward[-1] < min(inward) + half
+                # ...and the second starts right there and ends on its wall.
+                assert math.dist(first[-1], second[0]) == pytest.approx(0.0, abs=1e-6)
+                assert outward[-1] > max(outward) - half
+
+    asyncio.run(exercise())
+
+
 def _trace_raster_angle(moves: list[list[object]], layer: int) -> float:
     weighted: list[tuple[float, float]] = []
     for left, right in pairwise(moves):
@@ -572,7 +646,7 @@ async def _finalized_gcode(
     body = finalized.json()
     gcode = await client.get(f"/api/weave/result/{body['result_id']}/gcode")
     assert gcode.status_code == 200
-    return gcode.text, body["report"], prepared_id
+    return gcode.text, body["report"], body["result_id"]
 
 
 def _header_parameters(gcode: str) -> dict[str, str]:
@@ -1363,7 +1437,7 @@ def _deposited_z_values(gcode: str) -> set[float]:
     return values
 
 
-def _stream_layer_indices(cache: object, prepared_id: str) -> set[int]:
+def _stream_layer_indices(cache: object, result_id: str) -> set[int]:
     """Every layer index the deposited moves of one job actually carry.
 
     Read from the MoveStream rather than the ``CLAYLINE_STROKE_BEGIN`` markers:
@@ -1372,5 +1446,5 @@ def _stream_layer_indices(cache: object, prepared_id: str) -> set[int]:
     describe exactly.
     """
 
-    prepared = cache.get("prepared", prepared_id)  # type: ignore[attr-defined]
-    return {move.layer_index for move in prepared.stream.moves if move.kind.value == "print"}
+    result = cache.get("result", result_id)  # type: ignore[attr-defined]
+    return {move.layer_index for move in result.emission.stream.moves if move.kind.value == "print"}

@@ -133,6 +133,91 @@ def _upright_torus(
     return vertices, faces
 
 
+def _handled_vessel() -> tuple[list[Vertex], list[Face]]:
+    """One manifold vessel with a handle attached at both ends."""
+    sides = 16
+    radius = 30.0
+    heights = (0.0, 8.0, 16.0, 32.0, 40.0, 48.0)
+    angles = tuple(math.tau * (i - 0.5) / sides for i in range(sides))
+    vertices = [(radius * math.cos(a), radius * math.sin(a), z) for z in heights for a in angles]
+    faces: list[Face] = []
+
+    def quad(a: int, b: int, c: int, d: int) -> None:
+        faces.extend(((a, b, c), (a, c, d)))
+
+    for row in range(len(heights) - 1):
+        lower, upper = row * sides, (row + 1) * sides
+        for i in range(sides):
+            # Leave the two root quads open for the ends of the handle.
+            if i == 0 and row in (1, 3):
+                continue
+            following = (i + 1) % sides
+            quad(lower + i, lower + following, upper + following, upper + i)
+    for row in (0, len(heights) - 1):
+        center = len(vertices)
+        vertices.append((0.0, 0.0, heights[row]))
+        for i in range(sides):
+            a, b = row * sides + i, row * sides + (i + 1) % sides
+            faces.append((center, b, a) if row == 0 else (center, a, b))
+
+    # A rectangular tube sweeps a half-circle in XZ. The end loops reuse the
+    # vessel's root vertices, so section splits arise from connected geometry.
+    previous = (sides, 2 * sides, 2 * sides + 1, sides + 1)
+    end = (4 * sides, 3 * sides, 3 * sides + 1, 4 * sides + 1)
+    root_x, half_width = vertices[0][0], vertices[1][1]
+    for step in range(1, 33):
+        current = end
+        if step < 32:
+            start = len(vertices)
+            current = (start, start + 1, start + 2, start + 3)
+            a = math.pi * step / 32
+            for bend_radius, y in (
+                (16.0, -half_width),
+                (8.0, -half_width),
+                (8.0, half_width),
+                (16.0, half_width),
+            ):
+                vertices.append(
+                    (root_x + bend_radius * math.sin(a), y, 24 - bend_radius * math.cos(a))
+                )
+        for i in range(4):
+            following = (i + 1) % 4
+            quad(previous[following], previous[i], current[i], current[following])
+        previous = current
+    return vertices, faces
+
+
+def _square_overhang() -> tuple[list[Vertex], list[Face]]:
+    """A square vessel with one raised flare centered on its right wall."""
+    outline = (
+        (-27.5, -27.5, 0.0),
+        (27.5, -27.5, 0.0),
+        (27.5, -15.0, 0.0),
+        (27.5, -7.0, 0.38),
+        (27.5, 0.0, 1.0),
+        (27.5, 7.0, 0.38),
+        (27.5, 15.0, 0.0),
+        (27.5, 27.5, 0.0),
+        (-27.5, 27.5, 0.0),
+    )
+    profiles = ((0.0, 0.0), (9.7, 0.0), (13.7, 8.7), (24.0, 8.7))
+    vertices = [(x + factor * reach, y, z) for z, reach in profiles for x, y, factor in outline]
+    count = len(outline)
+    faces: list[Face] = []
+    for row in range(len(profiles) - 1):
+        lower, upper = row * count, (row + 1) * count
+        for i in range(count):
+            j = (i + 1) % count
+            faces.extend(((lower + i, lower + j, upper + j), (lower + i, upper + j, upper + i)))
+    for row in (0, len(profiles) - 1):
+        center = len(vertices)
+        vertices.append((0.0, 0.0, profiles[row][0]))
+        for i in range(count):
+            a, b = row * count + i, row * count + (i + 1) % count
+            faces.append((center, b, a) if row == 0 else (center, a, b))
+    return vertices, faces
+
+
 def _sphere(
     *, radius: float, radial_segments: int, latitude_segments: int
 ) -> tuple[list[Vertex], list[Face]]:
@@ -411,6 +496,8 @@ def fixture_payloads() -> dict[str, bytes]:
         "teapot-lid.obj": teapot_lid,
         "tall-tumbler.obj": tall_tumbler,
         "torus-upright.obj": torus,
+        "handled-vessel.obj": _handled_vessel(),
+        "square-overhang.obj": _square_overhang(),
         "sphere.obj": sphere,
         "open-shell.obj": open_shell,
         "hollow-cylinder.obj": hollow,

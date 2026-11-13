@@ -1685,11 +1685,26 @@ def drag_trace_payload(
     anything deposited inside the wall — a bottom, or a filled interior — comes
     from that feature's own builder rather than a preview approximation of it;
     only serialization is uniformly decimated.
+
+    A bottom is filled inside its own wall as laid, as it prints, and a base
+    that takes turns (rim to centre, then centre to rim) puts its wall turn before its floor
+    on the layers laid rim to centre, with Vase mode's turns under the base
+    level.  One thing a drag leaves to the settled path: exactly where each
+    floor starts and ends.  A floor of a base that takes turns runs the way it
+    prints, seated beside its wall line's own first point, which is not where
+    the print seats it under a pinned seam; any other floor is the plan's own,
+    and rows are drawn as planned.
     """
 
-    from clayline.weave_bottom import build_bottom_spirals
+    from clayline.weave_bottom import (
+        build_bottom_plan,
+        one_way_spiral,
+        seat_inside_walls,
+        takes_turns,
+        wall_floor_region,
+    )
     from clayline.weave_interior import build_interior_strokes
-    from clayline.weave_zblend import build_zblend_path, profile_silhouette_shapes
+    from clayline.weave_zblend import build_zblend_path, floor_line_xy, profile_silhouette_shapes
 
     # Each tuple is (XYZ array, layer array, provenance label).  Arrays stay
     # vectorized through modulation; Python rows are allocated only after the
@@ -1702,24 +1717,15 @@ def drag_trace_payload(
     bottom_paths: dict[
         int, list[tuple[FloatArray, np.ndarray[Any, Any], np.ndarray[Any, Any], str]]
     ] = {}
-    for bottom in build_bottom_spirals(
+    bottom_plan = build_bottom_plan(
         sliced,
         bottom_layers=pattern.settings.bottom_layers,
         overlap_fraction=pattern.settings.overlap_fraction,
         bottom_alternate=pattern.settings.bottom_alternate,
-    ):
-        xyz = np.column_stack(
-            (
-                bottom.points[:, 0],
-                bottom.points[:, 1],
-                np.full(len(bottom.points), bottom.z),
-            )
-        )
-        layers = np.full(len(xyz), bottom.bottom_layer_index, dtype=np.int64)
-        flow = np.ones(len(xyz), dtype=np.float64)
-        bottom_paths.setdefault(bottom.bottom_layer_index, []).append(
-            (xyz, layers, flow, bottom.label)
-        )
+    )
+    # Each base layer's wall line at that layer's height, by island, filled
+    # in below once the walls are known.
+    floor_walls: dict[int, dict[int, np.ndarray]] = {}
 
     # An interior welds each island's fill onto that island's OWN wall, so the
     # preview has to know which island every wall ring belongs to.  Kept beside
@@ -1738,13 +1744,16 @@ def drag_trace_payload(
     if pattern.settings.z_blend:
         blended = zblend_path if zblend_path is not None else build_zblend_path(sliced, pattern)
         if pattern.settings.bottom_layers == 0:
-            point_groups = ((blended.revolutions[0].source_layer_index, blended.points),)
+            point_groups = ((blended.revolutions[0].source_layer_index, blended.points, False),)
         else:
+            # A level base turn ends a layer below where the next turn starts and
+            # keeps its last point, all of it at its own layer; every other turn
+            # shares its last point with the turn above, as before.
             point_groups = tuple(
                 (
                     revolution.source_layer_index,
                     (
-                        revolution.points[:-1]
+                        (revolution.points if revolution.is_level_base else revolution.points[:-1])
                         if index < pattern.settings.bottom_layers - 1
                         else revolution.points
                         + tuple(
@@ -1753,12 +1762,23 @@ def drag_trace_payload(
                             for point in later.points[1:]
                         )
                     ),
+                    revolution.is_level_base,
                 )
                 for index, revolution in enumerate(
                     blended.revolutions[: pattern.settings.bottom_layers]
                 )
             )
-        for source_layer_index, points in point_groups:
+            for index, revolution in enumerate(
+                blended.revolutions[: pattern.settings.bottom_layers]
+            ):
+                rings = sliced.layers[revolution.source_layer_index].rings
+                if len(rings) == 1:
+                    # The line the print fills this floor inside, so the drag
+                    # draws the floor that prints.
+                    floor_walls[index] = {
+                        rings[0].provenance.island_index: floor_line_xy(sliced, blended, index)
+                    }
+        for source_layer_index, points, level in point_groups:
             xyz = np.asarray(
                 [(point.x, point.y, point.z) for point in points],
                 dtype=np.float64,
@@ -1767,7 +1787,7 @@ def drag_trace_payload(
                 [
                     (
                         point.target_layer_index
-                        if point.revolution_u == 1.0
+                        if point.revolution_u == 1.0 and not level
                         else point.source_layer_index
                     )
                     for point in points
@@ -1894,6 +1914,110 @@ def drag_trace_payload(
                 stroke.island_index, []
             ).append((xyz, layers, flow, stroke.label))
 
+    # Every floor is filled inside its own wall as laid, exactly as the form
+    # stack fills it: a layered wall's line is its modulated ring, a Vase-mode
+    # turn's is that turn at its own layer's height.
+    if not pattern.settings.z_blend:
+        for layer_index in range(pattern.settings.bottom_layers):
+            floor_walls[layer_index] = {
+                island: xyz[:, :2]
+                for (xyz, _layers, _flow, _label), island in zip(
+                    wall_paths.get(layer_index, ()),
+                    wall_islands.get(layer_index, ()),
+                    strict=True,
+                )
+            }
+    # A base that takes turns lays its wall turn first on the layers laid rim
+    # to centre: the top base layer runs centre to rim, and the rest alternate
+    # down from it.  Each floor is then the one spiral the form stack lays:
+    # rim to centre beside where its wall ends, or centre to rim toward where
+    # its wall starts.
+    count = pattern.settings.bottom_layers
+
+    def laid_as_one_coil() -> bool:
+        """Whether the form stack's own routes would lay this base taking turns."""
+
+        if pattern.settings.z_blend:
+            return blended.level_base_count == max(0, count - 1)
+        if pattern.settings.seam is SeamPolicy.SCATTER or not sliced.wall_bands:
+            return False
+        band = sliced.wall_bands[0]
+        return (
+            band.ring_count == 1
+            and band.span.first_layer == 0
+            and band.span.last_layer >= count - 1
+            and all(
+                sliced.layers[address.layer_index].rings[address.island_index].closed
+                for address in band.tracks[0].rings
+            )
+            # The turns under the top base layer stand level, as they print.
+            and all(
+                np.allclose(xyz[:, 2], sliced.layers[layer].z, rtol=0.0, atol=1e-6)
+                for layer in range(count - 1)
+                for xyz, _layers, _flow, _label in wall_paths.get(layer, ())[:1]
+            )
+        )
+
+    turning = (
+        takes_turns(
+            sliced,
+            bottom_layers=count,
+            bottom_alternate=pattern.settings.bottom_alternate,
+        )
+        and laid_as_one_coil()
+    )
+    wall_first = (
+        {layer for layer in range(count) if (count - 1 - layer) % 2 == 1} if turning else set()
+    )
+    region_strokes: dict[tuple[int, int], list[Any]] = {}
+    for entry in bottom_plan.strokes:
+        region_strokes.setdefault(
+            (entry.spiral.bottom_layer_index, entry.outer_island_index), []
+        ).append(entry)
+    for (layer_index, _island), strokes in region_strokes.items():
+        walls_here = wall_paths.get(layer_index, ())
+        if turning and len(strokes) == 1 and walls_here:
+            region, _kept_outline = wall_floor_region(
+                sliced, strokes[0], walls=floor_walls.get(layer_index, {})
+            )
+            wall_xyz = walls_here[0][0]
+            seat = wall_xyz[-1] if layer_index in wall_first else wall_xyz[0]
+            spiral, _area = one_way_spiral(
+                sliced,
+                strokes[0],
+                region,
+                seat=(float(seat[0]), float(seat[1])),
+                overlap_fraction=pattern.settings.overlap_fraction,
+            )
+            floors_here = (
+                (spiral if layer_index in wall_first else spiral[::-1], strokes[0].spiral),
+            )
+        else:
+            seated, _kept_outline = seat_inside_walls(
+                sliced,
+                strokes,
+                walls=floor_walls.get(layer_index, {}),
+                overlap_fraction=pattern.settings.overlap_fraction,
+                bottom_alternate=pattern.settings.bottom_alternate,
+            )
+            floors_here = tuple((entry.spiral.points, entry.spiral) for entry in seated)
+        for points, bottom in floors_here:
+            xyz = np.column_stack(
+                (
+                    points[:, 0],
+                    points[:, 1],
+                    np.full(len(points), bottom.z),
+                )
+            )
+            bottom_paths.setdefault(layer_index, []).append(
+                (
+                    xyz,
+                    np.full(len(xyz), layer_index, dtype=np.int64),
+                    np.ones(len(xyz), dtype=np.float64),
+                    bottom.label,
+                )
+            )
+
     paths: list[tuple[FloatArray, np.ndarray[Any, Any], np.ndarray[Any, Any], str]] = []
     # Stack pieces: where separate pieces print a few layers of one at a time,
     # the trace follows that same plan — asked of the one function the form
@@ -1950,9 +2074,15 @@ def drag_trace_payload(
         if not by_island:
             # A bottom, or nothing inside the wall at all.  The form stack runs
             # every stroke of a bottom layer and then welds the wall onto the
-            # last one, so one fill block then one wall block IS its order.
-            paths.extend(bottom_paths.get(layer_index, ()))
-            paths.extend(walls)
+            # last one, so one fill block then one wall block IS its order —
+            # wall first where the base takes turns and this layer runs rim to
+            # centre.
+            if layer_index in wall_first:
+                paths.extend(walls)
+                paths.extend(bottom_paths.get(layer_index, ()))
+            else:
+                paths.extend(bottom_paths.get(layer_index, ()))
+                paths.extend(walls)
             continue
         # An interior does not work that way.  ``form_stack.add_fill_then_wall``
         # fills island 0, welds island 0's wall, travels, fills island 1, welds

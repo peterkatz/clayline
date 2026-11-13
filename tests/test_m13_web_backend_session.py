@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -15,9 +16,11 @@ from clayline.webui.weave_session import (
     CACHE_SESSION_COOKIE,
     DEFAULT_TOUCH_INTERVAL_SECONDS,
     DEFAULT_TTL_SECONDS,
+    WeaveCacheLimitError,
     WeaveSessionCache,
     WeaveSessionError,
     WeaveSessionManager,
+    estimate_cache_bytes,
 )
 
 MESH = Path(__file__).parent / "fixtures" / "mesh"
@@ -232,3 +235,113 @@ def test_session_cache_clear_is_idempotent() -> None:
     cache.clear()
     cache.clear()
     assert cache.count("slice") == 0
+
+
+def test_complete_supported_base_fits_without_evicting_its_editable_source() -> None:
+    # Measured prepared size for the tilted vase with base/curtain artwork.
+    # Model owned sizes without allocating hundreds of MiB in the test.
+    cache = WeaveSessionCache()
+    old = cache.put("result", "old preview", size_bytes=200 * 1024 * 1024)
+    mesh = cache.put("mesh", "mesh", size_bytes=8 * 1024 * 1024)
+    sliced = cache.put("slice", "editable slice", size_bytes=16 * 1024 * 1024)
+    prepared = cache.put("prepared", "complete supported base", size_bytes=446_657_768)
+    assert cache.get("prepared", prepared) == "complete supported base"
+    assert cache.get("mesh", mesh) == "mesh"
+    assert cache.get("slice", sliced) == "editable slice"
+    with pytest.raises(WeaveSessionError):
+        cache.get("result", old)
+    cache.discard("prepared", prepared)
+    result = cache.put("result", "accepted artifact", size_bytes=240 * 1024 * 1024)
+    assert cache.get("result", result) == "accepted artifact"
+    assert cache.get("slice", sliced) == "editable slice"
+    assert cache.estimated_bytes <= cache.max_bytes
+
+
+def test_support_reference_is_retained_within_the_session_memory_budget() -> None:
+    from clayline import load_mesh
+    from clayline.support_models import SupportSettings
+    from clayline.weave_workflow import prepare_weave_result
+
+    sliced = load_mesh(MESH / "cylinder.obj", fit_height=12, profile="potterbot-xl").slice(
+        nozzle=4.13, layer_height=1.5, first_layer_height=1.5, sample_spacing=2
+    )
+    prepared = prepare_weave_result(sliced, "flat", support_settings=SupportSettings())
+    assert prepared.support_reference is not None
+    without_reference = replace(prepared, support_reference=None)
+    cache = WeaveSessionCache(max_bytes=estimate_cache_bytes(without_reference))
+    cache.put("prepared", without_reference)
+    with pytest.raises(WeaveCacheLimitError, match="above this session"):
+        cache.put("prepared", prepared)
+
+
+def test_finalize_releases_its_intermediate_and_keeps_the_slice_for_followup_edits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import clayline.webui.app as app_module
+    import clayline.webui.weave_session as session_module
+    from clayline.weave_models import MeshForm, SlicedForm
+    from clayline.weave_workflow import PreparedWeaveResult, WeaveResult
+
+    # Each intermediate/result fits beside the source, but the two derived
+    # objects together do not. This models a large supported form cheaply.
+    sizes = {MeshForm: 10, SlicedForm: 40, PreparedWeaveResult: 60, WeaveResult: 65}
+    monkeypatch.setattr(
+        session_module,
+        "estimate_cache_bytes",
+        lambda value: next(size for kind, size in sizes.items() if isinstance(value, kind)),
+    )
+    finalize = app_module._finalize_weave_payload
+
+    def finalized_with_planning_buffers(prepared, payload):
+        result, response = finalize(prepared, payload)
+        # A successful support repair retains its planning trace until the
+        # response has supplied the replacement preview. It must not remain
+        # reachable from the cached downloadable artifact afterward.
+        return replace(result, support_repair=prepared), response
+
+    monkeypatch.setattr(app_module, "_finalize_weave_payload", finalized_with_planning_buffers)
+    app = create_app()
+    app.state.weave_sessions.max_session_bytes = 110
+
+    async def exercise() -> None:
+        async with _client(app) as client:
+            mesh = await client.post(
+                "/api/weave/mesh?filename=cylinder.obj&fit_height=12",
+                content=(MESH / "cylinder.obj").read_bytes(),
+                headers={**ORIGIN, "content-type": "application/octet-stream"},
+            )
+            assert mesh.status_code == 200, mesh.text
+            sliced = await client.post(
+                "/api/weave/slice",
+                json={"mesh_id": mesh.json()["mesh_id"], "sample_spacing": 4},
+                headers=ORIGIN,
+            )
+            assert sliced.status_code == 200, sliced.text
+            slice_id = sliced.json()["slice_id"]
+            cache, _, _ = app.state.weave_sessions.resolve(client.cookies.get(CACHE_SESSION_COOKIE))
+            for amplitude in (0, 0.5, 0):
+                prepared = await client.post(
+                    "/api/weave/modulate",
+                    json={
+                        "slice_id": slice_id,
+                        "quality": "settle",
+                        "wave": "sine",
+                        "amplitude": amplitude,
+                        "support_settings": {},
+                    },
+                    headers=ORIGIN,
+                )
+                assert prepared.status_code == 200, prepared.text
+                finalized = await client.post(
+                    "/api/weave/finalize",
+                    json={"prepared_id": prepared.json()["prepared_id"]},
+                    headers=ORIGIN,
+                )
+                assert finalized.status_code == 200, finalized.text
+                assert finalized.json()["exportable"]
+                assert cache.count("prepared") == 0
+                assert cache.get("result", finalized.json()["result_id"]).support_repair is None
+                assert cache.get("slice", slice_id)
+                assert cache.estimated_bytes <= 110
+
+    asyncio.run(exercise())

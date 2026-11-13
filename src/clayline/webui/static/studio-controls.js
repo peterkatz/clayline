@@ -165,6 +165,7 @@
     if (key === "images") return document.querySelector("#weaveImageControls")?.hidden
       ? "No images" : `${text("#weaveImageSourceName")} · ${text("#weaveImageFit")}`;
     if (key === "inside") return `${document.querySelector('input[name="weaveInterior"]:checked')?.value || "Hollow"} · ${value("#weaveBottomLayers")} bottom layers`;
+    if (key === "supports") return text("#weaveSupportStatus");
     if (key === "print") return text("#weaveRangeReadout");
     return "";
   }

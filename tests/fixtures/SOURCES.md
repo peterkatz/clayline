@@ -55,3 +55,11 @@
   EXIF orientation 6) for the reference photo's HEIC fallback. They were
   encoded once on 2026-10-05 with pillow-heif 1.5.0 at quality 80 and committed,
   because the app now uses decode-only pi-heif and the tests cannot encode HEIC.
+- weave/saw-vase-support.clayline is the user's saved saw-vase project used in
+  the 2026-11-12 floor-to-wall audit. The adjacent JSON records the live
+  placement and fill changes, measured expansions, and hashes of the
+  original unsupported export. Rebuild from the project and the recorded
+  overrides to locate the third wall turn before its own floor is printed. This private
+  saved job and its audit recipe are excluded from public snapshots. Tests that
+  require them skip only when the private files are absent; local verification
+  continues to use the original project.

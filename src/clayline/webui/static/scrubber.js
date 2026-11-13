@@ -69,6 +69,8 @@
     return [((value >> 16) & 255) / 255, ((value >> 8) & 255) / 255, (value & 255) / 255];
   }
   const PASS_PALETTE_RGB = PASS_PALETTE.map(hexToRgb01);
+  const SUPPORT_PALETTE_INDEX = PASS_PALETTE.length;
+  const SUPPORT_RGB = hexToRgb01("#2F6F8F");
   function passRGB(pass) {
     return PASS_PALETTE_RGB[((pass % PASS_PALETTE_RGB.length) + PASS_PALETTE_RGB.length) % PASS_PALETTE_RGB.length];
   }
@@ -178,6 +180,7 @@
     const STROKE = new Int32Array(n);
     const PAGE = new Int32Array(n);
     const FLOW = new Float64Array(n);
+    const SUPPORT = moves[0]?.length > 9 ? new Uint8Array(n) : null;
     for (let i = 0; i < n; i += 1) {
       const move = moves[i];
       X[i] = move[0];
@@ -188,8 +191,9 @@
       STROKE[i] = move[5];
       PAGE[i] = move[6];
       FLOW[i] = Number(move[8] ?? 1) || 1;
+      if (SUPPORT) SUPPORT[i] = String(move[9]).startsWith("support_") ? 1 : 0;
     }
-    return { n, moves, startX, startY, startZ, X, Y, Z, KIND, PASS, STROKE, PAGE, FLOW };
+    return { n, moves, startX, startY, startZ, X, Y, Z, KIND, PASS, STROKE, PAGE, FLOW, SUPPORT };
   }
   window.claylineNormalizeTraceMoves = normalizeTraceMoves;
 
@@ -233,6 +237,9 @@
     // hover tooltip (via pickNear) — not read anywhere else in this module.
     S.FLOW = norm.FLOW;
     S.PAGE = norm.PAGE;
+    S.SUPPORT = norm.SUPPORT;
+    S.hasSupport = norm.SUPPORT?.includes(1) === true;
+    S.supportColors = context?.supportColors === true;
 
     // Stroke groups for shift-arrow stepping: a group starts at each extruding
     // move whose (page, pass, stroke) tuple changes; travel moves inherit the
@@ -437,6 +444,8 @@
     let lastExtrude = -2;
     let lastTravel = -2;
     let lastTail = -2;
+    let lastSupport = false;
+    const colorSupportRoles = S.supportColors && S.hasSupport;
     const lift = S.lift3d;
     const [hiX, hiY, hiZ] = hiEndpoint3();
     for (let i = S.lo; i <= S.hi; i += 1) {
@@ -447,7 +456,9 @@
       const fromZ = (i > 0 ? Z[i - 1] : S.startZ) + lift;
       const kind = KIND[i];
       if (kind === 1) {
-        if (lastExtrude !== i - 1) {
+        const support = colorSupportRoles && S.SUPPORT[i] === 1;
+        const color = support ? SUPPORT_PALETTE_INDEX : colorSupportRoles ? 0 : pass % PASS_PALETTE.length;
+        if (lastExtrude !== i - 1 || lastSupport !== support) {
           if (extrudeLength > 0) {
             S.ex[extrudeLength] = NaN;
             S.ey[extrudeLength] = NaN;
@@ -458,15 +469,16 @@
           S.ex[extrudeLength] = fromX;
           S.ey[extrudeLength] = fromY;
           S.ez[extrudeLength] = fromZ;
-          S.ec[extrudeLength] = pass % PASS_PALETTE.length;
+          S.ec[extrudeLength] = color;
           extrudeLength += 1;
         }
         S.ex[extrudeLength] = (i === S.hi ? hiX : X[i]);
         S.ey[extrudeLength] = (i === S.hi ? hiY : Y[i]);
         S.ez[extrudeLength] = (i === S.hi ? hiZ : Z[i]) + lift;
-        S.ec[extrudeLength] = pass % PASS_PALETTE.length;
+        S.ec[extrudeLength] = color;
         extrudeLength += 1;
         lastExtrude = i;
+        lastSupport = support;
       } else if (kind === 0) {
         if (lastTravel !== i - 1) {
           if (travelLength > 0) {
@@ -551,8 +563,8 @@
       outPos[o] = x0; outPos[o + 1] = Y[i]; outPos[o + 2] = Z[i];
       outPos[o + 3] = x1; outPos[o + 4] = Y[i + 1]; outPos[o + 5] = Z[i + 1];
       if (outColor && colorIndexArr) {
-        const c0 = passRGB(colorIndexArr[i]);
-        const c1 = passRGB(colorIndexArr[i + 1]);
+        const c0 = colorIndexArr[i] === SUPPORT_PALETTE_INDEX ? SUPPORT_RGB : passRGB(colorIndexArr[i]);
+        const c1 = colorIndexArr[i + 1] === SUPPORT_PALETTE_INDEX ? SUPPORT_RGB : passRGB(colorIndexArr[i + 1]);
         outColor[o] = c0[0]; outColor[o + 1] = c0[1]; outColor[o + 2] = c0[2];
         outColor[o + 3] = c1[0]; outColor[o + 4] = c1[1]; outColor[o + 5] = c1[2];
       }
@@ -1621,6 +1633,11 @@
     };
   }
 
+  function setSupportColors(enabled) {
+    S.supportColors = enabled === true;
+    if (S.trace) scheduleRender();
+  }
+
   // --- wiring ------------------------------------------------------------------
 
   if (dom.dock) {
@@ -1690,6 +1707,7 @@
     setPageHighlight,
     setConstruction,
     setConstructionVisible,
+    setSupportColors,
     // Draw's toolpath hover/click (app.js): look up everything the exact
     // trace knows about a move index (from viewport3d.pickTracePoint), and
     // the shared per-pass palette its base trace colors by — the same

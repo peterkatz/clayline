@@ -8,6 +8,7 @@ import math
 import sys
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from clayline.lint import lint_gcode
 from clayline.models import Bounds, Design, Profile, Severity, Warning
 from clayline.profiles import available_profiles, emission_defaults, load_profile
 from clayline.report import render_report_text
+from clayline.support_models import SupportSettings, parse_support_settings
 from clayline.wave import load_pattern, preset_pattern
 from clayline.weave_api import MeshFormFacade, sliced_form_stats
 from clayline.weave_models import (
@@ -493,6 +495,15 @@ def build_parser() -> argparse.ArgumentParser:
             "no prime ramp, no end-early tail, and clay laid on every crossing"
         ),
     )
+    weave.add_argument(
+        "--supports", type=Path, help="JSON support settings for the foot and curtains"
+    )
+    weave.add_argument(
+        "--max-unsupported-bead",
+        type=float,
+        metavar="PERCENT",
+        help="maximum unsupported bead width to report (0-95, default 40)",
+    )
     weave.add_argument("-o", "--output", type=Path, help="G-code output path")
     weave.add_argument("--preview", type=Path, help="offline 3D HTML path")
     weave.add_argument("--plan-png", type=Path, help="2D plan PNG path")
@@ -779,6 +790,8 @@ def _weave_command(args: argparse.Namespace) -> int:
 
         mismatch = mesh_restore_warning(recipe, form)
         if mismatch is not None:
+            if recipe.supported_body_sha256 is not None and args.supports is None:
+                raise ValueError(mismatch)
             print(f"WARNING [source_mesh_hash] {mismatch}", file=sys.stderr)
 
     nozzle_override = recipe is not None and "--nozzle" in provided
@@ -890,6 +903,16 @@ def _weave_command(args: argparse.Namespace) -> int:
             prime_mm = None
         if "--end-early-mm" not in provided:
             end_early_mm = None
+    support_settings = None if recipe is None else recipe.support_settings
+    if args.supports is not None:
+        support_settings = parse_support_settings(
+            json.loads(args.supports.read_text(encoding="utf-8"))
+        )
+    if args.max_unsupported_bead is not None:
+        support_settings = replace(
+            support_settings or SupportSettings(),
+            max_unsupported_fraction=args.max_unsupported_bead / 100.0,
+        )
     result = sliced.modulate(
         pattern,
         extrusion=args.extrusion,
@@ -943,12 +966,29 @@ def _weave_command(args: argparse.Namespace) -> int:
         job_id=None if recipe is None else recipe.job_id,
         layer_range=layer_range,
         keep_clay_flowing=keep_clay_flowing,
+        support_settings=support_settings,
     )
+    if recipe is not None and provided <= {
+        "--from",
+        "--form-from-print",
+        "--output",
+        "--preview",
+        "--plan-png",
+        "--report",
+        "--strict",
+    }:
+        from clayline.weave_restore import verify_supported_restore
+
+        verify_supported_restore(recipe, result.emission.gcode)
     sys.stdout.write(render_report_text(result.report()))
     _print_warnings(result.warnings)
     if any(warning.severity is Severity.ERROR for warning in result.warnings):
         return 1
-    if args.strict and any(warning.severity is Severity.WARNING for warning in result.warnings):
+    analysis = result.job_report.support_analysis
+    if args.strict and (
+        any(warning.severity is Severity.WARNING for warning in result.warnings)
+        or (analysis is not None and (analysis.diagnostics or analysis.unresolved))
+    ):
         return 2
     if write_form is not None:
         write_form()
@@ -978,6 +1018,9 @@ _PLACEMENT_FLAGS = (
 # Why a print file gave no form, in the words the studio uses for each reason;
 # any other reason gets the plain "couldn't".
 _NO_FORM_WHY = {
+    "generated_supports": (
+        "{name} contains generated supports, so its wall requires the source mesh"
+    ),
     "stack_pieces": "Clayline can't yet make a form from {name}: it was printed with Stack pieces",
     "splits_or_joins": (
         "Clayline can't yet make a form from {name}: its form splits or joins up the way"
@@ -1009,7 +1052,6 @@ def _form_from_print_file(
     """
 
     import tempfile
-    from dataclasses import replace
 
     from clayline.form_from_print import AS_PRINTED, form_from_print
 
