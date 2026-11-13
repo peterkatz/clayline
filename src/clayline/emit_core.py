@@ -282,6 +282,16 @@ def render_body(
             if event.source_move.support_id is not None:
                 support_id = _metadata_comment_value("support_id", event.source_move.support_id)
                 line += f" support_id={support_id}"
+        if (
+            event.kind
+            in {
+                MoveKind.TRAVEL_LIFT,
+                MoveKind.TRAVEL_XY,
+                MoveKind.TRAVEL_APPROACH,
+            }
+            and dict(event.source_move.metadata).get("support_local_travel") is True
+        ):
+            line += " support_local_travel=true"
         if event.comment:
             line += f" note={_comment_value(event.comment)}"
         motion_offsets.append(len(body))

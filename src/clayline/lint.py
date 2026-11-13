@@ -41,6 +41,7 @@ _PAGE = re.compile(r"\bpage=(\d+)\b")
 _LAYER = re.compile(r"\blayer=(\d+)\b")
 _SUPPORT_ROLE = re.compile(r"(?:^| )role=(support_foot|support_curtain|support_root)(?= |$)")
 _SUPPORT_ID = re.compile(r"(?:^| )support_id=[A-Za-z0-9_-]{1,64}(?= |$)")
+_LOCAL_SUPPORT_TRAVEL = re.compile(r"(?:^| )support_local_travel=([^ ]+)(?= |$)")
 _PAGE_MARKER = re.compile(r"^; CLAYLINE_PAGE index=(\d+)$")
 _KIND = re.compile(r"\bkind=([a-z_]+)\b")
 _STROKE = re.compile(r"\bstroke=([^\s;]+)\b")
@@ -655,11 +656,36 @@ def lint_gcode(
                     line_number,
                 )
 
+        local_support_travel = False
+        local_travel_marker = _LOCAL_SUPPORT_TRAVEL.search(comment)
+        support_role = _SUPPORT_ROLE.search(comment)
+        if local_travel_marker is not None:
+            local_support_travel = (
+                local_travel_marker.group(1) == "true"
+                and block == "body"
+                and not pressure
+                and command == "G0"
+                and kind in _CROSSING_KINDS
+                and support_role is not None
+                and support_role.group(1) in {"support_root", "support_curtain"}
+                and _SUPPORT_ID.search(comment) is not None
+                and "E" not in words
+                and _E_DEFERRED.search(comment) is None
+                and support_slope is not None
+            )
+            if not local_support_travel:
+                issue(
+                    "weave_support_travel",
+                    "local curtain travel must be dry, versioned, and identify its curtain",
+                    line_number,
+                )
         support_motion = False
         if block == "body" and not pressure:
-            support_motion = _SUPPORT_ROLE.search(comment) is not None
+            support_motion = support_role is not None
             if support_motion and (
-                support_slope is None or kind != "print" or _SUPPORT_ID.search(comment) is None
+                support_slope is None
+                or (kind != "print" and not local_support_travel)
+                or _SUPPORT_ID.search(comment) is None
             ):
                 issue(
                     "weave_support_role",
@@ -667,7 +693,11 @@ def lint_gcode(
                     line_number,
                 )
                 support_motion = False
-            if support_motion and all(value is not None for value in (*old, *target)):
+            if (
+                support_motion
+                and not local_support_travel
+                and all(value is not None for value in (*old, *target))
+            ):
                 distance_xy = math.hypot(
                     float(target[0]) - float(old[0]), float(target[1]) - float(old[1])
                 )
@@ -860,7 +890,13 @@ def lint_gcode(
             and delta_e is not None
             and delta_e > 1e-9
         )
-        if keep_clay_flowing and block == "body" and not pressure and kind in _CROSSING_KINDS:
+        if (
+            keep_clay_flowing
+            and block == "body"
+            and not pressure
+            and kind in _CROSSING_KINDS
+            and not local_support_travel
+        ):
             moved = all(value is not None for value in (*old, *target))
             length = math.dist(old, target) if moved else 0.0
             deferred = _E_DEFERRED.search(comment)

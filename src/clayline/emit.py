@@ -813,9 +813,20 @@ def _prepare_events(
 
         point = _resolve_point(move, current)
         _validate_body_point(point, profile)
+        local_support_travel = dict(move.metadata).get("support_local_travel", False)
+        if local_support_travel is not False and (
+            local_support_travel is not True
+            or move.kind not in FLOWING_CROSSING_KINDS
+            or move.role not in {"support_root", "support_curtain"}
+            or not move.support_id
+        ):
+            raise EmissionError("Local support travel needs a curtain ID and a dry travel kind.")
         flowing_feed = (
             _next_print_feed(moves, index + 1, profile)
-            if settings.keep_clay_flowing and printed_a_run and move.kind in FLOWING_CROSSING_KINDS
+            if settings.keep_clay_flowing
+            and printed_a_run
+            and move.kind in FLOWING_CROSSING_KINDS
+            and not local_support_travel
             else None
         )
         if flowing_feed is not None:

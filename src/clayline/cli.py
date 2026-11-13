@@ -502,7 +502,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-unsupported-bead",
         type=float,
         metavar="PERCENT",
-        help="maximum unsupported bead width to report (0-95, default 40)",
+        help="set both support overhang limits (0-95, default 40); family flags override this",
+    )
+    weave.add_argument(
+        "--base-max-unsupported-bead",
+        type=float,
+        metavar="PERCENT",
+        help="base-only allowable overhang as bead width (0-95)",
+    )
+    weave.add_argument(
+        "--curtain-max-unsupported-bead",
+        type=float,
+        metavar="PERCENT",
+        help="curtain and local-foot allowable overhang as bead width (0-95)",
     )
     weave.add_argument("-o", "--output", type=Path, help="G-code output path")
     weave.add_argument("--preview", type=Path, help="offline 3D HTML path")
@@ -912,7 +924,16 @@ def _weave_command(args: argparse.Namespace) -> int:
         support_settings = replace(
             support_settings or SupportSettings(),
             max_unsupported_fraction=args.max_unsupported_bead / 100.0,
+            base_max_unsupported_fraction=None,
+            curtain_max_unsupported_fraction=None,
         )
+    for family in ("base", "curtain"):
+        percent = getattr(args, f"{family}_max_unsupported_bead")
+        if percent is not None:
+            support_settings = replace(
+                support_settings or SupportSettings(),
+                **{f"{family}_max_unsupported_fraction": percent / 100.0},
+            )
     result = sliced.modulate(
         pattern,
         extrusion=args.extrusion,

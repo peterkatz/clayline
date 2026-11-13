@@ -2,6 +2,28 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.14.2 — 2026-11-13
+
+### Fast original-mesh estimates and local curtain feet
+- The Supports step returns a quick approximate overhang estimate before building
+  the full print path. It reads the original placed mesh, before Weaves and Images,
+  and considers exterior overhangs only. Hollows and enclosed islands do not ask
+  for internal supports.
+- **Base allowable overhang (%)** and **Curtain allowable overhang (%)** are
+  independent. Projects, exported recipes, reports, and CLI options preserve both;
+  older single-limit projects initialize both values from their saved setting.
+- Turning **Reinforced base** off removes the surrounding base. Curtains can use
+  small local external feet. In Vase mode these can require separate strokes and
+  moves without extrusion; their travel and restart time is included in estimates.
+- Support construction avoids a second complete reference route and reuses contact
+  calculations. Superseded mesh estimates cancel promptly. Download remains
+  disabled until the actual generated path completes foundation and nozzle checks.
+- Local root selection checks finite contact with the original mesh. Near-collinear
+  contact fragments no longer count the same bearing twice. Split handles retain
+  external attachments while enclosed internal attachments are rejected.
+- Supported curtain targets and unsupported spans between them remain distinct in
+  the inspection panel. A few curtains do not claim to support the entire wall.
+
 ## 0.14.1 — 2026-11-13
 
 ### Responsive support checks

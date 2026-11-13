@@ -14,7 +14,7 @@ from clayline import load_mesh
 from clayline.emit import EmissionMotion, EmissionSettings, PreparedEmission, prepare_emission
 from clayline.models import Move, MoveKind, MoveStream
 from clayline.profiles import load_profile
-from clayline.support_analysis import SupportTarget, analyze_support
+from clayline.support_analysis import SupportTarget, analyze_mesh_support, analyze_support
 from clayline.support_geometry import curtain_targets
 from clayline.support_models import FootSettings, RepeatedCurtainSettings, SupportSettings
 from clayline.wave import pattern_from_json
@@ -365,7 +365,13 @@ def test_live_saw_vase_reports_the_third_wall_turn_and_accepts_a_foot(
     )
     assert supported.emission.lint_report.ok
     assert supported.report().totals.stroke_count == recipe["historical_export"]["stroke_count"]
-    after = supported.report().support_analysis
+    # Keep the photographed deposition-order regression independent of the
+    # new mesh-coordinate indication overlay.
+    after = analyze_support(
+        supported.emission.prepared,
+        threshold=0.40,
+        first_layer_height=recipe["slice"]["first_layer_height"],
+    )
     assert after.added_volume_ml > 0
     assert not after.generated_without_foundation
     assert not after.generated_unresolved
@@ -398,7 +404,7 @@ def test_weave_displacement_does_not_create_base_form_warning_spans(
     assert decorated.emission.stream.moves != plain.emission.stream.moves
     before = plain.report().support_analysis
     after = decorated.report().support_analysis
-    assert before.warning_basis == after.warning_basis == "underlying_form_without_weaves"
+    assert before.warning_basis == after.warning_basis == "original_mesh_external"
     assert before.diagnostic_count == after.diagnostic_count
     assert before.max_unsupported_fraction == after.max_unsupported_fraction
     assert before.longest_failing_run_mm == pytest.approx(after.longest_failing_run_mm)
@@ -418,6 +424,7 @@ def test_saw_curtains_follow_only_external_base_form_needs(
     from test_support_integration import (
         _assert_curtain_roots_fuse_before_the_wall_continues,
         _assert_external_support_routes,
+        _assert_original_wall_edges_preserved,
     )
 
     sliced, decorated, recipe, original = saw_vase_case
@@ -440,10 +447,14 @@ def test_saw_curtains_follow_only_external_base_form_needs(
             support_settings=settings,
         )
         assert supported.emission.lint_report.ok
-        assert supported.report().totals.stroke_count == 1
-        assert tuple(m for m in supported.emission.stream.moves if m.support_id is None) == (
-            baseline.emission.stream.moves
-        )
+        assert (supported.report().totals.stroke_count == 1) is base_enabled
+        _assert_original_wall_edges_preserved(baseline.emission.stream, supported.emission.stream)
+        if base_enabled:
+            assert tuple(m for m in supported.emission.stream.moves if m.support_id is None) == (
+                baseline.emission.stream.moves
+            )
+        else:
+            assert not any(m.role == "support_foot" for m in supported.emission.stream.moves)
         curtains = [m for m in supported.emission.stream.moves if m.role == "support_curtain"]
         assert {m.support_id for m in curtains} == expected_ids
         extents = {
@@ -454,31 +465,30 @@ def test_saw_curtains_follow_only_external_base_form_needs(
         _assert_external_support_routes(supported)
         _assert_curtain_roots_fuse_before_the_wall_continues(supported)
         analysis = supported.report().support_analysis
-        assert analysis.warning_basis == "underlying_form_without_weaves"
+        assert analysis.warning_basis == "original_mesh_external"
         assert analysis.added_volume_ml > 0
         assert not analysis.generated_without_foundation
         assert not analysis.generated_unresolved
         assert analysis.targets_met
-        assert analysis.generated_max_unsupported_fraction <= 0.4 + 1e-7
+        assert all(
+            target.max_unsupported_fraction <= 0.4 + 1e-7 for target in analysis.target_results
+        )
 
     assert layer_extents[0] == layer_extents[1]
     # Independently locate the final underlying wall need at each attachment.
     # The intentional saw deformation must not extend the automatic curtains.
     targets = curtain_targets(plain_original.emission.stream, sliced, original.profile, settings)
-    baseline_analysis = analyze_support(
-        plain_original.emission.prepared,
+    baseline_analysis = analyze_mesh_support(
+        sliced,
         threshold=settings.max_unsupported_fraction,
-        first_layer_height=sliced.first_layer_height,
         targets=targets,
     )
-    motions = [
-        event
-        for event in plain_original.emission.prepared.events
-        if isinstance(event, EmissionMotion)
-    ]
     for target in baseline_analysis.target_results:
-        needed = [motions[row.end_motion].source_move.layer_index for row in target.diagnostics]
+        needed = [
+            min(sliced.layers, key=lambda layer: abs(layer.z - row.max_z)).index
+            for row in target.diagnostics
+        ]
         assert needed
         last_need = max(needed)
         assert last_need <= layer_extents[0][target.support_id] <= last_need + 1
-        assert motions[target.diagnostics[-1].end_motion].point.z < sliced.layers[-1].z / 4
+        assert target.diagnostics[-1].max_z < sliced.layers[-1].z / 4

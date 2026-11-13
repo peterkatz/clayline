@@ -25,6 +25,8 @@ from clayline.support_geometry import (
     _Course,
     _emit_route,
     _foot_route,
+    _local_course_anchor,
+    _merge_local_support_courses,
     _placements,
     _smoothstep,
     _vase_footing,
@@ -195,12 +197,14 @@ def route_split_supports(
     artwork = SupportArtwork(sliced, pattern)
     spacing = max(0.1, min(sliced.sample_spacing, sliced.bead_width / 4))
     additions: dict[int, list[Move]] = defaultdict(list)
+    independent_courses: dict[int, list[tuple[Move, ...]]] = defaultdict(list)
+    local_courses = pattern.settings.z_blend and not settings.foot.enabled
     footing_additions: dict[tuple[int, int], list[Move]] = defaultdict(list)
     footprints, foot_stations, foot_lines = _existing_supports(master)
     footings = {}
     bed_seams: set[str] = set()
     width = 0.65 * sliced.bead_width
-    if pattern.settings.z_blend and primary_sliced is not None:
+    if pattern.settings.z_blend and primary_sliced is not None and settings.foot.enabled:
         helical_courses = _wall_courses(master, primary_sliced)
         footing_stations = []
         for curtain in curtains:
@@ -259,6 +263,8 @@ def route_split_supports(
             if layer_index == 0 and curtain.placement.id in bed_seams:
                 index = indices[0]
             anchor = master.moves[index]
+            if local_courses:
+                anchor = _local_course_anchor(anchor, course.ring.z, curtain.placement.id)
             branch = curtain.branches.get(layer_index)
             if branch is None and foot_lines[layer_index]:
                 wall = LineString(np.concatenate((course.xy, course.xy[:1])))
@@ -328,7 +334,9 @@ def route_split_supports(
                         first_error = error
                     continue
                 footprints[layer_index].append(outline)
-                if footing_station is None:
+                if local_courses:
+                    independent_courses[layer_index].append((station, *detour))
+                elif footing_station is None:
                     additions[index].extend(detour)
                 else:
                     footing_additions[layer_index, footing_station].extend(detour)
@@ -346,11 +354,12 @@ def route_split_supports(
     for index, move in enumerate(master.moves):
         moves.append(move)
         moves.extend(additions.get(index, ()))
-    return replace(
+    result = replace(
         master,
         moves=tuple(moves),
         warnings=tuple(w for w in master.warnings if w.code != FormWarningCode.PIECES_APART),
     )
+    return _merge_local_support_courses(result, independent_courses, profile)
 
 
 def _existing_supports(
@@ -587,6 +596,7 @@ def _match_curtains(
             or LineString(target.xy).distance(point) > 2 * sliced.bead_width
         ):
             continue
+        _require_external_attachment(primary[layer], target, placement.id)
         branches = {layer: target}
         for step in (-1, 1):
             current = target
@@ -604,6 +614,7 @@ def _match_curtains(
                 )
                 if LineString(current.xy).distance(LineString(candidate.xy)) > sliced.bead_width:
                     break
+                _require_external_attachment(primary[index], candidate, placement.id)
                 branches[index] = candidate
                 current = candidate
                 index += step
@@ -888,6 +899,14 @@ def _curtain_course(
             raise SupportRoutingError(f"Curtain {curtain.placement.id} crosses its landing stripe.")
         footprint = shapely.union_all((outline, inner))
     return (*there.moves, *inner_moves, *loop, *home.moves), footprint
+
+
+def _require_external_attachment(body: _Circuit, branch: _Circuit, identifier: str) -> None:
+    """A detached material island inside the body's hollow is not external."""
+    if Polygon(body.ring.points).buffer(0).covers(Polygon(branch.ring.points)):
+        raise SupportRoutingError(
+            f"Curtain {identifier} enters the piece's interior. Supports must stay outside."
+        )
 
 
 def _require_weld_crossings(

@@ -301,13 +301,14 @@ class PreparedWeaveResult:
 
 
 def _support_reference_pattern(pattern: Pattern) -> Pattern:
-    """Keep the placed form and images, excluding intentional weave effects."""
+    """Use the placed source form, excluding all applied surface decoration."""
     flat = Pattern()
     return replace(
         pattern,
         wave=flat.wave,
         extrusion=flat.extrusion,
         extra_weaves=(),
+        images=(),
         settings=replace(
             pattern.settings,
             amplitude=0.0,
@@ -454,26 +455,23 @@ def prepare_weave_result(
             zblend_path, source = wall_source(selected)
             stream = source.stream
     support_error = None
-    support_reference_error = None
-    reference_stream = None
     if support_settings is not None:
-        _, reference_source = wall_source(
-            selected, _support_reference_pattern(resolved_pattern), source.stream.job_id
-        )
-        reference_stream = reference_source.stream
         stream = replace(
             stream,
             warnings=tuple(w for w in stream.warnings if w.code != FormWarningCode.OVERHANG),
         )
-        source = replace(
-            source,
-            stream=stream,
-            reference_stream=reference_source.stream,
-            reference_helical_stream=reference_source.helical_stream,
-        )
+        source = replace(source, stream=stream)
         if support_settings.enabled:
             from clayline.support_geometry import _placements
 
+            _, reference_source = wall_source(
+                selected, _support_reference_pattern(resolved_pattern), source.stream.job_id
+            )
+            source = replace(
+                source,
+                reference_stream=reference_source.stream,
+                reference_helical_stream=reference_source.helical_stream,
+            )
             regular_curtains = (
                 bool(_placements(support_settings))
                 and source.vase_wall is None
@@ -491,16 +489,8 @@ def prepare_weave_result(
                 foot_variant=4 if regular_curtains else 0,
                 curtain_variant=5 if regular_curtains else 0,
             )
-            reference_stream, support_reference_error = _reference_support_stream(
-                source,
-                selected,
-                resolved_pattern,
-                resolved_profile,
-                support_settings,
-                flow_multiplier=flow_multiplier,
-                foot_variant=4 if regular_curtains else 0,
-                curtain_variant=5 if regular_curtains else 0,
-            )
+        # Overhangs use source-mesh slices, so a second routed print is no
+        # longer necessary. Keep only the reference wall for support sizing.
     range_facts = layer_range_payload(selected)
     snapshot_prime_mm = (
         profile_defaults.prime_mm if profile_prime_mm is None else float(profile_prime_mm)
@@ -721,11 +711,6 @@ def prepare_weave_result(
         keep_clay_flowing=keep_clay_flowing,
     )
     prepared = prepare_emission(stream, resolved_profile, settings=settings)
-    support_reference = (
-        prepare_emission(reference_stream, resolved_profile, settings=settings)
-        if reference_stream is not None
-        else None
-    )
     return PreparedWeaveResult(
         sliced=selected,
         pattern=resolved_pattern,
@@ -736,8 +721,6 @@ def prepare_weave_result(
         zblend_path=zblend_path,
         support_settings=support_settings,
         support_error=support_error,
-        support_reference=support_reference,
-        support_reference_error=support_reference_error,
         support_source=source
         if support_settings is not None and support_settings.enabled
         else None,
@@ -775,7 +758,6 @@ def _route_support_candidate(
     *,
     foot_variant: int = 0,
     curtain_variant: int = 0,
-    shared_split_footing: bool = False,
     flow_multiplier: float = 1.0,
 ) -> tuple[MoveStream, str | None]:
     from clayline.support_geometry import SupportRoutingError, route_supports
@@ -795,29 +777,12 @@ def _route_support_candidate(
             ), None
         from clayline.support_split_routing import route_split_supports
 
-        geometry_settings = settings
-        if shared_split_footing:
-            repeated_top = settings.repeated_curtains.top_height_mm or 0.0
-            height = max(
-                sliced.first_layer_height + 4.5 * sliced.layer_height,
-                repeated_top + 0.5 * sliced.layer_height,
-            )
-            geometry_settings = replace(
-                settings,
-                foot=replace(
-                    settings.foot,
-                    enabled=True,
-                    extent_mode="manual",
-                    extra_width_mm=max(0.1, round(2.4 * sliced.bead_width)),
-                    height_mm=min(sliced.layers[-1].z, math.ceil(height)),
-                ),
-            )
         routed = route_split_supports(
             source.stream,
             sliced,
             pattern,
             profile,
-            geometry_settings,
+            settings,
             primary_stream=source.helical_stream,
             primary_ring_indices=source.vase_wall.ring_indices,
             primary_sliced=source.vase_wall.sliced,
@@ -826,26 +791,9 @@ def _route_support_candidate(
             reference_helical_stream=source.reference_helical_stream,
             flow_multiplier=flow_multiplier,
         )
-        if shared_split_footing:
-            routed = replace(
-                routed, moves=tuple(_mark_curtain_footing(move) for move in routed.moves)
-            )
         return routed, None
     except SupportRoutingError as error:
         return source.stream, str(error)
-
-
-def _mark_curtain_footing(move: Move) -> Move:
-    if move.support_id != "foot":
-        return move
-    return replace(
-        move,
-        support_id="curtain-foundation",
-        metadata=tuple(
-            (key, "curtain-foundation" if key == "support_id" else value)
-            for key, value in move.metadata
-        ),
-    )
 
 
 def _reference_support_stream(
@@ -857,7 +805,6 @@ def _reference_support_stream(
     *,
     foot_variant: int,
     curtain_variant: int,
-    shared_split_footing: bool = False,
     flow_multiplier: float = 1.0,
 ) -> tuple[MoveStream | None, str | None]:
     """Route the same support request on its complete weave-free counterpart."""
@@ -880,7 +827,6 @@ def _reference_support_stream(
         reference_settings,
         foot_variant=foot_variant,
         curtain_variant=curtain_variant,
-        shared_split_footing=shared_split_footing,
         flow_multiplier=flow_multiplier,
     )
     return stream, error
@@ -896,23 +842,15 @@ def _support_candidates(attempt: PreparedWeaveResult) -> Iterator[PreparedWeaveR
     split = any(
         sum(not ring.is_hole for ring in layer.rings) > 1 for layer in attempt.sliced.layers
     )
-    shared_split_footing = (
-        attempt.support_source.vase_wall is not None
-        and settings.repeated_curtains.enabled
-        and not settings.foot.enabled
-        and any(row.enabled and row.origin == "local" for row in settings.placements)
-    )
-    if not split and _placements(settings):
-        if not settings.foot.enabled and not attempt.pattern.settings.z_blend:
-            # This variant changes only the footing. A Layered curtain with
-            # no footing would rebuild the identical rejected route.
-            return
-        variants = [(5, 5)]
-    elif settings.foot.enabled or shared_split_footing:
-        first = 0 if shared_split_footing else 1
-        variants = [(variant, 0) for variant in range(first, FOOT_ROUTE_VARIANT_COUNT)]
-    else:
+    # A disabled Base is never promoted to an annulus during recovery.
+    # Curtain-only jobs search their individual local footings inside the
+    # geometry builder; global base-fill variants would repeat the same job.
+    if not settings.foot.enabled:
         return
+    if not split and _placements(settings):
+        variants = [(5, 5)]
+    else:
+        variants = [(variant, 0) for variant in range(1, FOOT_ROUTE_VARIANT_COUNT)]
     for foot_variant, curtain_variant in variants:
         check_cancelled()
         stream, error = _route_support_candidate(
@@ -923,35 +861,18 @@ def _support_candidates(attempt: PreparedWeaveResult) -> Iterator[PreparedWeaveR
             settings,
             foot_variant=foot_variant,
             curtain_variant=curtain_variant,
-            shared_split_footing=shared_split_footing,
             flow_multiplier=attempt.settings.flow_multiplier,
         )
         if error is not None:
             continue
         trace = prepare_emission(stream, attempt.profile, settings=attempt.settings)
-        reference_stream, reference_error = _reference_support_stream(
-            attempt.support_source,
-            attempt.sliced,
-            attempt.pattern,
-            attempt.profile,
-            settings,
-            foot_variant=foot_variant,
-            curtain_variant=curtain_variant,
-            shared_split_footing=shared_split_footing,
-            flow_multiplier=attempt.settings.flow_multiplier,
-        )
-        reference_trace = (
-            prepare_emission(reference_stream, attempt.profile, settings=attempt.settings)
-            if reference_stream is not None
-            else None
-        )
         yield replace(
             attempt,
             stream=stream,
             prepared=trace,
             support_error=None,
-            support_reference=reference_trace,
-            support_reference_error=reference_error,
+            support_reference=None,
+            support_reference_error=None,
         )
 
 
@@ -1140,24 +1061,53 @@ def _automatic_support_targets_met(result: WeaveResult) -> bool:
     if analysis is None:
         return True
     automatic = [target for target in analysis.target_results if target.automatic]
+    return all(target.target_met for target in automatic) and all(
+        peak <= limit + 1e-9 for peak, limit in _support_threshold_limits(result)
+    )
+
+
+def _support_threshold_limits(result: WeaveResult) -> tuple[tuple[float, float], ...]:
+    """Pair each automatic support family's measured peak with its own limit."""
+    analysis = result.job_report.support_analysis
     settings = result.support_settings
-    automatic_geometry = bool(automatic) or bool(
-        settings is not None
-        and settings.enabled
-        and settings.foot.enabled
-        and settings.foot.extent_mode == "auto"
-    )
-    generated_overhang = _support_threshold_peak(analysis)
-    return all(target.target_met for target in automatic) and (
-        not automatic_geometry
-        or generated_overhang is None
-        or generated_overhang <= analysis.threshold + 1e-9
+    if analysis is None or settings is None or not settings.enabled:
+        return ()
+    automatic_base = settings.foot.enabled and settings.foot.extent_mode == "auto"
+    automatic_curtains = any(target.automatic for target in analysis.target_results)
+    if analysis.warning_basis == "original_mesh_external":
+        if result.pattern != _support_reference_pattern(result.pattern):
+            return ()
+        limits = []
+        if automatic_base and analysis.generated_base_max_unsupported_fraction is not None:
+            limits.append(
+                (analysis.generated_base_max_unsupported_fraction, settings.base_threshold)
+            )
+        if automatic_curtains and analysis.generated_curtain_max_unsupported_fraction is not None:
+            limits.append(
+                (analysis.generated_curtain_max_unsupported_fraction, settings.curtain_threshold)
+            )
+        return tuple(limits)
+    # Retain historical analysis compatibility when reading older results.
+    peak = _support_threshold_peak(analysis, pattern=result.pattern)
+    return (
+        ((peak, analysis.threshold),)
+        if (automatic_base or automatic_curtains) and peak is not None
+        else ()
     )
 
 
-def _support_threshold_peak(analysis: SupportAnalysis) -> float | None:
+def _support_threshold_peak(analysis: SupportAnalysis, *, pattern: Pattern) -> float | None:
     # The user's overhang limit excludes intentional weave geometry. The
     # actual deposited foundation/contact audit remains a separate hard gate.
+    if analysis.warning_basis == "original_mesh_external":
+        # A wholly neutral print also provides a faithful check of the
+        # support's own geometry. Surface decoration must not turn that
+        # structural check into a new source of weave/image overhang demand.
+        return (
+            analysis.generated_max_unsupported_fraction
+            if pattern == _support_reference_pattern(pattern)
+            else None
+        )
     return (
         analysis.reference_generated_max_unsupported_fraction
         if analysis.warning_basis == "underlying_form_without_weaves"
@@ -1171,7 +1121,10 @@ def _support_target_score(result: WeaveResult) -> tuple[int, float, float, float
     return (
         sum(target.unresolved for target in targets),
         sum(target.remaining_length_mm for target in targets),
-        (_support_threshold_peak(analysis) or 0.0) if analysis is not None else 0.0,
+        max(
+            (max(0.0, peak - limit) for peak, limit in _support_threshold_limits(result)),
+            default=0.0,
+        ),
         max((target.max_unsupported_fraction or 0.0 for target in targets), default=0.0),
     )
 
@@ -1186,7 +1139,7 @@ def _finalize_once(prepared_result: PreparedWeaveResult) -> WeaveResult:
     supports = prepared_result.support_settings
     support_analysis = None
     if supports is not None:
-        from clayline.support_analysis import SupportTarget, analyze_support
+        from clayline.support_analysis import SupportTarget, analyze_mesh_support
         from clayline.support_geometry import SupportRoutingError, curtain_targets
 
         targets = ()
@@ -1209,12 +1162,20 @@ def _finalize_once(prepared_result: PreparedWeaveResult) -> WeaveResult:
                 # A missing target is an unresolved request, never vacuous
                 # evidence that the generated geometry supports the wall.
                 targets = (SupportTarget("curtains", (), settings.bead_width / 2.0),)
-        support_analysis = analyze_support(
-            prepared,
-            threshold=supports.max_unsupported_fraction,
-            first_layer_height=prepared_result.sliced.first_layer_height,
+        support_analysis = analyze_mesh_support(
+            prepared_result.sliced,
+            threshold=supports.overview_threshold,
+            base_threshold=supports.base_threshold,
+            curtain_threshold=supports.curtain_threshold,
+            target_threshold=supports.curtain_threshold,
+            threshold_scope=supports.threshold_scope,
             targets=targets,
-            reference=prepared_result.support_reference,
+            prepared=prepared,
+            reference_wall=(
+                prepared_result.support_source.reference_stream
+                if prepared_result.support_source is not None
+                else None
+            ),
         )
         if prepared_result.support_error is not None:
             raise SupportPlanRefused(

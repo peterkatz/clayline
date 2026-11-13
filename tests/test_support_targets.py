@@ -36,6 +36,7 @@ from clayline.support_geometry import (
     _clear_curtain_route,
     _curtain_placement,
     _curtain_route,
+    _LocalMeshContact,
     _placements,
     _wall_courses,
     curtain_targets,
@@ -49,8 +50,56 @@ from clayline.support_models import (
     SupportStyle,
 )
 from clayline.support_patterns import SupportArtwork
+from clayline.support_split_routing import _require_external_attachment
 from clayline.wave import preset_pattern
 from clayline.weave_workflow import prepare_weave_result
+
+
+@pytest.mark.parametrize("upper_index", (1, 3))
+def test_local_root_candidate_must_carry_finite_source_strip(upper_index: int) -> None:
+    sliced = load_mesh(
+        Path(__file__).parent / "fixtures" / "mesh" / "bowl.obj",
+        fit_height=24,
+        profile="potterbot-xl",
+    ).slice(layer_height=1.24, first_layer_height=1.24, sample_spacing=1, bead_width=4.13)
+    stream = build_form_move_stream(sliced, preset_pattern("flat"), load_profile("potterbot-xl"))
+    courses = _wall_courses(stream, sliced)
+    lower, upper = courses[0], courses[upper_index]
+    target = max(upper.ring.points, key=lambda point: point[0])
+    root = np.asarray(
+        lower.original.interpolate(lower.original.project(shapely.Point(target))).coords[0]
+    )
+    displacement = np.array((3.0, -2.0))
+    decorated = replace(lower, xy=lower.xy + displacement, wall=LineString(lower.xy + displacement))
+    contact = _LocalMeshContact(decorated, lower, upper, root, target, sliced.bead_width)
+    right = SimpleNamespace(
+        line=LineString(
+            (
+                root + displacement,
+                root + displacement + (8, -2),
+                root + displacement + (8, 2),
+                root + displacement,
+            )
+        )
+    )
+    wrong = SimpleNamespace(line=LineString((root + displacement, root + displacement - (8, 0))))
+    assert contact.score(right) < contact.score(wrong)
+    assert contact.score(right) < 0.1
+    # The inward root overlaps original bearing. Nearly collinear contact
+    # fragments must not count that existing area twice as new support.
+    assert contact.score(wrong) > 0.1
+
+
+def test_detached_inner_wall_cannot_create_an_internal_curtain() -> None:
+    def circuit(points: tuple) -> SimpleNamespace:
+        return SimpleNamespace(ring=SimpleNamespace(points=np.asarray(points)))
+
+    body = circuit(((-10, -10), (10, -10), (10, 10), (-10, 10)))
+    outside = circuit(((-15, -2), (-12, -2), (-12, 2), (-15, 2)))
+    inside = circuit(((-2, -2), (2, -2), (2, 2), (-2, 2)))
+    _require_external_attachment(body, outside, "outside")
+    with pytest.raises(SupportRoutingError, match="interior"):
+        _require_external_attachment(body, inside, "inside")
 
 
 @pytest.fixture(scope="module")
@@ -554,34 +603,24 @@ def test_immediately_preceding_ribbon_cannot_count_as_its_own_lower_course() -> 
     assert result.diagnostics[-1].max_unsupported_fraction == 1.0
 
 
-def test_automatic_extent_keeps_a_need_on_the_other_side_of_the_seam() -> None:
-    lower = SimpleNamespace(
-        xy=np.array(((0, 0), (20, 0), (20, 20), (0, 20), (0, 0)), dtype=float),
-        flow=np.ones(5),
-    )
-    upper = SimpleNamespace(
-        xy=np.array(((0, 0), (20, 0), (20, 20), (0, 20), (-3, 0)), dtype=float),
-        flow=np.ones(5),
-    )
+def _mesh_course(points: tuple) -> SimpleNamespace:
+    xy = np.asarray(points, dtype=float)
+    return SimpleNamespace(xy=xy, ring=SimpleNamespace(points=xy, closed=True))
 
-    # The first three stations lie over their unchanged lower wall. The
-    # other side of the helical seam has moved out by 3 mm and needs clay.
+
+def test_automatic_extent_keeps_a_need_on_the_other_side_of_the_seam() -> None:
+    lower = _mesh_course(((0, 0), (20, 0), (20, 20), (0, 20), (0, 0)))
+    upper = _mesh_course(((0, 0), (20, 0), (20, 20), (0, 20), (-3, 0), (0, 0)))
+
+    # Sampling both sides of the source contour's seam retains the outward
+    # corner, even though the attachment itself stays above the lower wall.
     assert _automatic_curtain_extent((lower, upper), [0, 0], 4.0, 0.4) == [0, 0]
 
 
 def test_inward_taper_does_not_request_external_curtains() -> None:
-    lower = SimpleNamespace(
-        xy=np.array(((0, 0), (20, 0), (20, 20), (0, 20), (0, 0)), dtype=float),
-        flow=np.ones(5),
-    )
-    inward = SimpleNamespace(
-        xy=np.array(((3, 3), (17, 3), (17, 17), (3, 17), (3, 3)), dtype=float),
-        flow=np.ones(5),
-    )
-    higher_flare = SimpleNamespace(
-        xy=np.array(((-3, -3), (23, -3), (23, 23), (-3, 23), (-3, -3)), dtype=float),
-        flow=np.ones(5),
-    )
+    lower = _mesh_course(((0, 0), (20, 0), (20, 20), (0, 20), (0, 0)))
+    inward = _mesh_course(((3, 3), (17, 3), (17, 17), (3, 17), (3, 3)))
+    higher_flare = _mesh_course(((-3, -3), (23, -3), (23, 23), (-3, 23), (-3, -3)))
 
     assert _automatic_curtain_extent((lower, inward), [0, 0], 4.0, 0.4) == []
     assert _automatic_curtain_extent((lower, inward, higher_flare), [0, 0, 0], 4.0, 0.4) == [
@@ -589,6 +628,13 @@ def test_inward_taper_does_not_request_external_curtains() -> None:
         0,
         0,
     ]
+
+
+def test_surface_displacement_does_not_extend_mesh_supports() -> None:
+    lower = _mesh_course(((0, 0), (20, 0), (20, 20), (0, 20), (0, 0)))
+    upper = _mesh_course(((0, 0), (20, 0), (20, 20), (0, 20), (0, 0)))
+    upper.xy = upper.xy * 2 - 10
+    assert _automatic_curtain_extent((lower, upper), [0, 0], 4.0, 0.4) == []
 
 
 def test_stricter_automatic_threshold_grows_the_printed_foundation() -> None:
@@ -695,7 +741,7 @@ def test_local_handle_curtain_meets_the_complete_selected_branch_target(vase: bo
     result = _job(sliced, vase=vase, supports=settings)
 
     assert result.emission.lint_report.ok
-    assert result.report().totals.stroke_count == 1
+    assert (result.report().totals.stroke_count > 1) is vase
     analysis = result.report().support_analysis
     assert analysis.generated_max_unsupported_fraction <= settings.max_unsupported_fraction
     assert len(analysis.target_results) == 1

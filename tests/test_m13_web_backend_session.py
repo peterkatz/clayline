@@ -259,19 +259,48 @@ def test_complete_supported_base_fits_without_evicting_its_editable_source() -> 
 
 def test_support_reference_is_retained_within_the_session_memory_budget() -> None:
     from clayline import load_mesh
-    from clayline.support_models import SupportSettings
+    from clayline.support_models import FootSettings, SupportSettings
     from clayline.weave_workflow import prepare_weave_result
 
     sliced = load_mesh(MESH / "cylinder.obj", fit_height=12, profile="potterbot-xl").slice(
         nozzle=4.13, layer_height=1.5, first_layer_height=1.5, sample_spacing=2
     )
-    prepared = prepare_weave_result(sliced, "flat", support_settings=SupportSettings())
-    assert prepared.support_reference is not None
-    without_reference = replace(prepared, support_reference=None)
-    cache = WeaveSessionCache(max_bytes=estimate_cache_bytes(without_reference))
-    cache.put("prepared", without_reference)
+    supports = SupportSettings(
+        enabled=True,
+        foot=FootSettings(enabled=True, extent_mode="manual", extra_width_mm=5, height_mm=3),
+    )
+    prepared = prepare_weave_result(
+        sliced, "flat", support_settings=supports, keep_clay_flowing=True
+    )
+    assert prepared.support_error is None
+    assert any(move.support_id for move in prepared.stream.moves)
+    # Source-mesh analysis needs the undecorated wall for attachment mapping,
+    # but no longer builds a second routed/emitted support print.
+    assert prepared.support_reference is None
+    source = prepared.support_source
+    assert source is not None
+    assert source.reference_stream is not None
+    assert not any(move.support_id for move in source.reference_stream.moves)
+    without_reference = replace(
+        prepared,
+        support_source=replace(source, reference_stream=None, reference_helical_stream=None),
+    )
+    smaller_size = estimate_cache_bytes(without_reference)
+    complete_size = estimate_cache_bytes(prepared)
+    assert complete_size > smaller_size
+    cache = WeaveSessionCache(max_bytes=smaller_size)
+    smaller_id = cache.put("prepared", without_reference)
     with pytest.raises(WeaveCacheLimitError, match="above this session"):
         cache.put("prepared", prepared)
+    assert cache.get("prepared", smaller_id) is without_reference
+    assert cache.estimated_bytes == smaller_size
+
+    complete_cache = WeaveSessionCache(max_bytes=complete_size)
+    complete_id = complete_cache.put("prepared", prepared)
+    retained = complete_cache.get("prepared", complete_id)
+    assert retained is prepared
+    assert retained.support_source.reference_stream is source.reference_stream
+    assert complete_cache.estimated_bytes == complete_size
 
 
 def test_finalize_releases_its_intermediate_and_keeps_the_slice_for_followup_edits(

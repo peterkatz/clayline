@@ -40,6 +40,8 @@ def test_weave_parser_exposes_complete_reproducible_surface() -> None:
         "--plan-png",
         "--report",
         "--reproducible",
+        "--base-max-unsupported-bead",
+        "--curtain-max-unsupported-bead",
     ):
         assert option in help_text
     assert "EXPERIMENTAL: top-follow slope-limit multiplier" in help_text
@@ -52,6 +54,43 @@ def test_weave_parser_exposes_complete_reproducible_surface() -> None:
         ).top_follow_slope_multiplier
         == 1.5
     )
+
+
+def test_cli_preserves_independent_support_limits_in_export(tmp_path: Path) -> None:
+    output = tmp_path / "independent-support-limits.gcode"
+    recipe = tmp_path / "supports.json"
+    recipe.write_text(json.dumps({"enabled": True}))
+    assert (
+        main(
+            [
+                "weave",
+                str(ROOT / "tests/fixtures/mesh/cylinder.obj"),
+                "--fit-height",
+                "6",
+                "--layer-height",
+                "2",
+                "--wave",
+                "flat",
+                "--max-unsupported-bead",
+                "30",
+                "--supports",
+                str(recipe),
+                "--base-max-unsupported-bead",
+                "20",
+                "--curtain-max-unsupported-bead",
+                "60",
+                "--reproducible",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    settings = parse_weave_gcode(output).support_settings
+    assert settings is not None
+    assert settings.base_threshold == 0.2
+    assert settings.curtain_threshold == 0.6
+    assert settings.max_unsupported_fraction == 0.3
 
 
 def test_public_facade_accepts_extrusion_and_overlap_without_forking_result() -> None:

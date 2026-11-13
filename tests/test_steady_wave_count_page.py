@@ -700,10 +700,10 @@ def test_on_a_sliced_taper_the_line_under_the_switch_says_the_count_it_keeps() -
         "84 mm at the narrowest"
     )
     # Count stepping changes the decorative weave, but support checks use
-    # the underlying taper. Intentional weave drips do not ask for supports.
+    # the original taper's exterior. Intentional weave drips do not ask for supports.
     unheld = out["unheldSupport"]
     held = out["heldSupport"]
-    assert unheld["warning_basis"] == held["warning_basis"] == "underlying_form_without_weaves"
+    assert unheld["warning_basis"] == held["warning_basis"] == "original_mesh_external"
     assert unheld["diagnostic_count"] == held["diagnostic_count"] == 0
     assert unheld["max_unsupported_fraction"] == held["max_unsupported_fraction"]
     assert unheld["max_unsupported_fraction"] <= unheld["threshold_fraction"]

@@ -874,14 +874,15 @@
             <div class="section-index">07</div>
             <div class="section-body">
               <h2>Supports</h2>
-              <label class="field">
-                <span>Allowable overhang (%)</span>
-                <input id="weaveSupportThreshold" data-support-setting="max_unsupported_fraction" data-support-factor="100" type="number" min="0" max="95" step="1" value="40" aria-describedby="weaveSupportThresholdHint">
-                <small id="weaveSupportThresholdHint">Checks the piece profile without weaves. Lower values build more support.</small>
-              </label>
+              <p class="field-hint">Estimates external overhangs from the original mesh, before weaves or images.</p>
               <label class="switch-row">
                 <span><strong>Reinforced base</strong></span>
                 <input id="weaveSupportFoot" data-support-setting="foot.enabled" type="checkbox" role="switch">
+              </label>
+              <label class="field">
+                <span>Base allowable overhang (%)</span>
+                <input id="weaveSupportBaseThreshold" data-support-setting="base_max_unsupported_fraction" data-support-factor="100" type="number" min="0" max="95" step="1" value="40" aria-describedby="weaveSupportBaseThresholdHint">
+                <small id="weaveSupportBaseThresholdHint">Sizes the surrounding base independently of curtains.</small>
               </label>
               <label class="switch-row">
                 <span><strong>Radial curtains</strong></span>
@@ -890,6 +891,12 @@
               <div id="weaveSupportRepeatedOptions" hidden>
                 <label class="field"><span>Number of curtains</span><input data-support-setting="repeated_curtains.count" type="number" min="1" max="12" step="1" value="4"></label>
               </div>
+              <label class="field">
+                <span>Curtain allowable overhang (%)</span>
+                <input id="weaveSupportThreshold" data-support-setting="curtain_max_unsupported_fraction" data-support-factor="100" type="number" min="0" max="95" step="1" value="40" aria-describedby="weaveSupportThresholdHint">
+                <small id="weaveSupportThresholdHint">Sizes radial and local curtains independently of the base.</small>
+              </label>
+              <p class="field-hint" id="weaveSupportFoundationHint">With the base off, curtains may add small local feet.</p>
               <div class="weave-support-actions">
                 <button class="secondary-button compact-button" id="weaveSupportAddLocal" type="button" aria-pressed="false" disabled>Add local support</button>
               </div>
@@ -906,19 +913,19 @@
               <div class="weave-control-block">
                 <div class="scope-subhead"><span>Base appearance</span></div>
                 <div class="control-grid two-up">
-                  <label class="switch-row" title="Apply weaves to the base. Support sizing uses the piece profile without weaves."><span><strong>Weaves</strong></span><input data-support-setting="style.bases_apply_weaves" type="checkbox" role="switch"></label>
+                  <label class="switch-row" title="Apply weaves to the base. Support sizing uses the original mesh."><span><strong>Weaves</strong></span><input data-support-setting="style.bases_apply_weaves" type="checkbox" role="switch"></label>
                   <label class="switch-row"><span><strong>Images</strong></span><input data-support-setting="style.bases_apply_images" type="checkbox" role="switch"></label>
                 </div>
                 <div class="scope-subhead"><span>Curtain appearance</span></div>
                 <div class="control-grid two-up">
-                  <label class="switch-row" title="Apply weaves to the curtains. Support sizing uses the piece profile without weaves."><span><strong>Weaves</strong></span><input data-support-setting="style.curtains_apply_weaves" type="checkbox" role="switch"></label>
+                  <label class="switch-row" title="Apply weaves to the curtains. Support sizing uses the original mesh."><span><strong>Weaves</strong></span><input data-support-setting="style.curtains_apply_weaves" type="checkbox" role="switch"></label>
                   <label class="switch-row"><span><strong>Images</strong></span><input data-support-setting="style.curtains_apply_images" type="checkbox" role="switch"></label>
                 </div>
                 <p class="field-hint">Patterns ease where needed to keep supports connected.</p>
               </div>
               <details class="advanced-controls" id="weaveSupportAdvanced">
                 <summary>Advanced</summary>
-                <p class="field-hint">Optional manual limits. Changing allowable overhang, base, radial count, or local placement returns to automatic sizing.</p>
+                <p class="field-hint">Optional manual limits. Main base controls return the base to automatic sizing; main curtain controls return curtains to automatic sizing.</p>
                 <div class="control-grid two-up">
                   <label class="field"><span>Base sizing</span><select data-support-setting="foot.extent_mode"><option value="auto">Automatic</option><option value="manual">Manual</option></select></label>
                   <label class="field"><span>Base outline</span><select data-support-setting="foot.outline"><option value="smooth">Smooth</option><option value="stepped">Stepped</option></select></label>
@@ -942,6 +949,7 @@
                   </div>
                 </div>
               </details>
+              <p class="field-hint" id="weaveSupportThresholdSummary" aria-live="polite"></p>
               <p class="field-hint" id="weaveSupportStatus" role="status">Slice the form to inspect support needs.</p>
             </div>
           </section>

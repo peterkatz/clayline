@@ -127,3 +127,30 @@ def test_shared_lower_indexes_preserve_overlap_union_and_future_candidate_contac
         future, additional_lower_paths=(second,)
     )
     assert fork.score(future, additional_lower_paths=(second,))[0] == 0
+
+
+def test_prepared_candidate_reuses_exact_geometry_without_poisoning_later_candidates() -> None:
+    lower = _path((0, -1, 1), (20, -1, 1))
+    useful = _path((0, 1, 1), (20, 1, 1))
+    too_high = _path((0, 1, 2), (20, 1, 2))
+    wall = _path((2, 0, 2), (18, 0, 2))
+    scorer = SupportRouteScorer((lower,), 4, 1)
+    other = SupportRouteScorer((lower,), 4, 1)
+    candidate = scorer.prepare_path(useful)
+    assert scorer.score(candidate) == scorer.score(useful)
+    assert scorer.score(wall, additional_lower_paths=(candidate,)) == (0, 0)
+    assert other.score(wall, additional_lower_paths=(candidate,)) == (0, 0)
+    assert scorer.score(wall, additional_lower_paths=(scorer.prepare_path(too_high),)) == (
+        0.25,
+        4.0,
+    )
+    assert scorer.score(wall) == (0.25, 4.0)
+
+
+def test_prepared_candidate_cannot_silently_reuse_another_bead_flow() -> None:
+    candidate = SupportRouteScorer((), 4, 1).prepare_path(_path((0, 0, 1), (20, 0, 1)))
+    other = SupportRouteScorer((), 4, 1, flow_multiplier=2)
+    with pytest.raises(ValueError, match="same bead model and flow"):
+        other.score(candidate)
+    with pytest.raises(ValueError, match="same bead model and flow"):
+        other.score(_path((0, 0, 2), (20, 0, 2)), additional_lower_paths=(candidate,))

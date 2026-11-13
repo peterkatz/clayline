@@ -76,10 +76,64 @@ class SupportSettings:
     placements: tuple[CurtainPlacement, ...] = ()
     style: SupportStyle = SupportStyle()
     mapping_version: int = SUPPORT_MAPPING_VERSION
+    base_max_unsupported_fraction: float | None = None
+    curtain_max_unsupported_fraction: float | None = None
+
+    @property
+    def base_threshold(self) -> float:
+        return (
+            self.max_unsupported_fraction
+            if self.base_max_unsupported_fraction is None
+            else self.base_max_unsupported_fraction
+        )
+
+    @property
+    def curtain_threshold(self) -> float:
+        return (
+            self.max_unsupported_fraction
+            if self.curtain_max_unsupported_fraction is None
+            else self.curtain_max_unsupported_fraction
+        )
+
+    @property
+    def has_curtains(self) -> bool:
+        overrides = {row.id: row for row in self.placements if row.origin == "repeated"}
+        repeated = self.repeated_curtains.enabled and any(
+            f"repeated-{index}" not in overrides or overrides[f"repeated-{index}"].enabled
+            for index in range(1, self.repeated_curtains.count + 1)
+        )
+        return repeated or any(row.enabled and row.origin == "local" for row in self.placements)
+
+    @property
+    def threshold_scope(self) -> str:
+        base = self.enabled and self.foot.enabled
+        curtains = self.enabled and self.has_curtains
+        if base and curtains:
+            return "base_and_curtains"
+        if base:
+            return "base"
+        return "curtains" if curtains else "inspection"
+
+    @property
+    def overview_threshold(self) -> float:
+        """Strictest active family for the mesh overview, not a shared gate."""
+        scope = self.threshold_scope
+        if scope == "base_and_curtains":
+            return min(self.base_threshold, self.curtain_threshold)
+        if scope == "base":
+            return self.base_threshold
+        if scope == "curtains":
+            return self.curtain_threshold
+        return self.curtain_threshold
 
     def to_dict(self) -> dict[str, Any]:
         """Return the persisted support recipe and JSON transport shape."""
         data = asdict(self)
+        # Legacy recipes keep their exact shape when neither family override
+        # is set, including already exported restore capsules.
+        for key in ("base_max_unsupported_fraction", "curtain_max_unsupported_fraction"):
+            if data[key] is None:
+                del data[key]
         data["placements"] = list(data["placements"])
         for placement in data["placements"]:
             placement["automatic_fields"] = list(placement["automatic_fields"])
@@ -137,6 +191,12 @@ def parse_support_settings(value: Any) -> SupportSettings:
     return SupportSettings(
         enabled=enabled,
         max_unsupported_fraction=threshold,
+        base_max_unsupported_fraction=_optional_number(
+            data, "base_max_unsupported_fraction", 0, 0.95
+        ),
+        curtain_max_unsupported_fraction=_optional_number(
+            data, "curtain_max_unsupported_fraction", 0, 0.95
+        ),
         foot=FootSettings(
             enabled=_boolean(foot, "enabled", False),
             extent_mode=_choice(foot, "extent_mode", "auto", {"auto", "manual"}),

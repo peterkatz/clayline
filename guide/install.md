@@ -17,6 +17,8 @@ Clayline does not need an internet connection, an account, or anything else inst
 
 To update, save any job you want to continue as a **Clayline project**, quit the app, then download the new version and drag it over the old one. Your saved projects and source files stay where you saved them. Open a project to bring back its design and settings. Images and effect fades are available in Clayline 0.10.0 and later. Supports are available in 0.14.0 and later; use the current version when opening a project or print file that contains them.
 
+Version **0.14.2** adds quick estimates from the original mesh, separate base and curtain overhang limits, and curtain-only supports with local feet. Older support projects start with their saved allowance applied to both limits; you can then adjust them independently.
+
 ## The studio at a glance
 
 The top bar has two buttons that switch modes: **Draw in Clay** for line drawings, filled areas and layered tiles, and **Mesh Mode** for 3D models shaped with Weaves and image relief. Next to them, **mm / in** chooses how sizes are shown to you. Files always stay in millimetres inside.

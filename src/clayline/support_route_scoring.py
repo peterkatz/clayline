@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from dataclasses import dataclass
 from itertools import pairwise
 
 import numpy as np
@@ -29,6 +30,16 @@ from clayline.work_cancel import check_cancelled
 _EPS = 1e-9
 _MAX_CONTACT_PAIRS = 2_000_000
 _MAX_STATIONS = 50_000
+
+
+@dataclass(slots=True)
+class _PreparedRoute:
+    """One candidate's immutable geometry shared by bearing and lookahead."""
+
+    deposits: list[_Deposit]
+    model: BeadModel
+    flow_multiplier: float
+    footprints: _Footprints | None = None
 
 
 class SupportRouteScorer:
@@ -83,6 +94,31 @@ class SupportRouteScorer:
         result._target_samples = {}
         return result
 
+    def prepare_path(self, path: Sequence[Move]) -> _PreparedRoute:
+        """Validate one candidate once before several local contact checks."""
+        return _PreparedRoute(self._deposits((path,)), self.model, self.flow_multiplier)
+
+    def _additional_footprints(
+        self, paths: Sequence[Sequence[Move] | _PreparedRoute]
+    ) -> tuple[_Footprints, ...]:
+        result = []
+        ordinary = []
+        for path in paths:
+            if isinstance(path, _PreparedRoute):
+                if path.model != self.model or path.flow_multiplier != self.flow_multiplier:
+                    raise ValueError("Prepared support paths need the same bead model and flow.")
+                if path.deposits:
+                    if path.footprints is None:
+                        path.footprints = _footprints(path.deposits, self.model)
+                    result.append(path.footprints)
+            else:
+                ordinary.append(path)
+        if ordinary:
+            extra = self._deposits(ordinary)
+            if extra:
+                result.append(_footprints(extra, self.model))
+        return tuple(result)
+
     def _deposits(self, paths: Sequence[Sequence[Move]]) -> list[_Deposit]:
         deposits = []
         for path in paths:
@@ -114,11 +150,11 @@ class SupportRouteScorer:
 
     def score(
         self,
-        path: Sequence[Move],
+        path: Sequence[Move] | _PreparedRoute,
         *,
         target_center: tuple[float, float] | None = None,
         target_radius: float | None = None,
-        additional_lower_paths: Sequence[Sequence[Move]] = (),
+        additional_lower_paths: Sequence[Sequence[Move] | _PreparedRoute] = (),
     ) -> tuple[float, float]:
         """Return peak unsupported fraction and its length integral in mm.
 
@@ -138,9 +174,7 @@ class SupportRouteScorer:
         points, normals, widths, weights, bed = samples
         lower = self.lower
         if additional_lower_paths:
-            extra = self._deposits(additional_lower_paths)
-            if extra:
-                lower += (_footprints(extra, self.model),)
+            lower += self._additional_footprints(additional_lower_paths)
         coverage = bed.astype(float)
         contacts = self._intervals(lower, points, normals, widths, bed)
         if contacts is None:
@@ -154,7 +188,7 @@ class SupportRouteScorer:
 
     def _samples(
         self,
-        path: Sequence[Move],
+        path: Sequence[Move] | _PreparedRoute,
         target_center: tuple[float, float] | None,
         target_radius: float | None,
     ) -> tuple[np.ndarray, ...] | None:
@@ -164,7 +198,12 @@ class SupportRouteScorer:
             cached = self._target_samples.get(key)
             if cached is not None and cached[0] is path:
                 return cached[1]
-        deposits = self._deposits((path,))
+        if isinstance(path, _PreparedRoute):
+            if path.model != self.model or path.flow_multiplier != self.flow_multiplier:
+                raise ValueError("Prepared support paths need the same bead model and flow.")
+            deposits = path.deposits
+        else:
+            deposits = self._deposits((path,))
         if not deposits:
             return None
         start = np.array([(d.start.x, d.start.y, d.start.z) for d in deposits], dtype=float)

@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass, replace
+from itertools import pairwise
 from typing import Any
 
 import numpy as np
 import shapely
 from shapely import STRtree
 
-from clayline.emit import EmissionMotion, EmissionPoint, PreparedEmission
-from clayline.models import MoveKind
+from clayline.emit import (
+    EmissionLiteral,
+    EmissionMotion,
+    EmissionPoint,
+    EmissionPressure,
+    PreparedEmission,
+)
+from clayline.models import MoveKind, MoveStream
+from clayline.weave_models import SlicedForm
 from clayline.work_cancel import check_cancelled
 
 _EPS = 1e-9
@@ -123,13 +131,18 @@ class SupportAnalysis:
     actual_generated_diagnostics: tuple[SupportDiagnostic, ...] = ()
     actual_generated_diagnostic_count: int = 0
     actual_generated_diagnostics_truncated: bool = False
+    generated_base_max_unsupported_fraction: float | None = None
+    generated_curtain_max_unsupported_fraction: float | None = None
+    base_threshold_fraction: float | None = None
+    curtain_threshold_fraction: float | None = None
+    threshold_scope: str | None = None
 
     @property
     def targets_met(self) -> bool | None:
         return all(item.target_met for item in self.target_results) if self.target_results else None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "threshold_fraction": self.threshold,
             "bead_model": asdict(self.bead_model),
             "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
@@ -156,6 +169,19 @@ class SupportAnalysis:
             "actual_generated_diagnostic_count": self.actual_generated_diagnostic_count,
             "actual_generated_diagnostics_truncated": self.actual_generated_diagnostics_truncated,
         }
+        if self.base_threshold_fraction is not None or self.curtain_threshold_fraction is not None:
+            result.update(
+                threshold_fractions={
+                    "base": self.base_threshold_fraction,
+                    "curtain": self.curtain_threshold_fraction,
+                },
+                threshold_scope=self.threshold_scope,
+                generated_base_max_unsupported_fraction=self.generated_base_max_unsupported_fraction,
+                generated_curtain_max_unsupported_fraction=(
+                    self.generated_curtain_max_unsupported_fraction
+                ),
+            )
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +200,10 @@ class _Deposit:
     def generated(self) -> bool:
         return self.role in _GENERATED_ROLES
 
+    @property
+    def is_base(self) -> bool:
+        return self.generated and (self.role == "support_foot" or self.support_id == "foot")
+
 
 @dataclass(frozen=True, slots=True)
 class _Footprints:
@@ -189,6 +219,469 @@ class _Footprints:
 
 class _AnalysisLimit(ValueError):
     """The bounded analysis cannot finish this trace."""
+
+
+def analyze_mesh_support(
+    sliced: SlicedForm,
+    *,
+    threshold: float,
+    targets: tuple[SupportTarget, ...] = (),
+    prepared: PreparedEmission | None = None,
+    reference_wall: MoveStream | None = None,
+    target_threshold: float | None = None,
+    base_threshold: float | None = None,
+    curtain_threshold: float | None = None,
+    threshold_scope: str | None = None,
+) -> SupportAnalysis:
+    """Estimate external overhang directly from the original mesh slices.
+
+    The outward distance beyond the preceding filled exterior is divided by
+    nominal bead width. Holes and inward tapers never become external support
+    requests. Contours are simplified within 2% of a bead and sampled at most
+    half a bead apart. This is a geometric approximation, independent of wall
+    weaves, images, flow and print-path tessellation.
+
+    When supplied, ``prepared`` contributes only generated support contact,
+    cost, and a separate ordered foundation audit. Its original wall is never
+    used to determine the mesh's overhang demand. ``reference_wall`` maps
+    curtain contact back from its decorated wall attachment into source-mesh
+    coordinates without generating a second support route.
+    """
+    for value in (threshold, target_threshold, base_threshold, curtain_threshold):
+        if value is not None and (not math.isfinite(value) or not 0 <= value <= 0.95):
+            raise ValueError("unsupported bead width threshold must be between 0 and 0.95")
+
+    def with_thresholds(analysis: SupportAnalysis) -> SupportAnalysis:
+        return replace(
+            analysis,
+            base_threshold_fraction=base_threshold,
+            curtain_threshold_fraction=curtain_threshold,
+            threshold_scope=threshold_scope,
+        )
+
+    bead = sliced.bead_width
+    model = BeadModel(
+        bead,
+        sliced.layer_height,
+        sliced.first_layer_height,
+        0.0,
+        sliced.layer_height * 0.25,
+        bead * 0.5,
+        sliced.layer_height * 0.25,
+        model_id="original_mesh_external_distance_v1",
+        basis="approximate_original_mesh",
+    )
+    deposits: list[_Deposit] = []
+    unresolved: list[_Deposit] = []
+    volume, seconds = 0.0, 0.0
+    # Establish this before extraction: a budget failure while reading the
+    # trace must keep generated supports behind the unresolved-audit gate.
+    generated = prepared is not None and any(
+        move.role in _GENERATED_ROLES for move in prepared.source_stream.moves
+    )
+    try:
+        if prepared is not None:
+            deposits, unresolved, volume, seconds = _deposits(prepared)
+            generated = bool(unresolved) or any(item.generated for item in deposits)
+        # Compare support and source mesh on the same nominal slice planes.
+        # Helical/top-follow Z belongs to the exact audit below, and must not
+        # create a false gap against a planar original-mesh cross-section.
+        support_deposits = [
+            replace(
+                item,
+                start=replace(item.start, z=sliced.layers[item.layer].z),
+                end=replace(item.end, z=sliced.layers[item.layer].z),
+            )
+            for item in deposits
+            if item.generated and 0 <= item.layer < len(sliced.layers)
+        ]
+        if prepared is not None and reference_wall is not None and support_deposits:
+            support_deposits = _align_support_contacts(
+                support_deposits, prepared.source_stream, reference_wall, sliced, targets
+            )
+        footprints = _footprints(support_deposits, model) if support_deposits else None
+        analysis = _inspect_mesh(
+            sliced, threshold, model, targets, footprints, target_threshold=target_threshold
+        )
+        if generated:
+            # Foundation remains an ordered check of the actual output. A
+            # mesh approximation must never bless floating generated clay.
+            audit_model = replace(
+                model,
+                station_spacing_mm=min(0.75, bead / 8.0),
+                model_id="nominal_mesh_bead_v2",
+                basis="nominal",
+            )
+            audit = _inspect(
+                deposits,
+                unresolved,
+                threshold,
+                audit_model,
+                True,
+                include_original=False,
+                base_threshold=base_threshold,
+                curtain_threshold=curtain_threshold,
+            )
+            analysis = replace(
+                analysis,
+                generated_without_foundation=audit.generated_without_foundation,
+                generated_unresolved=audit.generated_unresolved,
+                unresolved=analysis.unresolved or audit.unresolved,
+                generated_max_unsupported_fraction=audit.generated_max_unsupported_fraction,
+                generated_base_max_unsupported_fraction=(
+                    audit.generated_base_max_unsupported_fraction
+                ),
+                generated_curtain_max_unsupported_fraction=(
+                    audit.generated_curtain_max_unsupported_fraction
+                ),
+                actual_generated_diagnostics=audit.diagnostics,
+                actual_generated_diagnostic_count=audit.diagnostic_count,
+                actual_generated_diagnostics_truncated=audit.diagnostics_truncated,
+            )
+        return with_thresholds(
+            replace(analysis, added_volume_ml=volume / 1_000.0, added_time_seconds=seconds)
+        )
+    except _AnalysisLimit as limit:
+        return with_thresholds(
+            replace(
+                _unresolved(threshold, model, generated, str(limit), targets),
+                warning_basis="original_mesh_external",
+            )
+        )
+
+
+def _align_support_contacts(
+    deposits: list[_Deposit],
+    actual_wall: MoveStream,
+    reference_wall: MoveStream,
+    sliced: SlicedForm,
+    targets: tuple[SupportTarget, ...],
+) -> list[_Deposit]:
+    """Remove local wall decoration from nominal support contact footprints.
+
+    The shift is measured between corresponding wall stations, not between
+    the curtain root and the mesh. A root on an extended base therefore keeps
+    its intended offset. Base points use the interpolated displacement of
+    the nearest wall segment. Actual deposited geometry remains unchanged
+    and is audited independently for foundation and nozzle clearance.
+    """
+    from clayline.support_geometry import SupportRoutingError, _wall_courses
+
+    try:
+        actual = _wall_courses(actual_wall, sliced)
+        reference = _wall_courses(reference_wall, sliced)
+    except SupportRoutingError:
+        # Split handles have full branch targets, not one local attachment.
+        # Their original slice coordinates already match the routed branch.
+        return deposits
+
+    def projection(xy: np.ndarray, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        lines = shapely.linestrings(np.stack((xy[:-1], xy[1:]), axis=1))
+        segment = shapely.STRtree(lines).nearest(shapely.points(points))
+        delta = xy[segment + 1] - xy[segment]
+        fraction = np.clip(
+            np.sum((points - xy[segment]) * delta, axis=1)
+            / np.maximum(np.sum(delta * delta, axis=1), _EPS),
+            0,
+            1,
+        )
+        return segment + fraction, xy[segment] + fraction[:, None] * delta
+
+    def interpolate(xy: np.ndarray, phase: np.ndarray) -> np.ndarray:
+        index = np.minimum(phase.astype(int), len(xy) - 2)
+        return xy[index] + (phase - index)[:, None] * (xy[index + 1] - xy[index])
+
+    shifts: dict[tuple[str, int], np.ndarray] = {}
+    for target in targets:
+        sections: dict[int, list[np.ndarray]] = {}
+        for layer, x, y, _ in target.sections:
+            sections.setdefault(layer, []).append(np.array((x, y)))
+        if not sections or any(len(points) != 1 for points in sections.values()):
+            continue
+        for layer, (course, plain) in enumerate(zip(actual, reference, strict=False)):
+            desired = sections[min(sections, key=lambda index: abs(index - layer))][0]
+            if layer not in sections:
+                original = plain.original
+                desired = np.asarray(
+                    original.interpolate(original.project(shapely.Point(desired))).coords[0]
+                )
+            phase, _ = projection(plain.xy, desired[None, :])
+            paired = phase / max(1, len(plain.xy) - 1) * (len(course.xy) - 1)
+            shifts[target.support_id, layer] = desired - interpolate(course.xy, paired)[0]
+    base_indices: dict[int, list[int]] = {}
+    for index, item in enumerate(deposits):
+        if item.is_base:
+            base_indices.setdefault(item.layer, []).append(index)
+    base_shifts: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    for layer, (course, plain) in enumerate(zip(actual, reference, strict=False)):
+        indices = base_indices.get(layer, [])
+        if not indices:
+            continue
+        points = np.array(
+            [
+                (point.x, point.y)
+                for index in indices
+                for point in (deposits[index].start, deposits[index].end)
+            ]
+        )
+        unique, inverse = np.unique(points, axis=0, return_inverse=True)
+        phase, closest = projection(course.xy, unique)
+        plain_phase = phase / max(1, len(course.xy) - 1) * (len(plain.xy) - 1)
+        unadorned = interpolate(plain.xy, plain_phase)
+        original = shapely.simplify(plain.original, sliced.bead_width * 0.02)
+        source_points = shapely.get_coordinates(
+            shapely.line_interpolate_point(
+                original, shapely.line_locate_point(original, shapely.points(unadorned))
+            )
+        )
+        offsets = (source_points - closest)[inverse].reshape(-1, 2, 2)
+        base_shifts.update(
+            (index, (offset[0], offset[1])) for index, offset in zip(indices, offsets, strict=True)
+        )
+    result = []
+    for index, item in enumerate(deposits):
+        base = base_shifts.get(index)
+        shift = shifts.get((item.support_id, item.layer))
+        if base is None and (shift is None or item.is_base):
+            result.append(item)
+        else:
+            start_shift, end_shift = base if base is not None else (shift, shift)
+            result.append(
+                replace(
+                    item,
+                    start=replace(
+                        item.start, x=item.start.x + start_shift[0], y=item.start.y + start_shift[1]
+                    ),
+                    end=replace(item.end, x=item.end.x + end_shift[0], y=item.end.y + end_shift[1]),
+                )
+            )
+    return result
+
+
+def _inspect_mesh(
+    sliced: SlicedForm,
+    threshold: float,
+    model: BeadModel,
+    targets: tuple[SupportTarget, ...],
+    supports: _Footprints | None,
+    *,
+    target_threshold: float | None = None,
+) -> SupportAnalysis:
+    collector = _Diagnostics(threshold)
+    target_limit = threshold if target_threshold is None else target_threshold
+    target_collectors = [_TargetCoverage(target, target_limit) for target in targets]
+    maximum = 0.0
+    previous = None
+    previous_exact = None
+    previous_z = None
+    motion = 0
+    station_count = 0
+    open_contours = False
+    for layer in sliced.layers:
+        check_cancelled()
+        exterior = [ring for ring in layer.rings if not ring.is_hole and ring.closed]
+        open_contours |= any(not ring.closed for ring in layer.rings)
+        # Filled outer silhouettes deliberately exclude internal hollows.
+        # They also preserve disjoint islands and exterior concavities.
+        originals = [shapely.Polygon(ring.points) for ring in exterior]
+        if len(originals) > 1:
+            # Slicer parity labels a solid island inside a hollow as non-hole.
+            # It is still enclosed by the vessel and cannot request external
+            # support. A spatial query retains separate outer islands without
+            # comparing every pair of contours on a many-part source mesh.
+            inner, outer = STRtree(originals).query(originals, predicate="within")
+            areas = shapely.area(originals)
+            enclosed = set(inner[areas[outer] > areas[inner] + _EPS])
+            exterior = [ring for index, ring in enumerate(exterior) if index not in enclosed]
+            originals = [
+                polygon for index, polygon in enumerate(originals) if index not in enclosed
+            ]
+        polygons = [
+            shapely.simplify(polygon, model.width_mm * 0.02, preserve_topology=True)
+            for polygon in originals
+        ]
+        current = shapely.union_all(polygons) if polygons else None
+        current_exact = shapely.union_all(originals) if originals else None
+        for ring in exterior:
+            outline = shapely.simplify(
+                shapely.LineString(ring.points), model.width_mm * 0.02, preserve_topology=True
+            )
+            xy = np.asarray(outline.coords)
+            delta = np.diff(xy, axis=0)
+            lengths = np.linalg.norm(delta, axis=1)
+            nonzero = lengths > _EPS
+            starts, delta, lengths = xy[:-1][nonzero], delta[nonzero], lengths[nonzero]
+            divisions = np.maximum(1, np.ceil(lengths / model.station_spacing_mm).astype(int))
+            sizes = divisions + 1
+            offsets = np.r_[0, np.cumsum(sizes)]
+            station_count += int(offsets[-1])
+            if station_count > _MAX_STATIONS:
+                raise _AnalysisLimit("Original mesh support sampling budget exceeded.")
+            source = np.repeat(np.arange(len(starts)), sizes)
+            fraction = (np.arange(offsets[-1]) - np.repeat(offsets[:-1], sizes)) / divisions[source]
+            extra_sources, extra_fractions = [], []
+            for target in targets:
+                for target_layer, x, y, _ in target.sections:
+                    if target_layer != layer.index:
+                        continue
+                    projection = np.clip(
+                        np.sum((np.array((x, y)) - starts) * delta, axis=1) / lengths**2,
+                        0.0,
+                        1.0,
+                    )
+                    distance = np.linalg.norm(
+                        starts + projection[:, None] * delta - np.array((x, y)), axis=1
+                    )
+                    nearest = int(np.argmin(distance))
+                    if distance[nearest] <= target.radius_mm + _EPS:
+                        extra_sources.append(nearest)
+                        extra_fractions.append(projection[nearest])
+            if extra_sources:
+                source = np.r_[source, extra_sources]
+                fraction = np.r_[fraction, extra_fractions]
+                order = np.lexsort((fraction, source))
+                source, fraction = source[order], fraction[order]
+                offsets = np.r_[0, np.cumsum(np.bincount(source, minlength=len(starts)))]
+            arc = (
+                np.r_[0.0, np.cumsum(lengths)[:-1]][source] + fraction * lengths[source]
+            ) / np.sum(lengths)
+            # Simplification selects a bounded station count, while every
+            # demand sample and outward direction stays on the source ring.
+            sample_xy = np.stack(
+                [np.interp(arc, ring.u, ring.points[:, axis]) for axis in range(2)], axis=1
+            )
+            point = np.c_[sample_xy, np.full(len(source), layer.z)]
+            if layer.z <= model.first_layer_height_mm + _EPS:
+                values = np.zeros(len(point))
+            elif (
+                previous is None
+                or previous_z is None
+                or layer.z - previous_z > model.height_mm + model.contact_tolerance_mm + _EPS
+            ):
+                values = np.ones(len(point))
+            else:
+                values = np.clip(
+                    shapely.distance(shapely.points(sample_xy), previous) / model.width_mm,
+                    0.0,
+                    1.0,
+                )
+            normal = np.stack(
+                [np.interp(arc, ring.u, ring.outward_normals[:, axis]) for axis in range(2)], axis=1
+            )
+            normal /= np.linalg.norm(normal, axis=1)[:, None]
+            if supports is not None and np.any(values > _EPS):
+                values = _mesh_support_credit(supports, point, normal, values, model)
+            near_limit = (values > threshold) & (values <= threshold + 0.04)
+            if targets and target_limit != threshold:
+                near_limit |= (values > target_limit) & (values <= target_limit + 0.04)
+            if previous_exact is not None and np.any(near_limit):
+                # Resolve the simplification/normal approximation only near
+                # the decision boundary. This prevents a few hundredths of
+                # a bead from triggering expensive support-route retries.
+                selected = point[near_limit]
+                directions = normal[near_limit]
+                half = model.width_mm / 2
+                transverse = shapely.linestrings(
+                    np.stack(
+                        (selected[:, :2] - half * directions, selected[:, :2] + half * directions),
+                        axis=1,
+                    )
+                )
+                covered = shapely.length(
+                    shapely.intersection(transverse, shapely.buffer(previous_exact, half))
+                )
+                refined = np.clip(1.0 - covered / model.width_mm, 0.0, 1.0)
+                if supports is not None:
+                    refined = _mesh_support_credit(supports, selected, directions, refined, model)
+                values[near_limit] = refined
+            maximum = max(maximum, float(np.max(values, initial=0.0)))
+            for index, (first, last) in enumerate(pairwise(offsets)):
+                start = EmissionPoint(*starts[index], layer.z)
+                end = EmissionPoint(*(starts[index] + delta[index]), layer.z)
+                item = _Deposit(
+                    start,
+                    end,
+                    motion,
+                    "wall",
+                    None,
+                    model.width_mm / 2,
+                    model.width_mm,
+                    0,
+                    layer.index,
+                )
+                interval = slice(first, last)
+                local = values[interval]
+                failing = local > threshold + _EPS
+                if np.any(failing):
+                    collector.sample(item, fraction[interval], local, failing, "lower_contact")
+                for target in target_collectors:
+                    target.sample(item, fraction[interval], point[interval], local)
+                motion += 1
+            # Never join separate rings into one indicated span.
+            motion += 1
+        previous, previous_exact, previous_z = current, current_exact, layer.z
+    return replace(
+        collector.result(model, maximum, False, False),
+        target_results=tuple(target.result() for target in target_collectors),
+        warning_basis="original_mesh_external",
+        unresolved=open_contours,
+        message=(
+            "Approximate external overhang from the original mesh; open contours were not assessed."
+            if open_contours
+            else "Approximate external overhang from the original mesh."
+        ),
+    )
+
+
+def _mesh_support_credit(
+    supports: _Footprints,
+    point: np.ndarray,
+    normal: np.ndarray,
+    unsupported: np.ndarray,
+    model: BeadModel,
+) -> np.ndarray:
+    """Union generated lower-contact intervals with nominal mesh bearing."""
+    width = np.full(len(point), model.width_mm)
+    result = unsupported.copy()
+    z_bins = np.floor(point[:, 2] / supports.z_step).astype(np.int64)
+    half = model.width_mm / 2
+    left, right = point[:, :2] - half * normal, point[:, :2] + half * normal
+    boxes = shapely.box(
+        np.minimum(left[:, 0], right[:, 0]),
+        np.minimum(left[:, 1], right[:, 1]),
+        np.maximum(left[:, 0], right[:, 0]),
+        np.maximum(left[:, 1], right[:, 1]),
+    )
+    budget = _MAX_CONTACT_PAIRS
+    for z_bin in np.unique(z_bins[unsupported > _EPS]):
+        entry = supports.bins.get(int(z_bin))
+        if entry is None:
+            continue
+        tree, ids = entry
+        selected = np.flatnonzero((z_bins == z_bin) & (unsupported > _EPS))
+        for first in range(0, len(selected), _BATCH_SIZE):
+            check_cancelled()
+            query = selected[first : first + _BATCH_SIZE]
+            a, b = tree.query(boxes[query])
+            budget -= len(a)
+            if budget < 0:
+                raise _AnalysisLimit("Original mesh support contact budget exceeded.")
+            row, _, begin, end = _contact_intervals(
+                supports, query[a], ids[b], point, normal, width, model
+            )
+            if not len(row):
+                continue
+            # The source silhouette carries the inward part of the nominal
+            # transverse bead. Generated clay can fill its remaining gap.
+            bearing = query[unsupported[query] < 1.0]
+            covered, _ = _coverage(
+                np.r_[row, bearing],
+                np.r_[begin, np.full(len(bearing), -half)],
+                np.r_[end, half - unsupported[bearing] * model.width_mm],
+                width,
+            )
+            result[query] = np.clip(1.0 - covered[query], 0.0, 1.0)
+    return result
 
 
 def analyze_support(
@@ -333,12 +826,40 @@ def _deposits(
     added_seconds = 0.0
     previous = prepared.initial_point
     motion = -1
+    local_restart = False
     for event in prepared.events:
+        if isinstance(event, EmissionPressure):
+            if dict(event.source_move.metadata).get("support_local_travel") is True:
+                added_seconds += event.e / event.feed_mm_s
+            continue
+        if isinstance(event, EmissionLiteral):
+            # Profile restart dwells follow the tagged approach, including
+            # profiles with a dwell but no pressure charge. Artist-requested
+            # pauses are run breaks and never support overhead.
+            if event.run_break:
+                local_restart = False
+            elif local_restart:
+                words = event.line.split(";", 1)[0].split()
+                if len(words) == 2 and words[0] == "G4" and words[1].startswith("S"):
+                    seconds = float(words[1][1:])
+                    if math.isfinite(seconds) and seconds >= 0:
+                        added_seconds += seconds
+            continue
         if not isinstance(event, EmissionMotion):
             continue
         motion += 1
         start, end = previous, event.point
         previous = end
+        local_restart = (
+            not event.extrude
+            and event.kind in {MoveKind.TRAVEL_LIFT, MoveKind.TRAVEL_XY, MoveKind.TRAVEL_APPROACH}
+            and dict(event.source_move.metadata).get("support_local_travel") is True
+        )
+        if local_restart and start is not None:
+            # Count the actual support-attributed movement, including a
+            # tagged first approach from a known profile start point. This
+            # estimate does not subtract a hypothetical wall-only approach.
+            added_seconds += start.distance_to(end) / event.feed_mm_s
         if start is None or event.kind is MoveKind.THREAD_RELEASE:
             continue
         role = deposition_role(event)
@@ -618,6 +1139,8 @@ def _inspect(
     *,
     include_original: bool = True,
     include_generated: bool = True,
+    base_threshold: float | None = None,
+    curtain_threshold: float | None = None,
 ) -> SupportAnalysis:
     collector = _Diagnostics(threshold)
     target_collectors = [_TargetCoverage(target, threshold) for target in targets]
@@ -649,6 +1172,8 @@ def _inspect(
     pair_budget = max(_MAX_CONTACT_PAIRS, 64 * station_count)
     maximum = 0.0
     generated_maximum = None
+    base_maximum = None
+    curtain_maximum = None
     for batch in range(0, len(deposits), _BATCH_SIZE):
         check_cancelled()
         indices = np.arange(batch, min(batch + _BATCH_SIZE, len(deposits)))
@@ -675,15 +1200,19 @@ def _inspect(
         )
         if generated:
             contact_offsets = np.searchsorted(contacts, np.arange(len(source) + 1))
-            foundation = bed.copy()
+            # Most lower courses finished before this batch. Resolve their
+            # rooted contacts together; only dependencies within this batch
+            # need the ordered per-deposit fallback below.
+            foundation = bed | (
+                np.bincount(contacts, weights=rooted[prior], minlength=len(source)) > 0
+            )
         for index, first, last in zip(indices, offsets[:-1], offsets[1:], strict=True):
             item = deposits[index]
             interval = slice(first, last)
             if generated:
-                for station in range(first, last):
-                    if not foundation[station]:
-                        found = prior[contact_offsets[station] : contact_offsets[station + 1]]
-                        foundation[station] = bool(np.any(rooted[found]))
+                for station in first + np.flatnonzero(~foundation[interval]):
+                    found = prior[contact_offsets[station] : contact_offsets[station + 1]]
+                    foundation[station] = bool(np.any(rooted[found]))
                 rooted[index] = bool(np.all(foundation[interval]))
                 if item.generated and not rooted[index]:
                     missing_foundation = True
@@ -701,16 +1230,27 @@ def _inspect(
                 maximum = max(maximum, peak)
             if item.generated:
                 generated_maximum = max(generated_maximum or 0.0, peak)
+                if item.is_base:
+                    base_maximum = max(base_maximum or 0.0, peak)
+                else:
+                    curtain_maximum = max(curtain_maximum or 0.0, peak)
             elif item.role == "wall":
                 for target in target_collectors:
                     target.sample(item, fraction[interval], point[interval], values)
-            failing = values > threshold + _EPS
+            limit = threshold
+            if item.generated:
+                selected = base_threshold if item.is_base else curtain_threshold
+                if selected is not None:
+                    limit = selected
+            failing = values > limit + _EPS
             if reported and np.any(failing):
                 collector.sample(item, fraction[interval], values, failing, "lower_contact")
     return replace(
         collector.result(model, maximum, missing_foundation, bool(unresolved)),
         target_results=tuple(target.result() for target in target_collectors),
         generated_max_unsupported_fraction=generated_maximum,
+        generated_base_max_unsupported_fraction=base_maximum,
+        generated_curtain_max_unsupported_fraction=curtain_maximum,
     )
 
 

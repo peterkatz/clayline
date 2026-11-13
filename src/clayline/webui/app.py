@@ -124,6 +124,7 @@ def create_app(
 
     weave_sessions = WeaveSessionManager()
     weave_work = WeaveWorkManager()
+    support_estimates = WeaveWorkManager()
 
     def _resolve_weave_session(request: Any) -> tuple[Any, str, bool]:
         # A single-artist desktop app has exactly one session for the life of
@@ -144,6 +145,7 @@ def create_app(
             yield
         finally:
             weave_work.clear()
+            support_estimates.clear()
             weave_sessions.clear()
 
     app = FastAPI(
@@ -161,6 +163,7 @@ def create_app(
 
     app.state.weave_sessions = weave_sessions
     app.state.weave_work = weave_work
+    app.state.support_estimates = support_estimates
 
     def weave_session_http_error(exc: Any) -> Any:
         messages = {
@@ -575,6 +578,38 @@ def create_app(
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    @app.post("/api/weave/support-analysis", include_in_schema=False)
+    async def weave_support_analysis(request: Request) -> Any:
+        """Estimate external mesh overhangs without generating decorated paths."""
+        from clayline.webui.weave_session import WeaveSessionError
+
+        try:
+            payload = await _read_json_request(request, required_origin=desktop_origin)
+            if not isinstance(payload, dict):
+                raise UiRequestError("request body must be a JSON object")
+            cache, token, created = _resolve_weave_session(request)
+            sliced = cache.get("slice", _required_id(payload, "slice_id"))
+            # Estimates replace only other estimates. Their independent gate
+            # lets a quick mesh read coexist with an already running export
+            # check, while obsolete reads unwind at their next checkpoint.
+            ticket = support_estimates.begin(token, _weave_work_id(payload))
+            result = await run_request_work(
+                request, ticket, _mesh_support_analysis_payload, sliced, payload
+            )
+            response = _json_response(Response, result)
+            _set_weave_cookie(response, token, created=created)
+            return response
+        except WorkCancelled as exc:
+            raise HTTPException(
+                status_code=409, detail={"message": str(exc), "code": "weave_work_cancelled"}
+            ) from exc
+        except UiRequestError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        except WeaveSessionError as exc:
+            raise weave_session_http_error(exc) from exc
+        except (OSError, ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @app.post("/api/weave/modulate", include_in_schema=False)
     async def weave_modulate(request: Request) -> Any:
         from clayline.weave_workflow import PreparedWeaveResult
@@ -697,8 +732,12 @@ def create_app(
             work_id = _weave_work_id(payload)
             if work_id is None:
                 raise UiRequestError("work_id is required")
+            kind = payload.get("kind", "path")
+            if kind not in ("path", "support-analysis"):
+                raise UiRequestError("kind must be 'path' or 'support-analysis'")
             _cache, token, _created = _resolve_weave_session(request)
-            weave_work.cancel(token, work_id)
+            manager = support_estimates if kind == "support-analysis" else weave_work
+            manager.cancel(token, work_id)
             return Response(status_code=204)
         except UiRequestError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
@@ -910,6 +949,7 @@ def create_app(
             _c, token, _cr = _resolve_weave_session(request)
             if token is not None:
                 weave_work.clear(token)
+                support_estimates.clear(token)
                 weave_sessions.clear(token)
             response = Response(status_code=204)
             response.delete_cookie(_weave_session_cookie(), path="/api/weave")
@@ -1806,6 +1846,47 @@ def _support_guide_stream(prepared_result: Any) -> Any:
     if prepared_result.support_reference is not None:
         return prepared_result.support_reference.source_stream
     return source.stream if source is not None else prepared_result.stream
+
+
+def _mesh_support_analysis_payload(sliced: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    from clayline.support_analysis import analyze_mesh_support
+    from clayline.weave_range import select_layer_range, trim_leading_empty_layers
+
+    thresholds = {}
+    for key in ("threshold", "base_threshold", "curtain_threshold"):
+        value = payload.get(key, payload.get("threshold", 0.4))
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0 <= value <= 0.95
+        ):
+            raise UiRequestError(f"{key} must be a number between 0 and 0.95")
+        thresholds[key] = value
+    base_enabled = _boolean(payload, "base_enabled", False)
+    curtains_enabled = _boolean(payload, "curtains_enabled", False)
+    base_threshold = thresholds["base_threshold"]
+    curtain_threshold = thresholds["curtain_threshold"]
+    if base_enabled and curtains_enabled:
+        threshold, scope = min(base_threshold, curtain_threshold), "base_and_curtains"
+    elif base_enabled:
+        threshold, scope = base_threshold, "base"
+    else:
+        threshold = curtain_threshold
+        scope = "curtains" if curtains_enabled else "inspection"
+    selected = trim_leading_empty_layers(select_layer_range(sliced, payload.get("layer_range")))
+    started = time.perf_counter()
+    analysis = analyze_mesh_support(
+        selected,
+        threshold=threshold,
+        base_threshold=base_threshold,
+        curtain_threshold=curtain_threshold,
+        threshold_scope=scope,
+    )
+    return {
+        "analysis": analysis.to_dict(),
+        "timing_ms": {"engine": _milliseconds(time.perf_counter() - started)},
+    }
 
 
 def _modulate_weave_payload(

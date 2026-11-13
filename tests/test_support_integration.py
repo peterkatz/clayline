@@ -20,7 +20,7 @@ from clayline.image_relief import ImageEffect
 from clayline.lint import lint_gcode
 from clayline.models import Move, MoveKind, MoveStream, deposition_run_key
 from clayline.profiles import load_profile
-from clayline.support_geometry import _wall_courses
+from clayline.support_geometry import _FOOT_ROUTE_PARAMETERS, _foot_widths, _wall_courses
 from clayline.support_models import (
     CurtainPlacement,
     FootSettings,
@@ -54,7 +54,9 @@ def _assert_external_support_routes(result: WeaveResult) -> None:
     }
     checked = 0
     for start, end in pairwise(result.emission.stream.moves):
-        if not end.support_id:
+        if not end.support_id or start.kind != MoveKind.PRINT or end.kind != MoveKind.PRINT:
+            continue
+        if deposition_run_key(start) != deposition_run_key(end):
             continue
         if end.role not in {"support_foot", "support_curtain", "support_root"}:
             continue
@@ -73,7 +75,9 @@ def _assert_curtain_roots_fuse_before_the_wall_continues(result: WeaveResult) ->
 
     def branch_key(move: Move) -> tuple | None:
         if (
-            move.support_id
+            move.kind == MoveKind.PRINT
+            and move.comment != "resume original wall"
+            and move.support_id
             and move.support_id.startswith(("repeated-", "local-"))
             and move.role in {"support_curtain", "support_root"}
         ):
@@ -87,7 +91,11 @@ def _assert_curtain_roots_fuse_before_the_wall_continues(result: WeaveResult) ->
         stop = index + 1
         while stop < len(moves) and branch_key(moves[stop]) == key:
             stop += 1
-        anchor, end = moves[index - 1], moves[stop - 1]
+        anchor = move if dict(move.metadata).get("support_local_travel") else moves[index - 1]
+        if anchor is move:
+            index += 1
+            move = moves[index]
+        end = moves[stop - 1]
         assert (end.x, end.y, end.z) == (anchor.x, anchor.y, anchor.z)
         assert stop - index >= 2
         radius = result.sliced.bead_width / 2 * min(1.0, move.flow_multiplier, end.flow_multiplier)
@@ -101,6 +109,31 @@ def _assert_curtain_roots_fuse_before_the_wall_continues(result: WeaveResult) ->
         assert outbound.intersection(inbound).area >= 0.5 * math.pi * radius**2
         checked += 1
     assert checked
+
+
+def _original_wall_moves(stream: MoveStream) -> tuple[Move, ...]:
+    """Allow only run bookkeeping to differ when a local course splits a wall run."""
+    return tuple(
+        replace(
+            move, metadata=tuple(item for item in move.metadata if item[0] != "deposition_run_id")
+        )
+        for move in stream.moves
+        if move.support_id is None
+    )
+
+
+def _assert_original_wall_edges_preserved(baseline: MoveStream, supported: MoveStream) -> None:
+    def edges(stream: MoveStream) -> list[tuple]:
+        return [
+            (a.x, a.y, a.z, b.x, b.y, b.z, b.feed_mm_s, b.flow_multiplier)
+            for a, b in pairwise(stream.moves)
+            if a.kind == b.kind == MoveKind.PRINT
+            and b.support_id is None
+            and deposition_run_key(a) == deposition_run_key(b)
+        ]
+
+    assert _original_wall_moves(supported) == _original_wall_moves(baseline)
+    assert edges(supported) == edges(baseline)
 
 
 @pytest.fixture(scope="module")
@@ -226,8 +259,6 @@ def test_foot_and_curtains_share_an_exact_trace_and_restore(
         "repeated-2",
         "local-1",
     }
-    if vase:
-        expected_ids.add("curtain-foundation")
     assert {
         event.source_move.support_id for event in motions if event.source_move.support_id
     } == expected_ids
@@ -249,7 +280,7 @@ def test_foot_and_curtains_share_an_exact_trace_and_restore(
 
 
 @pytest.mark.parametrize("vase", (False, True))
-def test_twelve_angular_curtains_keep_one_extrusion_run(vase: bool) -> None:
+def test_twelve_angular_curtains_use_only_local_feet(vase: bool) -> None:
     wide_cylinder = load_mesh(
         _CYLINDER, fit_height=24, scale_x=2, scale_y=2, profile="potterbot-xl"
     ).slice(layer_height=1.24, first_layer_height=1.24, sample_spacing=1, bead_width=4.13)
@@ -265,21 +296,76 @@ def test_twelve_angular_curtains_keep_one_extrusion_run(vase: bool) -> None:
     result = _job(wide_cylinder, vase=vase, supports=settings)
     moves = result.emission.stream.moves
     expected_ids = {f"repeated-{index}" for index in range(1, 13)}
-    if vase:
-        expected_ids.add("curtain-foundation")
-        assert {move.role for move in moves if move.support_id == "curtain-foundation"} == {
-            "support_foot",
-            "support_root",
-        }
+    assert not any(move.role == "support_foot" for move in moves)
     assert {move.support_id for move in moves if move.support_id} == expected_ids
+    center = np.mean(wide_cylinder.layers[0].rings[0].points, axis=0)
+    for identifier in expected_ids:
+        points = np.array(
+            [
+                (move.x, move.y)
+                for move in moves
+                if move.support_id == identifier
+                and move.kind == MoveKind.PRINT
+                and move.layer_index == 0
+                and move.comment != "resume original wall"
+            ]
+        )
+        angles = np.sort(np.arctan2(*(points - center)[:, ::-1].T))
+        arc = 2 * math.pi - np.max(np.diff(np.r_[angles, angles[0] + 2 * math.pi]))
+        # Check actual deposited geometry, so relabeling a hidden annulus
+        # as a curtain cannot satisfy the Base-off contract.
+        assert arc < math.pi / 2
     baseline = _job(wide_cylinder, vase=vase)
-    assert (
-        tuple(move for move in moves if move.support_id is None) == baseline.emission.stream.moves
-    )
+    _assert_original_wall_edges_preserved(baseline.emission.stream, result.emission.stream)
     assert result.emission.lint_report.ok
-    assert result.report().totals.stroke_count == 1
+    assert (result.report().totals.stroke_count > 1) is vase
     assert not result.report().support_analysis.generated_without_foundation
     _assert_curtain_roots_fuse_before_the_wall_continues(result)
+
+
+def test_curtain_only_geometry_uses_its_own_threshold(cylinder: SlicedFormFacade) -> None:
+    settings = SupportSettings(
+        enabled=True,
+        base_max_unsupported_fraction=0.1,
+        curtain_max_unsupported_fraction=0.2,
+        repeated_curtains=RepeatedCurtainSettings(enabled=True, count=1, top_height_mm=6),
+    )
+    strict = _job(cylinder, vase=True, supports=settings)
+    other_base = _job(
+        cylinder, vase=True, supports=replace(settings, base_max_unsupported_fraction=0.9)
+    )
+    permissive = _job(
+        cylinder, vase=True, supports=replace(settings, curtain_max_unsupported_fraction=0.8)
+    )
+    assert strict.emission.stream.moves == other_base.emission.stream.moves
+    assert strict.emission.stream.moves != permissive.emission.stream.moves
+    for result in (strict, other_base, permissive):
+        assert result.emission.lint_report.ok
+        assert not result.report().support_analysis.generated_without_foundation
+        assert not any(move.role == "support_foot" for move in result.emission.stream.moves)
+
+
+def test_automatic_base_size_uses_only_the_base_threshold() -> None:
+    sliced = load_mesh(_MESHES / "bowl.obj", fit_height=24, profile="potterbot-xl").slice(
+        layer_height=1.24, first_layer_height=1.24, sample_spacing=1, bead_width=4.13
+    )
+    stream = build_form_move_stream(sliced, preset_pattern("flat"), load_profile("potterbot-xl"))
+    courses = _wall_courses(stream, sliced)
+    settings = SupportSettings(
+        enabled=True,
+        foot=FootSettings(enabled=True),
+        base_max_unsupported_fraction=0.1,
+        curtain_max_unsupported_fraction=0.1,
+    )
+
+    def widths(configuration: SupportSettings) -> list[float]:
+        return _foot_widths(courses, configuration, sliced.bead_width, _FOOT_ROUTE_PARAMETERS[0])
+
+    strict = widths(settings)
+    assert any(strict)
+    assert strict == widths(replace(settings, curtain_max_unsupported_fraction=0.9))
+    assert sum(strict) > sum(widths(replace(settings, base_max_unsupported_fraction=0.5)))
+    assert not any(widths(replace(settings, foot=FootSettings(enabled=False))))
 
 
 @pytest.mark.parametrize("vase", (False, True))
@@ -345,32 +431,26 @@ def test_local_curtain_carries_the_higher_square_overhang(vase: bool) -> None:
     original = _job(sliced, vase=vase, supports=SupportSettings())
     supported = _job(sliced, vase=vase, supports=settings)
     assert supported.emission.lint_report.ok
-    assert supported.report().totals.stroke_count == 1
+    assert (supported.report().totals.stroke_count > 1) is vase
+    assert not any(move.role == "support_foot" for move in supported.emission.stream.moves)
+    _assert_external_support_routes(supported)
     added = [m for m in supported.emission.stream.moves if m.support_id == "crest"]
     assert min(m.z for m in added) == pytest.approx(sliced.first_layer_height)
     assert max(m.z for m in added) >= ring.z
     assert not supported.report().support_analysis.generated_without_foundation
 
-    def crest_motions(result: WeaveResult) -> dict[tuple[float, float, float], bool]:
-        motions = (e for e in result.emission.prepared.events if isinstance(e, EmissionMotion))
-        indications = [d for d in result.report().support_analysis.diagnostics if d.role == "wall"]
-        return {
-            (round(e.point.x, 6), round(e.point.y, 6), round(e.point.z, 6)): any(
-                d.start_motion <= index <= d.end_motion for d in indications
-            )
-            for index, e in enumerate(motions)
-            if e.extrude
-            and not e.source_move.support_id
-            and abs(e.point.x - crest[0]) <= 0.8
-            and abs(e.point.y - crest[1]) <= 1.0
-            and abs(e.point.z - ring.z) < 0.4 * sliced.layer_height
-        }
+    # Warnings now use source-mesh coordinates, not decorated motion IDs.
+    # Independently inspect the requested source interval before/after.
+    from clayline.support_analysis import SupportTarget, analyze_mesh_support
 
-    before = crest_motions(original)
-    after = crest_motions(supported)
-    assert before.keys() == after.keys()
-    assert any(before.values())
-    assert not any(after.values())
+    target = SupportTarget("crest", ((ring.provenance.layer_index, *crest, ring.z),), 0.8)
+    before = analyze_mesh_support(sliced, threshold=0.4, targets=(target,))
+    after = analyze_mesh_support(
+        sliced, threshold=0.4, targets=(target,), prepared=supported.emission.prepared
+    )
+    assert before.targets_met is False
+    assert after.targets_met
+    _assert_original_wall_edges_preserved(original.emission.stream, supported.emission.stream)
 
 
 def _layered_wall_segments(
@@ -409,7 +489,8 @@ def test_local_curtain_connects_every_layer_of_a_split_handle(vase: bool) -> Non
     original = _job(sliced, vase=False, supports=SupportSettings())
     supported = _job(sliced, vase=vase, supports=settings)
     assert original.report().totals.stroke_count > 1
-    assert supported.report().totals.stroke_count == 1
+    assert (supported.report().totals.stroke_count > 1) is vase
+    assert not any(move.role == "support_foot" for move in supported.emission.stream.moves)
     assert supported.emission.lint_report.ok
     body_edges = {layer.index: max(layer.rings[0].points[:, 0]) for layer in detached_layers}
     if vase:
@@ -468,31 +549,29 @@ def test_local_curtain_connects_every_layer_of_a_split_handle(vase: bool) -> Non
         handle.provenance.layer_index,
     }
 
-    def warned_branch_motions(result: WeaveResult) -> set[int]:
-        diagnostics = [
-            row for row in result.report().support_analysis.diagnostics if row.role == "wall"
-        ]
-        return {
-            index
-            for index, event in enumerate(
-                event
-                for event in result.emission.prepared.events
-                if isinstance(event, EmissionMotion)
-            )
-            if event.extrude
-            and event.source_move.comment == "weave wall"
-            and event.source_move.layer_index in target_layers
-            and event.point.x > body_edges[event.source_move.layer_index]
-            and any(row.start_motion <= index <= row.end_motion for row in diagnostics)
-        }
+    target_heights = {sliced.layers[index].z for index in target_layers}
 
-    assert warned_branch_motions(original)
-    assert not warned_branch_motions(supported)
+    def warned_branch_spans(result: WeaveResult) -> list:
+        return [
+            row
+            for row in result.report().support_analysis.diagnostics
+            if row.role == "wall"
+            and row.point.z in target_heights
+            and row.point.x
+            > body_edges[
+                min(target_layers, key=lambda index: abs(sliced.layers[index].z - row.point.z))
+            ]
+        ]
+
+    # The detached handle's inward-facing hollow no longer requests an
+    # external support merely because deposited wall beads leave a gap.
+    assert not warned_branch_spans(original)
+    assert not warned_branch_spans(supported)
     restored = restore_weave_result(supported.emission.gcode, _MESHES / "handled-vessel.obj")
     assert restored.result.emission.gcode == supported.emission.gcode
 
 
-def test_split_and_repeated_vase_curtains_share_an_automatic_footing() -> None:
+def test_split_and_repeated_vase_curtains_use_local_feet() -> None:
     sliced = _slice_support_fixture("handled-vessel.obj")
     detached = [layer for layer in sliced.layers if len(layer.rings) == 2]
     handle = detached[len(detached) // 2].rings[1]
@@ -518,9 +597,9 @@ def test_split_and_repeated_vase_curtains_share_an_automatic_footing() -> None:
         "handle",
         "repeated-1",
         "repeated-2",
-        "curtain-foundation",
     }
-    assert result.report().totals.stroke_count == 1
+    assert not any(move.role == "support_foot" for move in result.emission.stream.moves)
+    assert result.report().totals.stroke_count > 1
     assert result.emission.lint_report.ok
     assert not result.report().support_analysis.generated_without_foundation
     restored = restore_weave_result(result.emission.gcode, _MESHES / "handled-vessel.obj")

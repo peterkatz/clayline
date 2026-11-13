@@ -15,6 +15,7 @@
     textures: "/api/weave/textures",
     mesh: "/api/weave/mesh",
     slice: "/api/weave/slice",
+    supportAnalysis: "/api/weave/support-analysis",
     modulate: "/api/weave/modulate",
     finalize: "/api/weave/finalize",
     cancel: "/api/weave/cancel",
@@ -135,6 +136,8 @@
       enabled: saved.enabled ?? false,
       metric: "unsupported_bead_width_v1",
       max_unsupported_fraction: saved.max_unsupported_fraction ?? 0.4,
+      base_max_unsupported_fraction: saved.base_max_unsupported_fraction ?? saved.max_unsupported_fraction ?? 0.4,
+      curtain_max_unsupported_fraction: saved.curtain_max_unsupported_fraction ?? saved.max_unsupported_fraction ?? 0.4,
       foot: {
         enabled: false, extent_mode: "auto", extra_width_mm: 10, height_mm: 10, outline: "smooth",
         ...saved.foot,
@@ -219,6 +222,10 @@
     imageFits: [],
     supports: supportSettings(),
     supportAnalysis: null,
+    supportEstimate: null,
+    supportEstimateKey: null,
+    supportEstimatePromise: null,
+    supportEstimateWorkId: null,
     supportError: "",
     supportPreview: { guides: [], curtainMoves: new Map(), hasSupportPath: false },
     supportSpanIndex: 0,
@@ -249,8 +256,8 @@
     patternSeed: null,
     patternVersion: 1,
     previousSeam: "chained",
-    sequence: { mesh: 0, slice: 0, modulate: 0 },
-    controllers: { mesh: null, slice: null, modulate: null },
+    sequence: { mesh: 0, slice: 0, modulate: 0, supportAnalysis: 0 },
+    controllers: { mesh: null, slice: null, modulate: null, supportAnalysis: null },
     workClientId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     workId: null,
     checkProgress: null,
@@ -482,7 +489,8 @@
     else if (supportReviewState(payload) === "unresolved") setStatus("Final path · support unresolved", "warning");
     else if (payload.support_analysis?.targets_met === false) setStatus("Support targets not reached", "warning");
     else if (payload.support_analysis?.targets_met === true && supportReviewState(payload) === "remaining") {
-      setStatus("Support targets reached · other spans remain", "warning");
+      setStatus(payload.support_analysis.warning_basis === "original_mesh_external"
+        ? "Estimated target support · spans remain" : "Support targets reached · other spans remain", "warning");
     } else if (supportReviewState(payload) === "remaining") setStatus("Final path · support still needed", "warning");
     else setStatus("Ready to print · final path", "exact");
   }
@@ -514,12 +522,15 @@
 
   function abortStage(stage) {
     if (stage === "modulate") endCheckProgress();
-    if (stage === "modulate" && S.controllers.modulate && S.workId) {
+    const workId = stage === "modulate" ? S.workId
+      : stage === "supportAnalysis" ? S.supportEstimateWorkId : null;
+    if (S.controllers[stage] && workId) {
       // Explicit cancellation also works if WebKit keeps the connection alive.
       // The identity prevents a delayed cancel from stopping a newer edit.
       fetch(API.cancel, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ work_id: S.workId }), keepalive: true,
+        body: JSON.stringify({ work_id: workId,
+          ...(stage === "supportAnalysis" ? { kind: "support-analysis" } : {}) }), keepalive: true,
       }).catch(() => {});
     }
     S.controllers[stage]?.abort();
@@ -533,6 +544,10 @@
   function dropSliceAndPath() {
     abortStage("slice");
     S.sequence.slice += 1;
+    abortStage("supportAnalysis");
+    S.sequence.supportAnalysis += 1;
+    S.supportEstimate = null;
+    S.supportEstimateKey = null;
     dropFinalPath();
   }
 
@@ -1950,6 +1965,9 @@
   function stopCheck() {
     window.clearTimeout(S.timers.modulate);
     window.clearTimeout(S.timers.settle);
+    abortStage("supportAnalysis");
+    S.sequence.supportAnalysis += 1;
+    S.supportEstimateKey = null;
     invalidateExact("Check stopped. Your settings are kept. Choose Check again when ready.");
     idle();
     setStatus("Check stopped");
@@ -2145,6 +2163,7 @@
     $("#weaveExportIdentity").textContent = "Slice ready — checking the final path…";
     revealInspector();
     markRender("slice");
+    requestSupportEstimate();
     // Auto-settle (interface charter, 2026-07-20): a slice used to leave
     // the artist staring at a "Build final path" button. The exact pass
     // now runs on its own right after slicing; the status chip row is the
@@ -2272,6 +2291,10 @@
       setRoughPreviewWorking(true);
     }
     try {
+      // Let the small mesh estimate land before the full builder competes
+      // for the engine. Reuse the request already started by this edit.
+      if (quality === "settle") await requestSupportEstimate();
+      if (controller.signal.aborted || sequence !== S.sequence.modulate) return;
       const body = JSON.stringify({ ...modulationPayload(quality), work_id: workId });
       const payload = await jsonResponse(await fetch(API.modulate, {
         method: "POST",
@@ -2445,6 +2468,7 @@
   function scheduleModulation(quality) {
     S.supportedRestore = null;
     invalidateExact();
+    requestSupportEstimate();
     window.clearTimeout(S.timers.modulate);
     if (quality === "settle") {
       // Auto-settle (2026-07-20): discrete edits used to fire the exact
@@ -5021,7 +5045,7 @@
       span.reason === "missing_foundation" || span.reason === "unresolved_contact" || span.unresolved) : [];
     return {
       diagnostics: failures.length ? failures : analysis?.diagnostics || [],
-      reference: !failures.length && analysis?.warning_basis === "underlying_form_without_weaves",
+      reference: !failures.length && ["underlying_form_without_weaves", "original_mesh_external"].includes(analysis?.warning_basis),
     };
   }
 
@@ -5172,6 +5196,7 @@
     const readout = $("#weaveSupportCurtainDimensions");
     const targetReadout = $("#weaveSupportCurtainTarget");
     const target = S.supportAnalysis?.target_results?.find((row) => row.support_id === selected?.id);
+    const approximate = S.supportAnalysis?.warning_basis === "original_mesh_external";
     const curtain = S.supportPreview.curtainMoves.get(selected?.id);
     const bedZ = S.supportAnalysis?.bead_model?.bed_z_mm || 0;
     const showTarget = target && (!target.target_met || target.unresolved || (!S.supportError && curtain));
@@ -5183,13 +5208,19 @@
         : "";
       const measured = Number.isFinite(target.max_unsupported_fraction)
         ? ` · ${(target.max_unsupported_fraction * 100).toFixed(1)}% maximum unsupported` : "";
+      const curtainLimit = S.supportAnalysis?.threshold_fractions?.curtain;
+      const limit = Number.isFinite(curtainLimit)
+        ? ` · ${Math.round(curtainLimit * 100)}% curtain limit` : "";
       targetReadout.textContent = (target.unresolved ? "Target support unresolved"
-        : target.target_met ? "Target supported" : "Target still needs support") + range + measured;
+        : target.target_met ? approximate ? "Estimated target support" : "Target supported"
+        : "Target still needs support") + range + measured + limit;
     }
     readout.hidden = !selected?.enabled;
     if (!selected?.enabled) return;
     if (!curtain) {
-      readout.textContent = S.supportAnalysis
+      const provisional = currentSupportEstimate() === S.supportAnalysis
+        && !S.exactResult?.support_analysis;
+      readout.textContent = S.supportAnalysis && !provisional
         ? "No curtain clay generated at this placement."
         : "Curtain dimensions appear after the path is built.";
       return;
@@ -5197,7 +5228,8 @@
     const fmt = (value) => window.claylineUnits.fmt(value, 1);
     const prefix = S.supportError ? "Unverified path" : "Generated curtain";
     const result = S.supportError ? prefix : target ? target.unresolved ? "support unresolved"
-      : target.target_met ? "target supported" : "target still needs support" : prefix;
+      : target.target_met ? approximate ? "estimated target support" : "target supported"
+      : "target still needs support" : prefix;
     readout.textContent = `${fmt(curtain.max[2] - bedZ)} high · ${result}`;
   }
 
@@ -5230,7 +5262,9 @@
     }[span.role] || "Print path";
     const measured = Number.isFinite(span.max_unsupported_fraction)
       ? `${(span.max_unsupported_fraction * 100).toFixed(1)}% unsupported` : "Support indication unresolved";
-    const limit = S.supportAnalysis.threshold_fraction;
+    const family = span.role === "support_foot" || (span.role === "support_root" && span.support_id === "foot") ? "base"
+      : ["support_curtain", "support_root"].includes(span.role) ? "curtain" : null;
+    const limit = S.supportAnalysis.threshold_fractions?.[family] ?? S.supportAnalysis.threshold_fraction;
     const threshold = Number.isFinite(limit) ? ` · ${Math.round(limit * 100)}% limit` : "";
     const reason = {
       lower_contact: "Too little clay underneath",
@@ -5272,8 +5306,80 @@
     renderSupportResult(null);
   }
 
+  function supportEstimateRequest() {
+    const baseEnabled = S.supports.enabled && S.supports.foot.enabled;
+    const curtainsEnabled = S.supports.enabled && activeSupportCurtains() > 0;
+    const baseThreshold = S.supports.base_max_unsupported_fraction;
+    const curtainThreshold = S.supports.curtain_max_unsupported_fraction;
+    return {
+      slice_id: S.slice?.slice_id || S.slice?.id,
+      threshold: baseEnabled ? (curtainsEnabled ? Math.min(baseThreshold, curtainThreshold) : baseThreshold) : curtainThreshold,
+      base_threshold: baseThreshold,
+      curtain_threshold: curtainThreshold,
+      base_enabled: baseEnabled,
+      curtains_enabled: curtainsEnabled,
+      layer_range: S.supports.enabled && S.rangeAutoIslandStop ? null : rangePayload(),
+    };
+  }
+
+  function currentSupportEstimate() {
+    if (!S.slice || S.sliceDirty) return null;
+    return S.supportEstimate?.key === JSON.stringify(supportEstimateRequest())
+      ? S.supportEstimate.analysis : null;
+  }
+
+  function requestSupportEstimate() {
+    if (!S.slice || S.sliceDirty) return;
+    const request = supportEstimateRequest();
+    const key = JSON.stringify(request);
+    if (currentSupportEstimate()) {
+      // Returning to a cached threshold still replaces the in-flight edit.
+      // Stop that obsolete worker before the cached value releases a build.
+      if (S.supportEstimateKey && S.supportEstimateKey !== key) {
+        abortStage("supportAnalysis");
+        S.sequence.supportAnalysis += 1;
+        S.supportEstimateKey = null;
+        S.supportEstimatePromise = null;
+        S.supportEstimateWorkId = null;
+      }
+      return;
+    }
+    if (S.supportEstimateKey === key) return S.supportEstimatePromise;
+    const { controller, sequence } = newStage("supportAnalysis");
+    S.supportEstimateKey = key;
+    const workId = `${S.workClientId}-mesh-${sequence}`;
+    S.supportEstimateWorkId = workId;
+    const pending = (async () => {
+      try {
+        const payload = await jsonResponse(await fetch(API.supportAnalysis, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...request, work_id: workId }), signal: controller.signal,
+        }));
+        if (sequence !== S.sequence.supportAnalysis || controller.signal.aborted
+          || key !== JSON.stringify(supportEstimateRequest()) || !S.slice || S.sliceDirty) return;
+        S.supportEstimate = { key, analysis: payload.analysis };
+        // A late estimate must never replace the completed route's inspection.
+        // This request neither makes a print path nor enables its Download.
+        if (!S.exactResult?.support_analysis) renderSupportResult(S.exactResult);
+      } catch (_error) {
+        // The full path check owns errors/recovery. A failed quick estimate
+        // must not cancel that independent work or erase its completed result.
+      } finally {
+        if (sequence === S.sequence.supportAnalysis) {
+          S.supportEstimateKey = null;
+          S.supportEstimatePromise = null;
+          S.supportEstimateWorkId = null;
+          S.controllers.supportAnalysis = null;
+        }
+      }
+    })();
+    S.supportEstimatePromise = pending;
+    return pending;
+  }
+
   function renderSupportResult(payload) {
-    const analysis = payload?.support_analysis ?? null;
+    const estimate = payload?.support_analysis == null ? currentSupportEstimate() : null;
+    const analysis = payload?.support_analysis ?? estimate;
     const supportError = typeof payload?.support_error === "string" ? payload.support_error : "";
     if (S.supportAnalysis !== analysis || S.supportError !== supportError) {
       const diagnostics = supportDiagnosticSet(analysis, Boolean(supportError)).diagnostics;
@@ -5287,13 +5393,29 @@
     S.supportPreview = supportPreview(payload);
     const model = analysis?.bead_model;
     const beadWidth = model?.width_mm ?? S.slice?.centerline?.meta?.bead_width;
-    $("#weaveSupportBasis").textContent = beadWidth > 0
-      ? `${window.claylineUnits.fmt(beadWidth, 2)} ${model?.basis === "calibrated" ? "calibrated" : "nominal"} bead`
+    const basis = beadWidth > 0
+      ? `${window.claylineUnits.fmt(beadWidth, 2)} ${model?.basis === "calibrated" ? "calibrated" : "nominal"} bead` : "";
+    $("#weaveSupportBasis").textContent = analysis?.warning_basis === "original_mesh_external"
+      ? ["Original mesh estimate · external overhangs", basis].filter(Boolean).join(" · ") : basis;
+    const thresholdScope = analysis?.threshold_scope;
+    const thresholds = analysis?.threshold_fractions;
+    const percent = (value) => `${Math.round(value * 100)}%`;
+    const thresholdSummary = thresholds
+      ? thresholdScope === "base_and_curtains"
+        ? `Base ${percent(thresholds.base)} · Curtains ${percent(thresholds.curtain)}. Span overview uses the stricter active threshold (${percent(analysis.threshold_fraction)}).`
+        : thresholdScope === "base"
+          ? `Base ${percent(thresholds.base)} · Curtains off. Span overview uses the base threshold.`
+          : thresholdScope === "curtains"
+            ? `Base off · Curtains ${percent(thresholds.curtain)}. Span overview uses the curtain threshold.`
+            : `Supports off. Inspecting external spans at ${percent(analysis.threshold_fraction)} allowable overhang.`
       : "";
+    $("#weaveSupportThresholdSummary").textContent = thresholdSummary;
     const count = analysis?.diagnostics?.length || 0;
     const totalCount = analysis?.diagnostic_count || count;
-    const unresolved = supportReviewState(payload) === "unresolved";
-    let status = S.slice ? "Checking support on the current path…" : "Slice the form to inspect support needs.";
+    const targetsReached = analysis?.warning_basis === "original_mesh_external"
+      ? "Estimated support at targets." : "Support targets reached.";
+    const unresolved = supportReviewState({ support_analysis: analysis }) === "unresolved";
+    let status = S.slice ? "Estimating external overhangs from the original mesh…" : "Slice the form to inspect support needs.";
     if (S.supportError) status = S.supportError;
     else if (unresolved) status = analysis?.message || "Support indication unresolved.";
     else if (analysis?.targets_met === false) status = "Added supports have not reached all of their target areas.";
@@ -5302,10 +5424,15 @@
         ? `Showing ${count} of ${totalCount} remaining spans.`
         : `${totalCount} ${totalCount === 1 ? "span still needs" : "spans still need"} support.`;
       status = analysis?.targets_met === true
-        ? `Support targets reached. ${remaining} Curtains support only the areas they touch.`
+        ? `${targetsReached} ${remaining} Curtains support only the areas they touch.`
         : `Support target exceeded. ${remaining}`;
-    } else if (analysis?.targets_met === true) status = "Support targets reached. No remaining indications at this threshold.";
+    } else if (analysis?.targets_met === true) status = `${targetsReached} No remaining indications at this threshold.`;
     else if (analysis) status = "No support indications at the selected threshold.";
+    if (estimate && !S.supportError && !unresolved) {
+      status = totalCount
+        ? `Mesh estimate: ${totalCount} external ${totalCount === 1 ? "span needs" : "spans need"} support. Building and checking the print path…`
+        : "Mesh estimate: no external overhangs at this threshold. Building and checking the print path…";
+    }
     $("#weaveSupportStatus").textContent = status;
     $("#weaveSupportStatus").classList.toggle("is-refused", Boolean(S.supportError));
     const added = $("#weaveSupportAdded");
@@ -5403,9 +5530,15 @@
       const value = supportValueAt(settings, path);
       writeSupportControl(control, path.endsWith(".enabled") ? settings.enabled && value : value);
     });
-    const threshold = Math.round(settings.max_unsupported_fraction * 100);
+    const threshold = Math.round(settings.curtain_max_unsupported_fraction * 100);
+    const baseThreshold = Math.round(settings.base_max_unsupported_fraction * 100);
+    $("#weaveSupportBaseThresholdHint").textContent =
+      `Base targets at least ${100 - baseThreshold}% bead overlap. Lower values build more base support.`;
     $("#weaveSupportThresholdHint").textContent =
-      `Checks the piece profile without weaves. Requires at least ${100 - threshold}% bead overlap; lower values build more support.`;
+      `Curtains target at least ${100 - threshold}% bead overlap. Lower values build more curtain support.`;
+    $("#weaveSupportFoundationHint").textContent = settings.enabled && settings.foot.enabled
+      ? "The surrounding base is on. Curtains keep their own overhang limit."
+      : "Base off: no surrounding base. Curtains may add small local feet.";
     $("#weaveSupportRepeatedOptions").hidden = !(settings.enabled && settings.repeated_curtains.enabled);
     const rows = supportCurtains(settings);
     const activeCount = rows.filter((row) => row.enabled).length;
@@ -5511,18 +5644,18 @@
       const id = `local-${number}`;
       const row = curtainPlacement(id, "local", { anchor: supportAnchor(point) });
       S.supportPlacementId = id;
-      changeSupportSettings((settings) => setSupportCurtain(settings, row), { automatic: true });
+      changeSupportSettings((settings) => setSupportCurtain(settings, row), { automatic: true, scope: "curtain" });
     } else {
       const selected = chosenSupportCurtain();
       if (!selected || selected.id !== pick.id) return;
       const row = curtainPlacement(selected.id, selected.origin, selected);
       row.anchor = supportAnchor(point);
-      changeSupportSettings((settings) => setSupportCurtain(settings, row), { automatic: true });
+      changeSupportSettings((settings) => setSupportCurtain(settings, row), { automatic: true, scope: "curtain" });
     }
     commitWeaveStep();
   }
 
-  function changeSupportSettings(edit, { automatic = false } = {}) {
+  function changeSupportSettings(edit, { automatic = false, scope = "all" } = {}) {
     const previous = S.supports;
     const next = supportSettings(S.supports);
     if (automatic && !previous.enabled) {
@@ -5533,8 +5666,10 @@
     edit(next);
     // Main controls ask the planner to size supports. Appearance and
     // Advanced edits preserve any explicitly chosen manual geometry.
-    if (automatic) {
+    if (automatic && scope !== "curtain") {
       next.foot.extent_mode = "auto";
+    }
+    if (automatic && scope !== "base") {
       next.repeated_curtains.extent_mode = "auto";
       next.repeated_curtains.top_height_mm = null;
       next.placements = next.placements.map((row) => ({
@@ -5578,7 +5713,7 @@
           if (!automatic && ["repeated_curtains.reach_mm", "repeated_curtains.top_height_mm", "repeated_curtains.thickness_mm"].includes(path)) {
             settings.repeated_curtains.extent_mode = "manual";
           }
-        }, { automatic });
+        }, { automatic, scope: path.startsWith("foot.") || path === "base_max_unsupported_fraction" ? "base" : "curtain" });
       });
     });
     supportControls("placement").forEach((control) => {
@@ -5602,7 +5737,7 @@
     $("#weaveSupportRemove").addEventListener("click", () => {
       changeSupportSettings((settings) => {
         settings.placements = settings.placements.filter((row) => row.id !== S.supportPlacementId);
-      }, { automatic: true });
+      }, { automatic: true, scope: "curtain" });
     });
     $("#weaveSupportAddLocal").addEventListener("click", () => beginSupportPick("add"));
     $("#weaveSupportLocateCurtain").addEventListener("click", locateSupportCurtain);

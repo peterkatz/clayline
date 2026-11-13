@@ -75,8 +75,167 @@ def test_support_threshold_rechecks_same_path_and_round_trips_project_and_histor
     assert out["redo"] == 25
     assert out["opened"]
     assert out["reopenedThreshold"] == 0.25
-    assert out["reopenedSettings"]["max_unsupported_fraction"] == 0.25
+    assert out["reopenedSettings"]["curtain_max_unsupported_fraction"] == 0.25
+    assert out["reopenedSettings"]["base_max_unsupported_fraction"] == 0.4
     assert out["reopenedSettings"]["enabled"] is False
+
+
+def test_mesh_estimate_arrives_before_path_rebuild_and_ignores_superseded_response() -> None:
+    out = run_page(
+        f"""
+  const source = new File([{json.dumps(_CONE.read_text())}], "cone.obj");
+  weaveMode.activate();
+  $("#weaveFileInput").files = [source];
+  $("#weaveFileInput").dispatchEvent(new Event("change", {{ bubbles: true }}));
+  await settle(1000);
+  click("#weaveSettleButton");
+  await settle(1000);
+  const originalFetch = window.fetch;
+  let oldEstimate;
+  window.fetch = (url, init) => {{
+    if (url === window.ClaylineWeaveEndpoints.supportAnalysis
+      && JSON.parse(init.body).threshold === 0.25) {{
+      return new Promise((resolve) => {{ oldEstimate = resolve; }});
+    }}
+    return originalFetch(url, init);
+  }};
+  const builds = () => requests.filter((row) =>
+    row.url === window.ClaylineWeaveEndpoints.modulate).length;
+  const before = builds();
+  type("#weaveSupportThreshold", 25);
+  type("#weaveSupportThreshold", 30);
+  await settle(1);
+  out.beforeBuild = builds() === before;
+  out.estimateStatus = $("#weaveSupportStatus").textContent;
+  out.basis = $("#weaveSupportBasis").textContent;
+  out.downloadDisabled = $("#weaveDownloadButton").disabled;
+  out.estimateThreshold = page.S.supportAnalysis.threshold_fraction;
+  oldEstimate({{ ok: true, status: 200, json: async () => ({{ analysis: {{
+    ...page.S.supportAnalysis, threshold_fraction: 0.25, diagnostic_count: 999,
+  }} }}) }});
+  await settle(1);
+  out.afterStaleThreshold = page.S.supportAnalysis.threshold_fraction;
+  out.afterStaleStatus = $("#weaveSupportStatus").textContent;
+  window.fetch = originalFetch;
+  await settle(1000);
+  out.finalThreshold = page.S.exactResult.support_analysis.threshold_fraction;
+  out.finalExportEnabled = !$("#weaveDownloadButton").disabled;
+  let finishEstimate;
+  window.fetch = (url, init) => {{
+    if (url === window.ClaylineWeaveEndpoints.supportAnalysis) {{
+      return new Promise((resolve) => {{
+        finishEstimate = () => resolve(originalFetch(url, init));
+      }});
+    }}
+    return originalFetch(url, init);
+  }};
+  const beforeSlowEstimate = builds();
+  type("#weaveSupportThreshold", 45);
+  await settle(1000);
+  out.estimateGetsPriority = builds() === beforeSlowEstimate
+    && $("#weaveDownloadButton").disabled;
+  finishEstimate();
+  await settle(1000);
+  out.resumedAfterEstimate = page.S.exactResult.support_analysis.threshold_fraction === 0.45;
+  type("#weaveSupportThreshold", 55);
+  await settle(1);
+  const obsoleteEstimateId = page.S.supportEstimateWorkId;
+  type("#weaveSupportThreshold", 45);
+  await settle(1000);
+  out.cachedThresholdStopsObsoleteEstimate = requests.some((row) => {{
+    const body = row.body && JSON.parse(row.body);
+    return row.url === window.ClaylineWeaveEndpoints.cancel
+      && body.kind === "support-analysis" && body.work_id === obsoleteEstimateId;
+  }});
+  out.cachedThresholdBuilds = page.S.exactResult.support_analysis.threshold_fraction === 0.45;
+  finishEstimate();
+  await settle(1);
+  out.cancelledEstimateCannotLand = page.S.supportAnalysis.threshold_fraction === 0.45;
+  window.fetch = originalFetch;
+  const estimatesBeforeBaseEdit = requests.filter((row) =>
+    row.url === window.ClaylineWeaveEndpoints.supportAnalysis).length;
+  type("#weaveSupportBaseThreshold", 20);
+  await settle(1);
+  out.independentLimitInvalidatesEstimate = requests.filter((row) =>
+    row.url === window.ClaylineWeaveEndpoints.supportAnalysis).length > estimatesBeforeBaseEdit;
+  out.independentLimits = page.S.supportAnalysis.threshold_fractions;
+"""
+    )
+    assert out["beforeBuild"]
+    assert out["estimateStatus"].startswith("Mesh estimate:")
+    assert "Building and checking" in out["estimateStatus"]
+    assert "Original mesh estimate · external overhangs" in out["basis"]
+    assert out["downloadDisabled"]
+    assert out["estimateThreshold"] == out["afterStaleThreshold"] == 0.30
+    assert out["afterStaleStatus"] == out["estimateStatus"]
+    assert out["finalThreshold"] == 0.30
+    assert out["finalExportEnabled"]
+    assert out["estimateGetsPriority"]
+    assert out["resumedAfterEstimate"]
+    assert out["cachedThresholdStopsObsoleteEstimate"]
+    assert out["cachedThresholdBuilds"]
+    assert out["cancelledEstimateCannotLand"]
+    assert out["independentLimitInvalidatesEstimate"]
+    assert out["independentLimits"] == {"base": 0.2, "curtain": 0.45}
+
+
+def test_independent_limits_round_trip_and_preserve_other_manual_sizing() -> None:
+    out = run_page(
+        f"""
+  const source = new File([{json.dumps(_CONE.read_text())}], "cone.obj");
+  weaveMode.activate();
+  $("#weaveFileInput").files = [source];
+  $("#weaveFileInput").dispatchEvent(new Event("change", {{ bubbles: true }}));
+  await settle(1000);
+  toggle("#weaveSupportFoot", true);
+  type("#weaveSupportBaseThreshold", 20);
+  toggle("#weaveSupportRepeated", true);
+  type("#weaveSupportThreshold", 60);
+  type('[data-support-setting="repeated_curtains.top_height_mm"]', 21);
+  type("#weaveSupportBaseThreshold", 25);
+  out.curtainSizingAfterBaseEdit = {{ ...page.S.supports.repeated_curtains }};
+  type('[data-support-setting="foot.height_mm"]', 7);
+  type("#weaveSupportThreshold", 55);
+  out.baseSizingAfterCurtainEdit = {{ ...page.S.supports.foot }};
+  toggle("#weaveSupportFoot", false);
+  out.curtainOnly = page.S.supports.enabled && !page.S.supports.foot.enabled
+    && page.S.supports.repeated_curtains.enabled;
+  out.foundationHint = $("#weaveSupportFoundationHint").textContent;
+  const settings = page.weaveSettingsSnapshot();
+  const project = await codec.read(await codec.write({{
+    mode: "weave", settings, state: {{ sliced: false }},
+    sources: [{{ name: source.name, bytes: source }}],
+  }}));
+  out.opened = await weaveMode.openProject(project, "independent-supports.clayline");
+  await settle(1000);
+  out.restoredLimits = [Number($("#weaveSupportBaseThreshold").value),
+    Number($("#weaveSupportThreshold").value)];
+  out.restoredBaseOff = !$("#weaveSupportFoot").checked;
+  const legacy = {{ ...settings, support_settings: {{ ...settings.support_settings,
+    max_unsupported_fraction: 0.3 }} }};
+  delete legacy.support_settings.base_max_unsupported_fraction;
+  delete legacy.support_settings.curtain_max_unsupported_fraction;
+  const oldProject = await codec.read(await codec.write({{
+    mode: "weave", settings: legacy, state: {{ sliced: false }},
+    sources: [{{ name: source.name, bytes: source }}],
+  }}));
+  out.oldOpened = await weaveMode.openProject(oldProject, "legacy-supports.clayline");
+  await settle(1000);
+  out.legacyLimits = [Number($("#weaveSupportBaseThreshold").value),
+    Number($("#weaveSupportThreshold").value)];
+"""
+    )
+    assert out["curtainSizingAfterBaseEdit"]["extent_mode"] == "manual"
+    assert out["curtainSizingAfterBaseEdit"]["top_height_mm"] == 21
+    assert out["baseSizingAfterCurtainEdit"]["extent_mode"] == "manual"
+    assert out["baseSizingAfterCurtainEdit"]["height_mm"] == 7
+    assert out["curtainOnly"]
+    assert out["foundationHint"] == (
+        "Base off: no surrounding base. Curtains may add small local feet."
+    )
+    assert out["opened"] and out["restoredBaseOff"]
+    assert out["restoredLimits"] == [25, 55]
+    assert out["oldOpened"] and out["legacyLimits"] == [30, 30]
 
 
 def test_support_result_distinguishes_reached_targets_remaining_spans_and_failed_targets() -> None:
@@ -100,6 +259,7 @@ def test_support_result_distinguishes_reached_targets_remaining_spans_and_failed
   await settle(1000);
   const baseline = page.S.exactResult;
   page.S.supports.enabled = true;
+  page.S.supports.foot.enabled = true;
   page.S.supports.repeated_curtains.enabled = true;
   page.S.supportPlacementId = "repeated-1";
   const target = {{ support_id: "repeated-1", min_z: 8, max_z: 24,
@@ -113,6 +273,8 @@ def test_support_result_distinguishes_reached_targets_remaining_spans_and_failed
       [25, 5, 23, 1, 1, 1, 1, 1, 1, "support_curtain", "repeated-1"],
     ] }},
     support_analysis: {{ ...baseline.support_analysis,
+      threshold_fraction: 0.2, threshold_fractions: {{ base: 0.2, curtain: 0.6 }},
+      threshold_scope: "base_and_curtains",
       targets_met: true, target_results: [target],
       diagnostics: [remainingSpan], diagnostic_count: 1 }},
   }};
@@ -121,6 +283,7 @@ def test_support_result_distinguishes_reached_targets_remaining_spans_and_failed
   out.reachedDetails = $("#weaveSupportStatus").textContent;
   out.dimensions = $("#weaveSupportCurtainDimensions").textContent;
   out.reachedTarget = $("#weaveSupportCurtainTarget").textContent;
+  out.limitSummary = $("#weaveSupportThresholdSummary").textContent;
 
   const warningViewport = window.claylineViewport3d;
   const markerCounts = [];
@@ -190,7 +353,7 @@ def test_support_result_distinguishes_reached_targets_remaining_spans_and_failed
   // curtain endpoint at move 1 in the visible, decorated print path.
   result.support_error = null;
   result.support_analysis = {{ ...result.support_analysis,
-    warning_basis: "underlying_form_without_weaves",
+    warning_basis: "original_mesh_external",
     diagnostics: [remainingSpan], diagnostic_count: 1 }};
   await window.renderSupportTestResult(result, "settle");
   const scrubberLocations = [];
@@ -211,14 +374,22 @@ def test_support_result_distinguishes_reached_targets_remaining_spans_and_failed
   page.S.mesh.placement_center_mm = [0, 0];
   click("#weaveSupportAddAtSpan");
   out.referenceAnchor = page.S.supports.placements.find((row) => row.origin === "local").anchor;
+  // The new placement starts an immediate mesh estimate; let it settle
+  // before this page's request bridge closes, without running the full build.
+  await settle(1);
 """,
         weave_source=source,
     )
-    assert out["reachedStatus"] == "Support targets reached · other spans remain"
+    assert out["reachedStatus"] == "Estimated target support · spans remain"
+    assert "Estimated support at targets." in out["reachedDetails"]
     assert "Curtains support only the areas they touch" in out["reachedDetails"]
-    assert out["dimensions"] == "23.0 mm high · target supported"
-    assert "Target supported" in out["reachedTarget"]
+    assert out["dimensions"] == "23.0 mm high · estimated target support"
+    assert "Estimated target support" in out["reachedTarget"]
     assert "25.0% maximum unsupported" in out["reachedTarget"]
+    assert "60% curtain limit" in out["reachedTarget"]
+    assert out["limitSummary"] == (
+        "Base 20% · Curtains 60%. Span overview uses the stricter active threshold (20%)."
+    )
     assert out["warningsOff"] == {
         "checked": False,
         "pressed": "false",
@@ -280,7 +451,7 @@ def test_compact_support_controls_size_automatically_and_keep_manual_style_edits
     const result = { key, style: { ...page.S.supports.style },
       height: page.S.supports.repeated_curtains.top_height_mm,
       extentMode: page.S.supports.repeated_curtains.extent_mode,
-      threshold: page.S.supports.max_unsupported_fraction };
+      threshold: page.S.supports.curtain_max_unsupported_fraction };
     toggle(`[data-support-setting="style.${key}"]`, false);
     return result;
   });
@@ -299,12 +470,13 @@ def test_compact_support_controls_size_automatically_and_keep_manual_style_edits
 """
     )
     assert out["advancedClosed"]
-    assert "piece profile without weaves" in out["initialHint"]
+    assert "Curtains target" in out["initialHint"]
     assert "60% bead overlap" in out["initialHint"]
     assert "70% bead overlap" in out["changedHint"]
     assert out["mainGeometryFields"] == [
-        "max_unsupported_fraction",
+        "base_max_unsupported_fraction",
         "repeated_curtains.count",
+        "curtain_max_unsupported_fraction",
     ]
     assert out["baseEnabled"]
     assert out["radial"]["count"] == 6
@@ -361,6 +533,8 @@ def test_blocked_foundation_locates_actual_trace_and_keeps_reference_warnings() 
         MoveStream("actual", profile.name, wall + floating), profile, settings=settings
     )
     analysis = analyze_support(actual, threshold=0.4, reference=reference).to_dict()
+    analysis["threshold_fractions"] = {"base": 0.4, "curtain": 0.6}
+    analysis["threshold_scope"] = "base_and_curtains"
     trace = _prepared_trace_payload(
         actual,
         passes=3,
@@ -421,6 +595,11 @@ def test_blocked_foundation_locates_actual_trace_and_keeps_reference_warnings() 
   out.exportDisabled = $("#weaveDownloadButton").disabled;
   window.claylineViewport3d = viewport;
   window.claylineScrubber = scrubber;
+  await window.renderSupportTestResult({{ ...result,
+    support_analysis: {{ ...result.support_analysis,
+    actual_generated_diagnostics: result.support_analysis.actual_generated_diagnostics.map(row =>
+      ({{ ...row, role: "support_root", support_id: "foot" }})) }} }}, "settle");
+  out.baseRootMessage = $("#weaveSupportDiagnosticMessage").textContent;
   await window.renderSupportTestResult({{ ...result, support_error: null }}, "settle");
   window.claylineViewport3d = viewportSpy;
   window.claylineScrubber = scrubberSpy;
@@ -437,6 +616,9 @@ def test_blocked_foundation_locates_actual_trace_and_keeps_reference_warnings() 
     reference_span = analysis["diagnostics"][0]
     assert "Curtain · repeated-1" in out["failureMessage"]
     assert "No verified foundation" in out["failureMessage"]
+    assert "60% limit" in out["failureMessage"]
+    assert "40% limit" in out["baseRootMessage"]
+    assert "40% limit" in out["normalMessage"]
     assert out["actualLocations"] == [failure["end_move"]]
     assert out["actualFocus"] == failure["point"]
     assert out["failureCount"] == "1 / 1"

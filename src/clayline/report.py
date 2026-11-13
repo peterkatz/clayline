@@ -734,7 +734,18 @@ def render_report_text(report: JobReport) -> str:
     ]
     if report.support_analysis is not None:
         analysis = report.support_analysis
-        lines.append(f"maximum unsupported bead setting: {analysis.threshold:.0%}")
+        if analysis.base_threshold_fraction is None and analysis.curtain_threshold_fraction is None:
+            lines.append(f"maximum unsupported bead setting: {analysis.threshold:.0%}")
+        else:
+            if analysis.base_threshold_fraction is not None:
+                lines.append(f"base allowable overhang: {analysis.base_threshold_fraction:.0%}")
+            if analysis.curtain_threshold_fraction is not None:
+                lines.append(
+                    f"curtain allowable overhang: {analysis.curtain_threshold_fraction:.0%}"
+                )
+            lines.append(
+                f"mesh indication threshold: {analysis.threshold:.0%} ({analysis.threshold_scope})"
+            )
         if analysis.max_unsupported_fraction is not None:
             lines.append(f"peak unsupported bead width: {analysis.max_unsupported_fraction:.1%}")
         lines.append(f"located support indications: {len(analysis.diagnostics)}")
