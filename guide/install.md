@@ -17,7 +17,7 @@ Clayline does not need an internet connection, an account, or anything else inst
 
 To update, save any job you want to continue as a **Clayline project**, quit the app, then download the new version and drag it over the old one. Your saved projects and source files stay where you saved them. Open a project to bring back its design and settings. Images and effect fades are available in Clayline 0.10.0 and later. Supports are available in 0.14.0 and later; use the current version when opening a project or print file that contains them.
 
-Version **0.14.2** adds quick estimates from the original mesh, separate base and curtain overhang limits, and curtain-only supports with local feet. Older support projects start with their saved allowance applied to both limits; you can then adjust them independently.
+Version **0.14.3** lays every support as part of the one print line, with the base on or off. If you made a print file with curtains in 0.14.2, slice the job again in this version before printing it.
 
 ## The studio at a glance
 

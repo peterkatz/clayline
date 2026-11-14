@@ -114,7 +114,21 @@ def parse_weave_gcode(value: str | bytes | Path) -> WeaveRestoreRecipe:
             from clayline.lint import lint_gcode
 
             body_hash = _required(facts, "body_sha256")
-            if _SHA256.fullmatch(body_hash) is None or not lint_gcode(text, recipe.profile).ok:
+            # 0.14.2 reached some curtains by travel. Such a file is not one
+            # to print, and this version would never write it, but it is
+            # still read here for its form and settings.
+            # Those travels fail three checks at once: a support reached by
+            # travel, a support move that lays no clay, and a crossing with
+            # no clay on a job that keeps the clay flowing.
+            earlier = (
+                {"weave_support_travel", "weave_support_role", "crossing_flow"}
+                if "support_local_travel=" in text
+                else set()
+            )
+            findings = lint_gcode(text, recipe.profile).errors
+            if _SHA256.fullmatch(body_hash) is None or any(
+                item.code not in earlier for item in findings
+            ):
                 raise ValueError("supported G-code failed artifact validation")
             recipe = replace(recipe, supported_body_sha256=body_hash)
         return recipe
@@ -450,8 +464,8 @@ def verify_supported_restore(recipe: WeaveRestoreRecipe, rebuilt_gcode: str) -> 
     expected = recipe.supported_body_sha256
     if expected is not None and _header_facts(rebuilt_gcode).get("body_sha256") != expected:
         raise ValueError(
-            "The restored support settings did not reproduce the saved toolpath. "
-            "Keep the original print file to retain that route."
+            "This print file's supports were laid by an earlier version of Clayline "
+            "and are laid differently now. Give its support settings again to lay them the new way."
         )
 
 

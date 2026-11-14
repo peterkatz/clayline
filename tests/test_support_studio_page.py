@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from weave_page_rig import run_page
@@ -66,7 +67,7 @@ def test_support_threshold_rechecks_same_path_and_round_trips_project_and_histor
     assert out["samePath"]
     assert out["threshold"] == 0.25
     assert out["projectSchema"] == ["clayline.weave-settings.v1", "clayline.weave-settings.v3"]
-    assert out["warning"] == "No support indications at the selected threshold."
+    assert out["warning"] == "Nothing leans out past your limit."
     assert out["finalStatus"] == "Ready to print · final path"
     assert not out["warningColor"]
     assert "This is the exact file you'll download" in out["exportNote"]
@@ -107,7 +108,7 @@ def test_mesh_estimate_arrives_before_path_rebuild_and_ignores_superseded_respon
   await settle(1);
   out.beforeBuild = builds() === before;
   out.estimateStatus = $("#weaveSupportStatus").textContent;
-  out.basis = $("#weaveSupportBasis").textContent;
+  out.basis = [$("#weaveSupportBasis").hidden, $("#weaveSupportBasis").textContent];
   out.downloadDisabled = $("#weaveDownloadButton").disabled;
   out.estimateThreshold = page.S.supportAnalysis.threshold_fraction;
   oldEstimate({{ ok: true, status: 200, json: async () => ({{ analysis: {{
@@ -162,9 +163,10 @@ def test_mesh_estimate_arrives_before_path_rebuild_and_ignores_superseded_respon
 """
     )
     assert out["beforeBuild"]
-    assert out["estimateStatus"].startswith("Mesh estimate:")
-    assert "Building and checking" in out["estimateStatus"]
-    assert "Original mesh estimate · external overhangs" in out["basis"]
+    # The count comes from the form itself, before any support is built.
+    assert out["estimateStatus"].endswith("past your limit.")
+    assert "still" not in out["estimateStatus"]
+    assert out["basis"] == [True, ""]
     assert out["downloadDisabled"]
     assert out["estimateThreshold"] == out["afterStaleThreshold"] == 0.30
     assert out["afterStaleStatus"] == out["estimateStatus"]
@@ -200,7 +202,8 @@ def test_independent_limits_round_trip_and_preserve_other_manual_sizing() -> Non
   toggle("#weaveSupportFoot", false);
   out.curtainOnly = page.S.supports.enabled && !page.S.supports.foot.enabled
     && page.S.supports.repeated_curtains.enabled;
-  out.foundationHint = $("#weaveSupportFoundationHint").textContent;
+  out.foundationHint = [$("#weaveSupportFoundationHint").hidden,
+    $("#weaveSupportFoundationHint").textContent];
   const settings = page.weaveSettingsSnapshot();
   const project = await codec.read(await codec.write({{
     mode: "weave", settings, state: {{ sliced: false }},
@@ -230,9 +233,7 @@ def test_independent_limits_round_trip_and_preserve_other_manual_sizing() -> Non
     assert out["baseSizingAfterCurtainEdit"]["extent_mode"] == "manual"
     assert out["baseSizingAfterCurtainEdit"]["height_mm"] == 7
     assert out["curtainOnly"]
-    assert out["foundationHint"] == (
-        "Base off: no surrounding base. Curtains may add small local feet."
-    )
+    assert out["foundationHint"] == [True, ""]
     assert out["opened"] and out["restoredBaseOff"]
     assert out["restoredLimits"] == [25, 55]
     assert out["oldOpened"] and out["legacyLimits"] == [30, 30]
@@ -281,9 +282,13 @@ def test_support_result_distinguishes_reached_targets_remaining_spans_and_failed
   await window.renderSupportTestResult(result, "settle");
   out.reachedStatus = $("#weaveResponseState").textContent;
   out.reachedDetails = $("#weaveSupportStatus").textContent;
+  out.reachedInspection = [$("#weaveSupportInspectionTitle").textContent,
+    $("#weaveSupportInspectionStatus").textContent];
   out.dimensions = $("#weaveSupportCurtainDimensions").textContent;
-  out.reachedTarget = $("#weaveSupportCurtainTarget").textContent;
-  out.limitSummary = $("#weaveSupportThresholdSummary").textContent;
+  out.reachedTarget = [$("#weaveSupportCurtainTarget").hidden,
+    $("#weaveSupportCurtainTarget").textContent];
+  out.limitSummary = [$("#weaveSupportThresholdSummary").hidden,
+    $("#weaveSupportThresholdSummary").textContent];
 
   const warningViewport = window.claylineViewport3d;
   const markerCounts = [];
@@ -313,11 +318,15 @@ def test_support_result_distinguishes_reached_targets_remaining_spans_and_failed
       max_unsupported_fraction: 0.75 }}] }};
   await window.renderSupportTestResult(result, "settle");
   out.failedStatus = $("#weaveResponseState").textContent;
-  out.failedTarget = $("#weaveSupportCurtainTarget").textContent;
+  out.failedInspection = $("#weaveSupportInspectionStatus").textContent;
+  out.failedTarget = [$("#weaveSupportCurtainTarget").hidden,
+    $("#weaveSupportCurtainTarget").textContent];
 
   result.support_analysis = {{ ...result.support_analysis, unresolved: true }};
   await window.renderSupportTestResult(result, "settle");
   out.unresolvedStatus = $("#weaveResponseState").textContent;
+  out.unresolvedInspection = [$("#weaveSupportInspectionTitle").textContent,
+    $("#weaveSupportInspectionStatus").textContent];
 
   result.support_analysis = {{ ...result.support_analysis, unresolved: false,
     targets_met: true, diagnostics: [], diagnostic_count: 0, target_results: [target] }};
@@ -329,6 +338,8 @@ def test_support_result_distinguishes_reached_targets_remaining_spans_and_failed
   await window.renderSupportTestResult(result, "settle");
   out.blockedWarning = $("#weaveWarningList").textContent;
   out.blockedStatus = $("#weaveResponseState").textContent;
+  out.blockedInspection = [$("#weaveSupportInspectionTitle").textContent,
+    $("#weaveSupportInspectionStatus").textContent];
   out.blockedDownload = $("#weaveDownloadButton").disabled;
   out.blockedTargetHidden = $("#weaveSupportCurtainTarget").hidden;
   out.blockedTargetText = $("#weaveSupportCurtainTarget").textContent;
@@ -338,12 +349,12 @@ def test_support_result_distinguishes_reached_targets_remaining_spans_and_failed
     trace: {{ ...result.trace, moves: [] }} }}, "settle");
   out.noClayTargetHidden = $("#weaveSupportCurtainTarget").hidden;
   out.noClayDimensions = $("#weaveSupportCurtainDimensions").textContent;
-  await window.renderSupportTestResult({{ ...result,
+  await window.renderSupportTestResult({{ ...result, support_error: null,
     trace: {{ ...result.trace, moves: [] }},
     support_analysis: {{ ...result.support_analysis, targets_met: false,
       target_results: [{{ ...target, target_met: false }}] }} }}, "settle");
-  out.noClayFailureStillVisible = !$("#weaveSupportCurtainTarget").hidden
-    && $("#weaveSupportCurtainTarget").textContent.includes("Target still needs support");
+  out.noClayFailureStillSaid = [$("#weaveSupportCurtainTarget").hidden,
+    $("#weaveSupportInspectionStatus").textContent];
 
   await window.renderSupportTestResult({{ ...result, finalizing: true,
     support_error: null, support_analysis: null }}, "settle");
@@ -380,16 +391,15 @@ def test_support_result_distinguishes_reached_targets_remaining_spans_and_failed
 """,
         weave_source=source,
     )
-    assert out["reachedStatus"] == "Estimated target support · spans remain"
-    assert "Estimated support at targets." in out["reachedDetails"]
-    assert "Curtains support only the areas they touch" in out["reachedDetails"]
-    assert out["dimensions"] == "23.0 mm high · estimated target support"
-    assert "Estimated target support" in out["reachedTarget"]
-    assert "25.0% maximum unsupported" in out["reachedTarget"]
-    assert "60% curtain limit" in out["reachedTarget"]
-    assert out["limitSummary"] == (
-        "Base 20% · Curtains 60%. Span overview uses the stricter active threshold (20%)."
-    )
+    assert out["reachedStatus"] == "Ready to print · some places still lean out"
+    assert out["reachedDetails"] == "1 place leans out past your limit."
+    assert out["reachedInspection"] == [
+        "Supports",
+        "1 place still leans out past your limit. Curtains hold only what they touch.",
+    ]
+    assert out["dimensions"] == "Reaches 23.0 mm."
+    assert out["reachedTarget"] == [True, ""]
+    assert out["limitSummary"] == [True, ""]
     assert out["warningsOff"] == {
         "checked": False,
         "pressed": "false",
@@ -403,20 +413,36 @@ def test_support_result_distinguishes_reached_targets_remaining_spans_and_failed
         "markerCounts": [0, 0, 2],
     }
     assert out["warningToggleDisplayOnly"]
-    assert out["failedStatus"] == "Support targets not reached"
-    assert "Target still needs support" in out["failedTarget"]
-    assert out["unresolvedStatus"] == "Final path · support unresolved"
+    assert out["failedStatus"] == "Final path · a curtain falls short"
+    assert out["failedInspection"] == (
+        "A curtain does not reach everything it was placed for. "
+        "1 place still leans out past your limit. Curtains hold only what they touch."
+    )
+    assert out["failedTarget"] == [True, ""]
+    assert out["unresolvedStatus"] == "Final path · supports not checked"
+    assert out["unresolvedInspection"] == [
+        "Supports could not be checked",
+        "Could not measure the lean on this form.",
+    ]
     assert out["clearStatus"] == "Ready to print · final path"
-    assert out["blockedWarning"] == "Support check needs attention. See Supports below."
-    assert out["blockedStatus"] == "Support route blocked"
+    assert out["blockedWarning"] == "Supports need a look. See Supports below."
+    assert out["blockedStatus"] == "Supports could not be built"
+    assert out["blockedInspection"] == [
+        "Supports could not be built",
+        "The requested curtain crosses the wall.",
+    ]
     assert out["blockedDownload"]
     assert out["blockedTargetHidden"]
     assert out["blockedTargetText"] == ""
-    assert "Unverified path" in out["blockedDimensions"]
-    assert "supported" not in out["blockedDimensions"]
+    # Supports that could not be built have no height to give.
+    assert out["blockedDimensions"] == "Its height shows once the path is built."
     assert out["noClayTargetHidden"]
-    assert out["noClayDimensions"] == "No curtain clay generated at this placement."
-    assert out["noClayFailureStillVisible"]
+    assert out["noClayDimensions"] == "No clay was laid for this one."
+    # A curtain that falls short is said in the inspector, not in a readout.
+    assert out["noClayFailureStillSaid"] == [
+        True,
+        "A curtain does not reach everything it was placed for.",
+    ]
     assert out["pendingWarning"] == "Final path checks are still running."
     assert out["referenceFocus"] == [1.5, 0, 8]
     assert out["referenceScrubberLocations"] == []
@@ -470,9 +496,8 @@ def test_compact_support_controls_size_automatically_and_keep_manual_style_edits
 """
     )
     assert out["advancedClosed"]
-    assert "Curtains target" in out["initialHint"]
-    assert "60% bead overlap" in out["initialHint"]
-    assert "70% bead overlap" in out["changedHint"]
+    assert out["initialHint"] == "Lower carries the curtains higher up the piece."
+    assert out["changedHint"] == out["initialHint"]
     assert out["mainGeometryFields"] == [
         "base_max_unsupported_fraction",
         "repeated_curtains.count",
@@ -614,11 +639,9 @@ def test_blocked_foundation_locates_actual_trace_and_keeps_reference_warnings() 
         weave_source=source,
     )
     reference_span = analysis["diagnostics"][0]
-    assert "Curtain · repeated-1" in out["failureMessage"]
-    assert "No verified foundation" in out["failureMessage"]
-    assert "60% limit" in out["failureMessage"]
-    assert "40% limit" in out["baseRootMessage"]
-    assert "40% limit" in out["normalMessage"]
+    assert out["failureMessage"] == "Support clay here has too little under it."
+    assert out["baseRootMessage"] == out["failureMessage"]
+    assert re.fullmatch(r"Leans out \d+% here\. Your limit is 40%\.", out["normalMessage"])
     assert out["actualLocations"] == [failure["end_move"]]
     assert out["actualFocus"] == failure["point"]
     assert out["failureCount"] == "1 / 1"
@@ -628,6 +651,5 @@ def test_blocked_foundation_locates_actual_trace_and_keeps_reference_warnings() 
     ]
     assert out["markerPoints"] == expected_markers
     assert out["normalMarkerPoints"] == expected_markers
-    assert out["normalMessage"].startswith("Wall ·")
     assert out["normalLocations"] == out["actualLocations"]
     assert out["normalFocus"] == reference_span["point"]

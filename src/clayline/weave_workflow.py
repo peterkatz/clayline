@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator
-from dataclasses import dataclass, replace
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -56,6 +56,10 @@ TOP_FOLLOW_CLIMB_CODE = "weave_top_follow_slope"
 # Strictly bounded, like the Draw settle path's selective recovery: at most
 # three rebuilds, each giving back twice the climb of the one before.
 MAX_CLIMB_REPAIR_REBUILDS = 3
+# How many times the final check may end a curtain lower and lay the path
+# again before the job is refused. One is enough in practice: a curtain is
+# already ended, while it is laid, below any course that would not stand.
+MAX_CURTAIN_SHORTENINGS = 3
 
 
 class WeaveWorkflowError(ValueError):
@@ -288,6 +292,11 @@ class PreparedWeaveResult:
     support_reference: PreparedEmission | None = None
     support_reference_error: str | None = None
     supported_restore_body_sha256: str | None = None
+    # Which way the base's rings were laid, and where the final check has
+    # ended a curtain, so the supports can be laid again on the same wall.
+    support_foot_variant: int = 0
+    support_curtain_stops: Mapping[str, float] = field(default_factory=dict)
+    support_base_may_stop: bool = False
 
     def __post_init__(self) -> None:
         if self.prepared.source_stream is not self.stream:
@@ -455,6 +464,7 @@ def prepare_weave_result(
             zblend_path, source = wall_source(selected)
             stream = source.stream
     support_error = None
+    support_foot_variant = 0
     if support_settings is not None:
         stream = replace(
             stream,
@@ -479,6 +489,9 @@ def prepare_weave_result(
                     sum(not ring.is_hole for ring in layer.rings) <= 1 for layer in selected.layers
                 )
             )
+            # With curtains, the base is laid densely enough to carry their
+            # roots; alone it is laid as lightly as it can be.
+            support_foot_variant = 4 if regular_curtains else 0
             stream, support_error = _route_support_candidate(
                 source,
                 selected,
@@ -486,8 +499,7 @@ def prepare_weave_result(
                 resolved_profile,
                 support_settings,
                 flow_multiplier=flow_multiplier,
-                foot_variant=4 if regular_curtains else 0,
-                curtain_variant=5 if regular_curtains else 0,
+                foot_variant=support_foot_variant,
             )
         # Overhangs use source-mesh slices, so a second routed print is no
         # longer necessary. Keep only the reference wall for support sizing.
@@ -724,6 +736,7 @@ def prepare_weave_result(
         support_source=source
         if support_settings is not None and support_settings.enabled
         else None,
+        support_foot_variant=support_foot_variant,
         rebuild=WeaveRebuildRecipe(
             # The form as handed in, not ``selected``: the range selection and
             # the leading-layer trim are part of what a rebuild has to redo.
@@ -757,8 +770,9 @@ def _route_support_candidate(
     settings: SupportSettings,
     *,
     foot_variant: int = 0,
-    curtain_variant: int = 0,
     flow_multiplier: float = 1.0,
+    curtain_stops: Mapping[str, float] | None = None,
+    base_may_stop: bool = False,
 ) -> tuple[MoveStream, str | None]:
     from clayline.support_geometry import SupportRoutingError, route_supports
 
@@ -771,9 +785,10 @@ def _route_support_candidate(
                 profile,
                 settings,
                 foot_variant=foot_variant,
-                curtain_variant=curtain_variant,
                 reference_stream=source.reference_stream,
                 flow_multiplier=flow_multiplier,
+                curtain_stops=curtain_stops,
+                base_may_stop=base_may_stop,
             ), None
         from clayline.support_split_routing import route_split_supports
 
@@ -790,90 +805,104 @@ def _route_support_candidate(
             reference_stream=source.reference_stream,
             reference_helical_stream=source.reference_helical_stream,
             flow_multiplier=flow_multiplier,
+            curtain_stops=curtain_stops,
+            base_may_stop=base_may_stop,
         )
         return routed, None
     except SupportRoutingError as error:
         return source.stream, str(error)
 
 
-def _reference_support_stream(
-    source: _SupportSource,
-    sliced: SlicedForm,
-    pattern: Pattern,
-    profile: Profile,
-    settings: SupportSettings,
-    *,
-    foot_variant: int,
-    curtain_variant: int,
-    flow_multiplier: float = 1.0,
-) -> tuple[MoveStream | None, str | None]:
-    """Route the same support request on its complete weave-free counterpart."""
-    if source.reference_stream is None:
-        return None, None
-    reference_source = replace(
-        source,
-        stream=source.reference_stream,
-        helical_stream=source.reference_helical_stream,
-    )
-    reference_settings = replace(
-        settings,
-        style=replace(settings.style, bases_apply_weaves=False, curtains_apply_weaves=False),
-    )
-    stream, error = _route_support_candidate(
-        reference_source,
-        sliced,
-        _support_reference_pattern(pattern),
-        profile,
-        reference_settings,
-        foot_variant=foot_variant,
-        curtain_variant=curtain_variant,
-        flow_multiplier=flow_multiplier,
-    )
-    return stream, error
-
-
 def _support_candidates(attempt: PreparedWeaveResult) -> Iterator[PreparedWeaveResult]:
-    """Keep the requested settings while trying alternative printable fills."""
-    from clayline.support_geometry import FOOT_ROUTE_VARIANT_COUNT, _placements
+    """Keep the requested settings while trying the base's other ways of laying its rings.
+
+    Only the base is laid again. A curtain has one shape; where it cannot
+    stand it stops, and no other shape is tried for it.
+    """
+    from clayline.support_geometry import FOOT_ROUTE_VARIANT_COUNT
 
     settings = attempt.support_settings
-    if settings is None or attempt.support_source is None:
+    if settings is None or attempt.support_source is None or not settings.foot.enabled:
         return
-    split = any(
-        sum(not ring.is_hole for ring in layer.rings) > 1 for layer in attempt.sliced.layers
-    )
-    # A disabled Base is never promoted to an annulus during recovery.
-    # Curtain-only jobs search their individual local footings inside the
-    # geometry builder; global base-fill variants would repeat the same job.
-    if not settings.foot.enabled:
-        return
-    if not split and _placements(settings):
-        variants = [(5, 5)]
-    else:
-        variants = [(variant, 0) for variant in range(1, FOOT_ROUTE_VARIANT_COUNT)]
-    for foot_variant, curtain_variant in variants:
-        check_cancelled()
-        stream, error = _route_support_candidate(
-            attempt.support_source,
-            attempt.sliced,
-            attempt.pattern,
-            attempt.profile,
-            settings,
-            foot_variant=foot_variant,
-            curtain_variant=curtain_variant,
-            flow_multiplier=attempt.settings.flow_multiplier,
-        )
-        if error is not None:
+    for foot_variant in range(FOOT_ROUTE_VARIANT_COUNT):
+        if foot_variant == attempt.support_foot_variant:
             continue
-        trace = prepare_emission(stream, attempt.profile, settings=attempt.settings)
-        yield replace(
-            attempt,
-            stream=stream,
-            prepared=trace,
-            support_error=None,
-            support_reference=None,
-            support_reference_error=None,
+        check_cancelled()
+        candidate = _rerouted(attempt, foot_variant=foot_variant)
+        if candidate is not None:
+            yield candidate
+    # Last, the base as first laid, ended below the layer it could not be
+    # laid on. It says where it stops; the job is not refused over it. Only
+    # where laying it was refused: a base laid whole has nowhere to stop.
+    if attempt.support_error is not None and not attempt.support_base_may_stop:
+        check_cancelled()
+        candidate = _rerouted(attempt, base_may_stop=True)
+        if candidate is not None:
+            yield candidate
+
+
+def _rerouted(
+    attempt: PreparedWeaveResult,
+    *,
+    foot_variant: int | None = None,
+    curtain_stops: Mapping[str, float] | None = None,
+    base_may_stop: bool | None = None,
+) -> PreparedWeaveResult | None:
+    """Lay the supports again on the same wall; ``None`` when that route is refused."""
+    settings = attempt.support_settings
+    assert settings is not None and attempt.support_source is not None
+    variant = attempt.support_foot_variant if foot_variant is None else foot_variant
+    stops = attempt.support_curtain_stops if curtain_stops is None else curtain_stops
+    may_stop = attempt.support_base_may_stop if base_may_stop is None else base_may_stop
+    stream, error = _route_support_candidate(
+        attempt.support_source,
+        attempt.sliced,
+        attempt.pattern,
+        attempt.profile,
+        settings,
+        foot_variant=variant,
+        flow_multiplier=attempt.settings.flow_multiplier,
+        curtain_stops=stops,
+        base_may_stop=may_stop,
+    )
+    if error is not None:
+        return None
+    trace = prepare_emission(stream, attempt.profile, settings=attempt.settings)
+    return replace(
+        attempt,
+        stream=stream,
+        prepared=trace,
+        support_error=None,
+        support_reference=None,
+        support_reference_error=None,
+        support_foot_variant=variant,
+        support_curtain_stops=dict(stops),
+        support_base_may_stop=may_stop,
+    )
+
+
+def _is_split(sliced: SlicedForm) -> bool:
+    """Whether some layer of the form is in more than one piece."""
+    return any(sum(not ring.is_hole for ring in layer.rings) > 1 for layer in sliced.layers)
+
+
+def _curtains_without_footing(analysis: SupportAnalysis | None) -> dict[str, float]:
+    """Where the standing check found curtain clay with nothing under it, by curtain.
+
+    The height returned is the lowest such clay; that curtain is ended below it.
+    """
+    stops: dict[str, float] = {}
+    if analysis is None:
+        return stops
+    for diagnostic in analysis.actual_generated_diagnostics:
+        if diagnostic.reason != "missing_foundation" or diagnostic.support_id in (None, "foot"):
+            continue
+        if diagnostic.role not in ("support_curtain", "support_root"):
+            continue
+        stops[diagnostic.support_id] = min(
+            stops.get(diagnostic.support_id, math.inf), diagnostic.min_z
         )
+    return stops
 
 
 def _rebuild_prepared_weave_result(
@@ -981,6 +1010,7 @@ def finalize_weave_result(prepared_result: PreparedWeaveResult) -> WeaveResult:
     attempt = prepared_result
     base_headroom: float | None = None
     rebuilds = 0
+    shortenings = 0
     while True:
         check_cancelled()
         try:
@@ -996,6 +1026,50 @@ def finalize_weave_result(prepared_result: PreparedWeaveResult) -> WeaveResult:
                     raise
                 failure = original
                 finalized = None
+                # A curtain the standing check will not pass is ended below the
+                # clay it objected to, and the path laid again. Nothing is
+                # refused over a curtain.
+                stops = _curtains_without_footing(original.analysis)
+                if stops:
+                    # After the allowed shortenings, a curtain the check still
+                    # objects to is left out altogether. Each such round takes
+                    # at least one curtain away, so the rounds end.
+                    last = shortenings >= MAX_CURTAIN_SHORTENINGS
+                    wanted = {
+                        **attempt.support_curtain_stops,
+                        **{
+                            identifier: 0.0
+                            if last
+                            else min(
+                                height, attempt.support_curtain_stops.get(identifier, math.inf)
+                            )
+                            for identifier, height in stops.items()
+                        },
+                    }
+                    if wanted == dict(attempt.support_curtain_stops):
+                        # Already ended as low as the check asks, and it still
+                        # objects: leave those curtains out now.
+                        wanted = {**wanted, **dict.fromkeys(stops, 0.0)}
+                    shortened = (
+                        _rerouted(attempt, curtain_stops=wanted)
+                        if wanted != dict(attempt.support_curtain_stops)
+                        else None
+                    )
+                    if shortened is not None:
+                        shortenings += 1
+                        attempt = shortened
+                        continue
+                    if _is_split(attempt.sliced):
+                        # There the support is the only way the line reaches a
+                        # separate part; ended short, that part cannot print.
+                        raise SupportPlanRefused(
+                            "A support on this form cannot stand all the way up. A form "
+                            "with a separate part is not printed with a support ended short, "
+                            "because that could leave the part out. Move that support or "
+                            "take it away.",
+                            original.analysis,
+                            draft=original.draft,
+                        ) from original
             if finalized is None:
                 for candidate in _support_candidates(attempt):
                     try:
@@ -1018,12 +1092,10 @@ def finalize_weave_result(prepared_result: PreparedWeaveResult) -> WeaveResult:
                     if partial is None:
                         assert failure is not None
                         raise failure
-                    raise SupportPlanRefused(
-                        "The automatic supports do not meet the allowable overhang at all "
-                        "selected attachments. Adjust their placement or add a local support.",
-                        partial.job_report.support_analysis,
-                        draft=partial.support_repair or attempt,
-                    )
+                    # No layout of the base holds the whole of what its number
+                    # asks. The one that holds most is printed; what still
+                    # leans out is shown, and the job is not refused.
+                    finalized = partial
         except _ClimbRejected as rejection:
             if base_headroom is None:
                 base_headroom = _climb_repair_base_headroom(attempt)
@@ -1031,6 +1103,7 @@ def finalize_weave_result(prepared_result: PreparedWeaveResult) -> WeaveResult:
                 raise TopFollowClimbRefused(str(rejection)) from rejection
             rebuilds += 1
             assert attempt.rebuild is not None
+            before = attempt
             attempt = replace(
                 _rebuild_prepared_weave_result(
                     attempt.rebuild,
@@ -1038,6 +1111,21 @@ def finalize_weave_result(prepared_result: PreparedWeaveResult) -> WeaveResult:
                 ),
                 supported_restore_body_sha256=attempt.supported_restore_body_sha256,
             )
+            if attempt.support_source is not None and (
+                before.support_curtain_stops or before.support_base_may_stop
+            ):
+                # The rebuild lays the supports afresh; end them where the
+                # standing check had already ended them.
+                kept = _rerouted(
+                    attempt,
+                    curtain_stops=before.support_curtain_stops,
+                    base_may_stop=before.support_base_may_stop,
+                )
+                if kept is not None:
+                    attempt = kept
+                else:
+                    # Laid afresh instead: let the standing check end them again.
+                    shortenings = 0
             continue
         if rebuilds == 0:
             return finalized
@@ -1057,13 +1145,17 @@ class _ClimbRejected(WeaveWorkflowError):
 
 
 def _automatic_support_targets_met(result: WeaveResult) -> bool:
+    """Whether the automatic base holds its own allowable overhang.
+
+    Curtains are not judged here. The allowable overhang says which parts of
+    the piece get a curtain under them and how high it goes; whether a
+    curtain's own clay stands is the standing check's question, and a curtain
+    that reaches less than was asked is shown, never refused.
+    """
     analysis = result.job_report.support_analysis
     if analysis is None:
         return True
-    automatic = [target for target in analysis.target_results if target.automatic]
-    return all(target.target_met for target in automatic) and all(
-        peak <= limit + 1e-9 for peak, limit in _support_threshold_limits(result)
-    )
+    return all(peak <= limit + 1e-9 for peak, limit in _support_threshold_limits(result))
 
 
 def _support_threshold_limits(result: WeaveResult) -> tuple[tuple[float, float], ...]:
@@ -1073,7 +1165,6 @@ def _support_threshold_limits(result: WeaveResult) -> tuple[tuple[float, float],
     if analysis is None or settings is None or not settings.enabled:
         return ()
     automatic_base = settings.foot.enabled and settings.foot.extent_mode == "auto"
-    automatic_curtains = any(target.automatic for target in analysis.target_results)
     if analysis.warning_basis == "original_mesh_external":
         if result.pattern != _support_reference_pattern(result.pattern):
             return ()
@@ -1082,18 +1173,13 @@ def _support_threshold_limits(result: WeaveResult) -> tuple[tuple[float, float],
             limits.append(
                 (analysis.generated_base_max_unsupported_fraction, settings.base_threshold)
             )
-        if automatic_curtains and analysis.generated_curtain_max_unsupported_fraction is not None:
-            limits.append(
-                (analysis.generated_curtain_max_unsupported_fraction, settings.curtain_threshold)
-            )
         return tuple(limits)
     # Retain historical analysis compatibility when reading older results.
-    peak = _support_threshold_peak(analysis, pattern=result.pattern)
-    return (
-        ((peak, analysis.threshold),)
-        if (automatic_base or automatic_curtains) and peak is not None
-        else ()
-    )
+    # There too the base answers for itself alone where it was measured apart.
+    peak = analysis.generated_base_max_unsupported_fraction
+    if peak is None:
+        peak = _support_threshold_peak(analysis, pattern=result.pattern)
+    return ((peak, analysis.threshold),) if automatic_base and peak is not None else ()
 
 
 def _support_threshold_peak(analysis: SupportAnalysis, *, pattern: Pattern) -> float | None:
@@ -1191,15 +1277,16 @@ def _finalize_once(prepared_result: PreparedWeaveResult) -> WeaveResult:
             )
         if supports.enabled and support_analysis.generated_without_foundation:
             raise SupportPlanRefused(
-                "Part of a support has no previously printed clay beneath it. "
-                "Adjust its foundation, reach, or appearance.",
+                "Part of a support would be laid over nothing. Raise its allowable "
+                "overhang, or turn its Weaves and Images off.",
                 support_analysis,
                 retryable=True,
                 draft=prepared_result,
             )
         if supports.enabled and support_analysis.generated_unresolved:
             raise SupportPlanRefused(
-                "ClayLine could not verify the foundation of the full support path.",
+                "This job is too large for Clayline to check that every support has "
+                "clay under it. Use fewer or shorter supports.",
                 support_analysis,
                 draft=prepared_result,
             )
@@ -1228,8 +1315,8 @@ def _finalize_once(prepared_result: PreparedWeaveResult) -> WeaveResult:
     expected_body = prepared_result.supported_restore_body_sha256
     if expected_body is not None and lint_report.header.get("body_sha256") != expected_body:
         raise SupportPlanRefused(
-            "These settings did not reproduce the saved support path. "
-            "The original G-code still contains the route that printed.",
+            "This print file's supports were laid by an earlier version of Clayline "
+            "and are laid differently now. Change any Supports setting to lay them again.",
             support_analysis,
         )
     emission = WeaveEmission(stream, settings, prepared, gcode, lint_report, motion_line_numbers)

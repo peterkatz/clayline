@@ -125,45 +125,6 @@ def test_automatic_foot_sizes_the_flare_without_manual_dimension_limits() -> Non
     assert stricter[0] > widths[0]
 
 
-@pytest.mark.parametrize("needed_courses", (14, 28))
-def test_vase_footing_keeps_its_height_schedule_through_the_required_support(
-    needed_courses: int,
-) -> None:
-    from dataclasses import replace
-
-    from clayline.support_geometry import _vase_footing
-    from clayline.support_models import CurtainPlacement
-
-    original = _flaring_courses()[0]
-    layer_height = 1.24
-    courses = tuple(
-        replace(
-            original,
-            ring=replace(original.ring, z=(index + 1) * layer_height),
-            z=(index + 1) * layer_height
-            + np.linspace(0, layer_height if index >= 3 else 0, len(original.xy)),
-        )
-        for index in range(needed_courses)
-    )
-    curtains = [
-        (
-            CurtainPlacement(id="test", origin="repeated"),
-            ([64] * needed_courses, np.array((1.0, 0.0)), 15.0, 4.13),
-        )
-    ]
-
-    schedule = _vase_footing(courses, curtains, layer_height, gain=0.1)
-
-    assert set(schedule) == set(range(needed_courses))
-    if needed_courses == 14:
-        assert set(schedule.values()) == {0.0}
-    else:
-        assert schedule[3] == 0.0
-        assert schedule[4] == pytest.approx(0.1)
-        assert schedule[13] == 1.0
-        assert all(schedule[index] == 1.0 for index in range(14, needed_courses))
-
-
 def test_manual_foot_and_connected_foundation_keep_their_height_constraints() -> None:
     from clayline.support_geometry import _FOOT_ROUTE_PARAMETERS, _foot_widths
     from clayline.support_models import FootSettings, SupportSettings

@@ -18,12 +18,14 @@ import shapely
 from clayline.emit import EmissionPoint
 from clayline.models import Move, MoveKind
 from clayline.support_analysis import (
+    MAX_SUPPORT_FILL,
     BeadModel,
     _contact_intervals,
     _coverage,
     _Deposit,
     _Footprints,
     _footprints,
+    support_fill,
 )
 from clayline.work_cancel import check_cancelled
 
@@ -59,7 +61,15 @@ class SupportRouteScorer:
         *,
         flow_multiplier: float = 1.0,
         max_stations: int = _MAX_STATIONS,
+        deep: bool = False,
+        first_course: bool = False,
     ) -> None:
+        """``deep`` indexes the earlier clay for a course laid to fill a deeper gap.
+
+        ``first_course`` says the path being judged is a support's first
+        course, whose fill reaches down to the bed.
+        """
+        self.first_course = first_course
         if min(bead_width, layer_height, flow_multiplier) <= 0:
             raise ValueError("Support route dimensions and flow must be positive.")
         if not 1 <= max_stations <= 1_500_000:
@@ -77,8 +87,11 @@ class SupportRouteScorer:
             minimum_bearing_drop_mm=0.25 * layer_height,
         )
         self.flow_multiplier = flow_multiplier
+        self.reach_depth = MAX_SUPPORT_FILL if deep else 1.0
         deposits = self._deposits(lower_paths)
-        self.lower = (_footprints(deposits, self.model),) if deposits else ()
+        self.lower = (
+            (_footprints(deposits, self.model, reach_depth=self.reach_depth),) if deposits else ()
+        )
         # A target wall stays fixed while many candidate webs are compared.
         # Retain its path alongside the key so Python cannot reuse that id.
         self._target_samples: dict[tuple, tuple] = {}
@@ -89,8 +102,12 @@ class SupportRouteScorer:
         result.model = self.model
         result.flow_multiplier = self.flow_multiplier
         result.max_stations = self.max_stations
+        result.reach_depth = self.reach_depth
+        result.first_course = self.first_course
         deposits = self._deposits(paths)
-        result.lower = self.lower + ((_footprints(deposits, self.model),) if deposits else ())
+        result.lower = self.lower + (
+            (_footprints(deposits, self.model, reach_depth=self.reach_depth),) if deposits else ()
+        )
         result._target_samples = {}
         return result
 
@@ -109,14 +126,16 @@ class SupportRouteScorer:
                     raise ValueError("Prepared support paths need the same bead model and flow.")
                 if path.deposits:
                     if path.footprints is None:
-                        path.footprints = _footprints(path.deposits, self.model)
+                        path.footprints = _footprints(
+                            path.deposits, self.model, reach_depth=self.reach_depth
+                        )
                     result.append(path.footprints)
             else:
                 ordinary.append(path)
         if ordinary:
             extra = self._deposits(ordinary)
             if extra:
-                result.append(_footprints(extra, self.model))
+                result.append(_footprints(extra, self.model, reach_depth=self.reach_depth))
         return tuple(result)
 
     def _deposits(self, paths: Sequence[Sequence[Move]]) -> list[_Deposit]:
@@ -133,6 +152,9 @@ class SupportRouteScorer:
                 flow = end.flow_multiplier * self.flow_multiplier
                 if not math.isfinite(flow) or flow <= 0:
                     raise ValueError("Support route scoring needs positive finite flow.")
+                depth = support_fill(end)
+                # A deep course carries its extra clay downward, not sideways.
+                flow /= depth
                 deposits.append(
                     _Deposit(
                         EmissionPoint(start.x, start.y, start.z),
@@ -144,6 +166,7 @@ class SupportRouteScorer:
                         self.model.width_mm * max(1.0, flow),
                         end.page_index,
                         end.layer_index,
+                        depth,
                     )
                 )
         return deposits
@@ -171,20 +194,53 @@ class SupportRouteScorer:
         samples = self._samples(path, target_center, target_radius)
         if samples is None:
             return math.inf, math.inf
-        points, normals, widths, weights, bed = samples
+        points, normals, widths, weights, bed, depths = samples
         lower = self.lower
         if additional_lower_paths:
             lower += self._additional_footprints(additional_lower_paths)
-        coverage = bed.astype(float)
-        contacts = self._intervals(lower, points, normals, widths, bed)
-        if contacts is None:
+        unsupported = self._unsupported(lower, points, normals, widths, bed, depths)
+        if unsupported is None:
             return math.inf, math.inf
+        return float(np.max(unsupported)), float(unsupported @ weights)
+
+    def longest_gap(self, path: Sequence[Move] | _PreparedRoute) -> float:
+        """Return the longest stretch of ``path``, in mm, with no clay beneath it at all.
+
+        Infinity when the path is empty or the bounded search cannot finish.
+        """
+        check_cancelled()
+        samples = self._samples(path, None, None)
+        if samples is None:
+            return math.inf
+        points, normals, widths, weights, bed, depths = samples
+        unsupported = self._unsupported(self.lower, points, normals, widths, bed, depths)
+        if unsupported is None:
+            return math.inf
+        bare = unsupported >= 1.0 - _EPS
+        longest = current = 0.0
+        for is_bare, weight in zip(bare, weights, strict=True):
+            current = current + float(weight) if is_bare else 0.0
+            longest = max(longest, current)
+        return longest
+
+    def _unsupported(
+        self,
+        lower: tuple[_Footprints, ...],
+        points: np.ndarray,
+        normals: np.ndarray,
+        widths: np.ndarray,
+        bed: np.ndarray,
+        depths: np.ndarray,
+    ) -> np.ndarray | None:
+        coverage = bed.astype(float)
+        contacts = self._intervals(lower, points, normals, widths, bed, depths)
+        if contacts is None:
+            return None
         if contacts:
             rows, begin, end = (np.concatenate(values) for values in zip(*contacts, strict=True))
             contribution, _ = _coverage(rows, begin, end, widths)
             coverage[~bed] = contribution[~bed]
-        unsupported = np.clip(1.0 - coverage, 0.0, 1.0)
-        return float(np.max(unsupported)), float(unsupported @ weights)
+        return np.clip(1.0 - coverage, 0.0, 1.0)
 
     def _samples(
         self,
@@ -222,17 +278,22 @@ class SupportRouteScorer:
         normals /= np.linalg.norm(normals, axis=1)[:, None]
         normals = normals[source]
         widths = np.array([d.demand_width for d in deposits])[source]
+        depths = np.array([d.depth for d in deposits])[source]
         weights = lengths[source] / divisions[source]
         weights[(fractions == 0.0) | (fractions == 1.0)] *= 0.5
         if target_center is not None:
             selected = np.linalg.norm(points[:, :2] - target_center, axis=1) <= target_radius + _EPS
             if not np.any(selected):
                 return None
-            points, normals, widths, weights = (
-                values[selected] for values in (points, normals, widths, weights)
+            points, normals, widths, weights, depths = (
+                values[selected] for values in (points, normals, widths, weights, depths)
             )
-        bed = (points[:, 2] >= -_EPS) & (points[:, 2] <= self.model.first_layer_height_mm + _EPS)
-        samples = points, normals, widths, weights, bed
+        # A first course laid to fill a deeper gap reaches the bed from that much higher.
+        reach = depths if self.first_course else 1.0
+        bed = (points[:, 2] >= -_EPS) & (
+            points[:, 2] <= self.model.first_layer_height_mm * reach + _EPS
+        )
+        samples = points, normals, widths, weights, bed, depths
         if key is not None:
             if len(self._target_samples) >= 16:
                 del self._target_samples[next(iter(self._target_samples))]
@@ -246,6 +307,7 @@ class SupportRouteScorer:
         normals: np.ndarray,
         widths: np.ndarray,
         bed: np.ndarray,
+        depths: np.ndarray | None = None,
     ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]] | None:
         begins = points[:, :2] - normals * widths[:, None] / 2.0
         ends = points[:, :2] + normals * widths[:, None] / 2.0
@@ -274,7 +336,7 @@ class SupportRouteScorer:
                     if budget < 0:
                         return None
                     row, _, begin, end = _contact_intervals(
-                        footprints, query[a], ids[b], points, normals, widths, self.model
+                        footprints, query[a], ids[b], points, normals, widths, self.model, depths
                     )
                     if len(row):
                         contacts.append((row, begin, end))

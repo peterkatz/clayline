@@ -39,7 +39,7 @@ def test_base_crossing_the_wall_never_runs_the_height_solver(monkeypatch):
         pytest.fail("An invalid XY departure reached the height solver")
 
     monkeypatch.setattr(geometry, "_limit_footing_descent", unexpected_solver)
-    with pytest.raises(geometry.SupportRoutingError, match="outside its root"):
+    with pytest.raises(geometry.SupportRoutingError, match="would cross clay already laid here"):
         geometry._foot_route_at(
             course,
             anchor,

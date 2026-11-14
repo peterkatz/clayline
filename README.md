@@ -19,7 +19,7 @@ plain language; this README is the developer's view.
 won't slice or a print that went wrong belongs under [Issues](https://github.com/peterkatz/clayline/issues), with the
 drawing or model and the settings you used.
 
-This is release `0.14.2`; [CHANGELOG.md](CHANGELOG.md) lists what each release
+This is release `0.14.3`; [CHANGELOG.md](CHANGELOG.md) lists what each release
 changed. The software pipeline has substantial local verification, and full
 tiles and Weave forms have been printed and accepted on the PotterBot. It is not
 on PyPI.
@@ -36,7 +36,7 @@ on PyPI.
 - **Shape a 3D model:** open STL, OBJ, PLY or 3MF, place and resize it, then slice it into wall rings. Combine up to three independent Weaves for ribs, spirals, custom waveforms, Noise or textures traced from real prints.
 - **Add image relief:** combine up to three Images with those Weaves. Choose from 80 catalogue depth maps, including 20 paisley designs, or upload grayscale or color artwork. Repeat a tile around the exterior or place a single stamp; move, resize, rotate, flip and invert it. Repeating fields fit to a combination of angle and spacing that closes around the wall, with the applied result shown beside the controls.
 - **Control clay and structure:** every Weave and Image has independent depth, lobe/cove response, clay flow, extrusion track, skip layers and fades. Use hollow walls, solid fill or sparse ribs, floors and roof skins, or a continuously rising Vase path where the form permits.
-- **Place external supports:** get a quick approximate overhang estimate from the original mesh, before Weaves or Images. Bases and curtains have separate overhang limits. Turn the base off to retain only local curtain feet; inspect the final path and any remaining spans between attachments before exporting.
+- **Hold up what leans out:** add a wider base, radial curtains of clay round the piece, or one support where you click. Each is laid as part of the wall's own line, so the nozzle never lifts or crosses the piece to reach it, and is trimmed off once the piece stiffens.
 - **Inspect and keep your work:** use the 2D and 3D previews, move-by-move scrubber, flow coloring, reports and warnings. Portable projects include source drawings or the model, settings and uploaded artwork. Reusable pattern files carry every Weave and Image; export G-code for the printer or sliced coils as an OBJ for another program.
 
 ![Images shaping a tapered, lobed vase in the real local studio](guide/images/clayline-images-vase.png)
@@ -56,12 +56,11 @@ Status is based on committed evidence bundles under `docs/verification/` in the
 maintainer's development repository. They are not part of this public snapshot
 because they were built from the maintainer's own print jobs.
 
-The 0.14.2 support changes pass focused geometry, UI, API, and independent
-G-code checks. The maintainer's complete gate is not wholly green: a historical
-Grasshopper reference comparison remains outside tolerance, and tight general
-Weave timing budgets vary across runs. The public snapshot omits private job
-and reference fixtures. These support changes have software verification;
-physical clay-print acceptance has not been performed.
+The 0.14.3 support changes pass their own tests and the regular suite, apart
+from one long-standing comparison with a historical Grasshopper reference that
+is outside tolerance and has nothing to do with supports. The public snapshot
+omits private job and reference fixtures. Supports have been checked in
+software only; they have not yet been through a print.
 
 | Milestone | Current verdict | Evidence / remaining gate |
 |---|---|---|

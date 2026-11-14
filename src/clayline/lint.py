@@ -656,48 +656,30 @@ def lint_gcode(
                     line_number,
                 )
 
-        local_support_travel = False
-        local_travel_marker = _LOCAL_SUPPORT_TRAVEL.search(comment)
         support_role = _SUPPORT_ROLE.search(comment)
-        if local_travel_marker is not None:
-            local_support_travel = (
-                local_travel_marker.group(1) == "true"
-                and block == "body"
-                and not pressure
-                and command == "G0"
-                and kind in _CROSSING_KINDS
-                and support_role is not None
-                and support_role.group(1) in {"support_root", "support_curtain"}
-                and _SUPPORT_ID.search(comment) is not None
-                and "E" not in words
-                and _E_DEFERRED.search(comment) is None
-                and support_slope is not None
+        if _LOCAL_SUPPORT_TRAVEL.search(comment) is not None:
+            # 0.14.2 could reach a curtain by lifting the nozzle and crossing
+            # to it. The clay does not stop on a crossing, so no support may
+            # be reached that way: every support move lays clay as part of
+            # the wall's own line.
+            issue(
+                "weave_support_travel",
+                "a support is reached by travel; supports must be part of the print line",
+                line_number,
             )
-            if not local_support_travel:
-                issue(
-                    "weave_support_travel",
-                    "local curtain travel must be dry, versioned, and identify its curtain",
-                    line_number,
-                )
         support_motion = False
         if block == "body" and not pressure:
             support_motion = support_role is not None
             if support_motion and (
-                support_slope is None
-                or (kind != "print" and not local_support_travel)
-                or _SUPPORT_ID.search(comment) is None
+                support_slope is None or kind != "print" or _SUPPORT_ID.search(comment) is None
             ):
                 issue(
                     "weave_support_role",
-                    "support motion needs a versioned path and ID",
+                    "support motion must lay clay on a versioned path with an ID",
                     line_number,
                 )
                 support_motion = False
-            if (
-                support_motion
-                and not local_support_travel
-                and all(value is not None for value in (*old, *target))
-            ):
+            if support_motion and all(value is not None for value in (*old, *target)):
                 distance_xy = math.hypot(
                     float(target[0]) - float(old[0]), float(target[1]) - float(old[1])
                 )
@@ -890,13 +872,7 @@ def lint_gcode(
             and delta_e is not None
             and delta_e > 1e-9
         )
-        if (
-            keep_clay_flowing
-            and block == "body"
-            and not pressure
-            and kind in _CROSSING_KINDS
-            and not local_support_travel
-        ):
+        if keep_clay_flowing and block == "body" and not pressure and kind in _CROSSING_KINDS:
             moved = all(value is not None for value in (*old, *target))
             length = math.dist(old, target) if moved else 0.0
             deferred = _E_DEFERRED.search(comment)

@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from test_support_analysis import _Course, _prepare
@@ -32,18 +33,20 @@ def _inspection(fraction: float, *, generated: bool):
         (101, y, 2),
         (119, y, 2),
         layer=1,
-        role="support_curtain" if generated else "wall",
-        support_id="repeated-1" if generated else None,
+        # Only the base is held to its allowable overhang (2026-11-13).
+        role="support_foot" if generated else "wall",
+        support_id="foot" if generated else None,
     )
     trace = _prepare(lower, upper)
     targets = () if generated else (SupportTarget("repeated-1", ((1, 110, y, 2),), 2.0),)
     return trace, analyze_support(trace, threshold=0.4, targets=targets)
 
 
-@pytest.mark.parametrize("generated", (False, True), ids=("wall-target", "generated-bearing"))
-def test_exhausted_automatic_repair_refuses_export_and_retains_best_draft(
-    baseline, monkeypatch: pytest.MonkeyPatch, generated: bool
+def test_a_base_that_holds_less_than_asked_prints_the_one_that_holds_most(
+    baseline, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """2026-11-14: no way of laying the base met its number. The best one prints."""
+    generated = True
     prepared, finalized = baseline
     settings = SupportSettings(
         enabled=True,
@@ -82,14 +85,45 @@ def test_exhausted_automatic_repair_refuses_export_and_retains_best_draft(
     monkeypatch.setattr(workflow, "_finalize_once", checked)
     monkeypatch.setattr(workflow, "_support_candidates", lambda _: iter(drafts[1:]))
 
-    with pytest.raises(workflow.SupportPlanRefused, match="do not meet") as refused:
-        workflow.finalize_weave_result(drafts[0])
+    result = workflow.finalize_weave_result(drafts[0])
 
     assert visited == drafts
-    assert refused.value.analysis is inspections[1]
-    assert refused.value.draft.prepared is drafts[1].prepared
-    assert refused.value.draft.stream is drafts[1].stream
-    assert refused.value.draft.support_source is None
+    assert result.job_report.support_analysis is inspections[1]
+    assert result.support_repair.prepared is drafts[1].prepared
+    assert result.support_repair.stream is drafts[1].stream
+    assert result.support_repair.support_source is None
+
+
+def test_curtain_wall_target_short_of_the_limit_still_exports(
+    baseline, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-11-13: a curtain that carries less of the wall than asked is shown, never refused."""
+    prepared, finalized = baseline
+    settings = SupportSettings(
+        enabled=True, repeated_curtains=RepeatedCurtainSettings(enabled=True)
+    )
+    trace, analysis = _inspection(0.70, generated=False)
+    assert not analysis.targets_met
+    draft = replace(
+        prepared,
+        stream=trace.source_stream,
+        prepared=trace,
+        settings=trace.settings,
+        support_settings=settings,
+    )
+    result = replace(
+        finalized,
+        support_settings=settings,
+        job_report=replace(finalized.job_report, support_analysis=analysis),
+    )
+    monkeypatch.setattr(workflow, "_finalize_once", lambda _: result)
+
+    def unexpected_retry(_):
+        pytest.fail("A curtain short of its wall target must not set off a retry.")
+
+    monkeypatch.setattr(workflow, "_support_candidates", unexpected_retry)
+
+    assert workflow.finalize_weave_result(draft) is result
 
 
 def test_wall_warnings_between_met_targets_do_not_refuse_sparse_supports(
@@ -141,8 +175,45 @@ def test_automatic_overhang_limit_uses_the_unweaved_generated_support(
     )
     monkeypatch.setattr(workflow, "_finalize_once", lambda _: result)
     monkeypatch.setattr(workflow, "_support_candidates", lambda _: iter(()))
-    if accepted:
-        assert workflow.finalize_weave_result(prepared) is result
-    else:
-        with pytest.raises(workflow.SupportPlanRefused, match="do not meet"):
-            workflow.finalize_weave_result(prepared)
+    # Whether or not the base meets its number, the job prints: a base that
+    # holds less than asked is shown, not refused.
+    assert workflow._automatic_support_targets_met(result) is accepted
+    assert workflow.finalize_weave_result(prepared) is result
+
+
+def test_a_curtain_the_check_keeps_refusing_is_left_out_not_refused(
+    baseline, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-11-14: nothing is refused over a curtain on a one-piece form.
+
+    Ended as low as the standing check asked, a curtain it still objects to
+    is left out at once, and the job prints without it.
+    """
+    prepared, finalized = baseline
+    objection = SimpleNamespace(
+        actual_generated_diagnostics=(
+            SimpleNamespace(
+                reason="missing_foundation",
+                role="support_curtain",
+                support_id="repeated-1",
+                min_z=10.0,
+            ),
+        )
+    )
+    asked = []
+
+    def rerouted(attempt, *, curtain_stops=None, **_):
+        asked.append(dict(curtain_stops))
+        return replace(attempt, support_curtain_stops=dict(curtain_stops))
+
+    def checked(attempt):
+        if attempt.support_curtain_stops.get("repeated-1") == 0.0:
+            return finalized
+        raise workflow.SupportPlanRefused("x", objection, retryable=True, draft=attempt)
+
+    monkeypatch.setattr(workflow, "_finalize_once", checked)
+    monkeypatch.setattr(workflow, "_rerouted", rerouted)
+    monkeypatch.setattr(workflow, "_support_candidates", lambda _: iter(()))
+
+    assert workflow.finalize_weave_result(prepared) is finalized
+    assert asked == [{"repeated-1": 10.0}, {"repeated-1": 0.0}]

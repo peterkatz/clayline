@@ -32,6 +32,7 @@ from clayline.support_models import (
 from clayline.support_primary import supported_vase_wall
 from clayline.wave import preset_pattern
 from clayline.weave_api import SlicedFormFacade
+from clayline.weave_models import FormWarningCode
 from clayline.weave_restore import parse_weave_gcode, restore_weave_result
 from clayline.weave_workflow import WeaveResult, prepare_weave_result
 from clayline.webui.app import _prepared_trace_payload
@@ -91,10 +92,9 @@ def _assert_curtain_roots_fuse_before_the_wall_continues(result: WeaveResult) ->
         stop = index + 1
         while stop < len(moves) and branch_key(moves[stop]) == key:
             stop += 1
-        anchor = move if dict(move.metadata).get("support_local_travel") else moves[index - 1]
-        if anchor is move:
-            index += 1
-            move = moves[index]
+        # A curtain is part of the wall's own line: it leaves from the wall
+        # (or base) move just before it and returns to exactly that point.
+        anchor = moves[index - 1]
         end = moves[stop - 1]
         assert (end.x, end.y, end.z) == (anchor.x, anchor.y, anchor.z)
         assert stop - index >= 2
@@ -205,8 +205,16 @@ def test_manual_curtain_cannot_point_through_the_hollow(cylinder: SlicedFormFaca
         keep_clay_flowing=True,
     )
 
-    assert prepared.support_error is not None
-    assert "interior" in prepared.support_error
+    # 2026-11-13: a curtain that cannot be laid stops and says so; nothing is refused.
+    assert prepared.support_error is None
+    assert not any(move.support_id == "local-inward" for move in prepared.stream.moves)
+    stopped = [
+        warning
+        for warning in prepared.stream.warnings
+        if getattr(warning, "code", None) == FormWarningCode.SUPPORT_STOPPED
+    ]
+    assert len(stopped) == 1
+    assert "could not be started" in stopped[0].message
 
 
 @pytest.mark.parametrize("vase", (False, True))
@@ -318,12 +326,20 @@ def test_twelve_angular_curtains_use_only_local_feet(vase: bool) -> None:
     baseline = _job(wide_cylinder, vase=vase)
     _assert_original_wall_edges_preserved(baseline.emission.stream, result.emission.stream)
     assert result.emission.lint_report.ok
-    assert (result.report().totals.stroke_count > 1) is vase
+    # Supports never add a stroke or a crossing, in Vase mode or Layered.
+    assert result.report().totals.stroke_count == baseline.report().totals.stroke_count == 1
     assert not result.report().support_analysis.generated_without_foundation
     _assert_curtain_roots_fuse_before_the_wall_continues(result)
 
 
-def test_curtain_only_geometry_uses_its_own_threshold(cylinder: SlicedFormFacade) -> None:
+def test_curtain_with_a_set_height_does_not_change_with_either_number(
+    cylinder: SlicedFormFacade,
+) -> None:
+    """The allowable overhang says how high a curtain goes, and nothing about its shape.
+
+    With the top height set by hand, the curtain is the same clay at any
+    curtain number and at any base number.
+    """
     settings = SupportSettings(
         enabled=True,
         base_max_unsupported_fraction=0.1,
@@ -338,7 +354,10 @@ def test_curtain_only_geometry_uses_its_own_threshold(cylinder: SlicedFormFacade
         cylinder, vase=True, supports=replace(settings, curtain_max_unsupported_fraction=0.8)
     )
     assert strict.emission.stream.moves == other_base.emission.stream.moves
-    assert strict.emission.stream.moves != permissive.emission.stream.moves
+    assert strict.emission.stream.moves == permissive.emission.stream.moves
+    # And there is a curtain there to compare: it rises above its first course.
+    laid = [m.z for m in strict.emission.stream.moves if m.support_id == "repeated-1"]
+    assert laid and max(laid) > 2.0 * cylinder.first_layer_height
     for result in (strict, other_base, permissive):
         assert result.emission.lint_report.ok
         assert not result.report().support_analysis.generated_without_foundation
@@ -416,6 +435,21 @@ def _point_anchor(sliced: SlicedFormFacade, point: np.ndarray, z: float) -> Supp
     )
 
 
+def _assert_first_course_reaches_the_bed(added: list, first_layer_height: float) -> None:
+    """A support's first course lies level at its attachment and still stands on the bed.
+
+    On a flat first layer that is the first layer height. Where the wall
+    climbs straight off the bed the course is a little higher, and is laid
+    with that much more clay so it fills down to the bed.
+    """
+    lowest = min(move.z for move in added)
+    assert first_layer_height - 1e-6 <= lowest <= 2.0 * first_layer_height + 1e-6
+    for move in added:
+        if move.z == lowest and lowest > 1.02 * first_layer_height:
+            fill = dict(move.metadata).get("support_fill")
+            assert fill == pytest.approx(lowest / first_layer_height)
+
+
 @pytest.mark.parametrize("vase", (False, True))
 def test_local_curtain_carries_the_higher_square_overhang(vase: bool) -> None:
     sliced = _slice_support_fixture("square-overhang.obj")
@@ -431,11 +465,11 @@ def test_local_curtain_carries_the_higher_square_overhang(vase: bool) -> None:
     original = _job(sliced, vase=vase, supports=SupportSettings())
     supported = _job(sliced, vase=vase, supports=settings)
     assert supported.emission.lint_report.ok
-    assert (supported.report().totals.stroke_count > 1) is vase
+    assert supported.report().totals.stroke_count == original.report().totals.stroke_count == 1
     assert not any(move.role == "support_foot" for move in supported.emission.stream.moves)
     _assert_external_support_routes(supported)
     added = [m for m in supported.emission.stream.moves if m.support_id == "crest"]
-    assert min(m.z for m in added) == pytest.approx(sliced.first_layer_height)
+    _assert_first_course_reaches_the_bed(added, sliced.first_layer_height)
     assert max(m.z for m in added) >= ring.z
     assert not supported.report().support_analysis.generated_without_foundation
 
@@ -489,7 +523,10 @@ def test_local_curtain_connects_every_layer_of_a_split_handle(vase: bool) -> Non
     original = _job(sliced, vase=False, supports=SupportSettings())
     supported = _job(sliced, vase=vase, supports=settings)
     assert original.report().totals.stroke_count > 1
-    assert (supported.report().totals.stroke_count > 1) is vase
+    # The curtain to the handle never adds a stroke. Layered, it joins the
+    # handle into the wall's one line, so the separate part needs no crossing;
+    # in Vase mode the job is one line, as it is without supports.
+    assert supported.report().totals.stroke_count == 1
     assert not any(move.role == "support_foot" for move in supported.emission.stream.moves)
     assert supported.emission.lint_report.ok
     body_edges = {layer.index: max(layer.rings[0].points[:, 0]) for layer in detached_layers}
@@ -535,7 +572,7 @@ def test_local_curtain_connects_every_layer_of_a_split_handle(vase: bool) -> Non
     else:
         assert _layered_wall_segments(supported) == _layered_wall_segments(original)
     additions = [m for m in supported.emission.stream.moves if m.support_id == "handle"]
-    assert min(m.z for m in additions) == pytest.approx(sliced.first_layer_height)
+    _assert_first_course_reaches_the_bed(additions, sliced.first_layer_height)
     assert {layer.index for layer in detached_layers} <= {m.layer_index for m in additions}
     analysis = supported.report().support_analysis
     assert analysis.added_volume_ml > 0
@@ -599,7 +636,8 @@ def test_split_and_repeated_vase_curtains_use_local_feet() -> None:
         "repeated-2",
     }
     assert not any(move.role == "support_foot" for move in result.emission.stream.moves)
-    assert result.report().totals.stroke_count > 1
+    # One line, as the same Vase job is without supports.
+    assert result.report().totals.stroke_count == 1
     assert result.emission.lint_report.ok
     assert not result.report().support_analysis.generated_without_foundation
     restored = restore_weave_result(result.emission.gcode, _MESHES / "handled-vessel.obj")

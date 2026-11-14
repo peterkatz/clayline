@@ -148,7 +148,10 @@ def test_base_off_never_retries_with_a_shared_annular_base(draft, monkeypatch, s
 
 
 @pytest.mark.parametrize(
-    "base_limit,curtain_limit,accepted", ((0.3, 0.7, True), (0.1, 0.7, False), (0.3, 0.5, False))
+    "base_limit,curtain_limit,accepted",
+    # 2026-11-13: the curtain allowable overhang decides how high a curtain
+    # goes, not whether the job exports; a curtain peak over it is reported only.
+    ((0.3, 0.7, True), (0.1, 0.7, False), (0.3, 0.5, True)),
 )
 def test_plain_family_gates_use_their_own_limit(draft, base_limit, curtain_limit, accepted) -> None:
     width = 4.13

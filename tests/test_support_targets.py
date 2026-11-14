@@ -36,7 +36,6 @@ from clayline.support_geometry import (
     _clear_curtain_route,
     _curtain_placement,
     _curtain_route,
-    _LocalMeshContact,
     _placements,
     _wall_courses,
     curtain_targets,
@@ -53,41 +52,6 @@ from clayline.support_patterns import SupportArtwork
 from clayline.support_split_routing import _require_external_attachment
 from clayline.wave import preset_pattern
 from clayline.weave_workflow import prepare_weave_result
-
-
-@pytest.mark.parametrize("upper_index", (1, 3))
-def test_local_root_candidate_must_carry_finite_source_strip(upper_index: int) -> None:
-    sliced = load_mesh(
-        Path(__file__).parent / "fixtures" / "mesh" / "bowl.obj",
-        fit_height=24,
-        profile="potterbot-xl",
-    ).slice(layer_height=1.24, first_layer_height=1.24, sample_spacing=1, bead_width=4.13)
-    stream = build_form_move_stream(sliced, preset_pattern("flat"), load_profile("potterbot-xl"))
-    courses = _wall_courses(stream, sliced)
-    lower, upper = courses[0], courses[upper_index]
-    target = max(upper.ring.points, key=lambda point: point[0])
-    root = np.asarray(
-        lower.original.interpolate(lower.original.project(shapely.Point(target))).coords[0]
-    )
-    displacement = np.array((3.0, -2.0))
-    decorated = replace(lower, xy=lower.xy + displacement, wall=LineString(lower.xy + displacement))
-    contact = _LocalMeshContact(decorated, lower, upper, root, target, sliced.bead_width)
-    right = SimpleNamespace(
-        line=LineString(
-            (
-                root + displacement,
-                root + displacement + (8, -2),
-                root + displacement + (8, 2),
-                root + displacement,
-            )
-        )
-    )
-    wrong = SimpleNamespace(line=LineString((root + displacement, root + displacement - (8, 0))))
-    assert contact.score(right) < contact.score(wrong)
-    assert contact.score(right) < 0.1
-    # The inward root overlaps original bearing. Nearly collinear contact
-    # fragments must not count that existing area twice as new support.
-    assert contact.score(wrong) > 0.1
 
 
 def test_detached_inner_wall_cannot_create_an_internal_curtain() -> None:
@@ -304,11 +268,7 @@ def test_tilted_saw_curtain_styles_clear_the_sculpture_before_full_artwork(
             sliced.sample_spacing,
             placement.id,
             [],
-            follow_attachment_height=False,
-            tune_departure=True,
-            blend_root=True,
             footing=None,
-            lower=None,
             lateral_blend_mm=2.25 * sliced.bead_width,
         )
         assert route.line.is_simple
@@ -347,9 +307,13 @@ def test_sharp_saw_curtain_offset_keeps_one_closed_exterior_corridor(
     stream = build_form_move_stream(sliced, pattern, profile)
     courses = _wall_courses(stream, sliced)
     reference = _wall_courses(reference_stream, sliced)
+    # 2026-11-13: automatic curtains now end with the lowest lean, far below
+    # layer 84; a manual top height still carries this branch up to it.
     settings = SupportSettings(
         enabled=True,
-        repeated_curtains=RepeatedCurtainSettings(enabled=True, count=8, distribution="angular"),
+        repeated_curtains=RepeatedCurtainSettings(
+            enabled=True, count=8, distribution="angular", top_height_mm=reference[-1].ring.z
+        ),
     )
     placement, fraction = _placements(settings)[6]
     stations, direction, _, thickness = _curtain_placement(
@@ -378,8 +342,6 @@ def test_sharp_saw_curtain_offset_keeps_one_closed_exterior_corridor(
             profile,
             sliced.sample_spacing,
             placement.id,
-            follow_attachment_height=False,
-            blend_root=True,
             root_spread_mm=2.25 * sliced.bead_width,
             lateral_blend_mm=2.25 * sliced.bead_width,
         )
@@ -741,7 +703,9 @@ def test_local_handle_curtain_meets_the_complete_selected_branch_target(vase: bo
     result = _job(sliced, vase=vase, supports=settings)
 
     assert result.emission.lint_report.ok
-    assert (result.report().totals.stroke_count > 1) is vase
+    # The curtain never adds a stroke: Layered it joins the handle into the
+    # wall's one line, and the Vase job is one line as it is without supports.
+    assert result.report().totals.stroke_count == 1
     analysis = result.report().support_analysis
     assert analysis.generated_max_unsupported_fraction <= settings.max_unsupported_fraction
     assert len(analysis.target_results) == 1

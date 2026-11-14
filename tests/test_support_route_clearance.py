@@ -108,11 +108,11 @@ def test_curtain_search_rejects_a_colliding_heading_and_selects_a_clear_one():
         "rib",
         [],
     )
-    kwargs = dict(follow_attachment_height=True, blend_root=True, footing=None, lower=None)
-    ordinary = _clear_curtain_route(*args, tune_departure=False, **kwargs)
+    # Without anything to clear, the course leaves straight along the curtain.
+    ordinary = _clear_curtain_route(*args, footing=None)
     assert checker.check((anchor, *ordinary.moves)) is not None
 
-    adapted = _clear_curtain_route(*args, tune_departure=True, clearance=checker, **kwargs)
+    adapted = _clear_curtain_route(*args, footing=None, clearance=checker)
 
     assert checker.check((anchor, *adapted.moves)) is None
     assert adapted.line.is_simple and adapted.line.is_closed

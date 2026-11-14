@@ -295,8 +295,8 @@ def test_drag_metrics_export_gate_and_settle_deadline_are_visible_contracts() ->
         'markRender(quality);\n      if (quality === "settle" && payload.finalizing === true)'
         in WEAVE
     )
-    assert 'setStatus("Checking\\u2026", "exact")' in WEAVE
-    assert "download remains disabled" in WEAVE
+    assert 'setStatus("Checking the print file\\u2026", "exact")' in WEAVE
+    assert "Download unlocks when it passes." in WEAVE
     assert "const finalized = { ...preparedPayload, ...payload }" in WEAVE
     finalize = _function("finalizeExact", "function scheduleMesh")
     assert "signal: controller.signal" in finalize

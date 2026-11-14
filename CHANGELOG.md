@@ -2,71 +2,63 @@
 
 What changed in each release of Clayline, newest first. Dates are release dates.
 
+## 0.14.3 — 2026-11-14
+
+### Supports are part of the one line
+- A curtain is now the wall's own line going out, round the end, and back to where
+  it left. The nozzle never lifts or crosses the piece to reach a support, with
+  **Base** on or off, in Vase mode or out of it. In 0.14.2, curtains with the base
+  off in Vase mode were each reached by a crossing. If you made a print file that
+  way, slice the job again in this version before printing it.
+- No ring of clay is laid round the piece for a curtain. With the base on, curtains
+  above it stand against the wall itself, so they add much less clay.
+- **Curtain allowable overhang (%)** decides how high the curtains go, and nothing
+  else. A low number no longer squares them off into slabs, and no longer stops the
+  print file from being made.
+- A curtain carries the stretch of wall that leans out and stops where that stretch
+  stops. It no longer climbs wall that stands upright to reach a lean further up.
+- A curtain that cannot be carried any higher stops there, and so does the base.
+  The warnings say where, and the print file is still made.
+- Supports build in seconds: each layer of a curtain is laid once, not tried many
+  ways.
+- A support to a separate part of a form, such as a handle, is laid the same way.
+  It is the only way the line reaches that part, so if it cannot stand, Clayline
+  says so and makes no file.
+- A print file with curtains made in 0.14.0 to 0.14.2 still opens for its form and
+  settings. Change any Supports setting and its supports are laid the new way.
+- The Supports step says less, in plainer words. **Reinforced base** is now
+  **Base**. **Before you print** says how much clay and time the supports add and
+  how many places still lean out past your limit.
+
 ## 0.14.2 — 2026-11-13
 
-### Fast original-mesh estimates and local curtain feet
-- The Supports step returns a quick approximate overhang estimate before building
-  the full print path. It reads the original placed mesh, before Weaves and Images,
-  and considers exterior overhangs only. Hollows and enclosed islands do not ask
-  for internal supports.
-- **Base allowable overhang (%)** and **Curtain allowable overhang (%)** are
-  independent. Projects, exported recipes, reports, and CLI options preserve both;
-  older single-limit projects initialize both values from their saved setting.
-- Turning **Reinforced base** off removes the surrounding base. Curtains can use
-  small local external feet. In Vase mode these can require separate strokes and
-  moves without extrusion; their travel and restart time is included in estimates.
-- Support construction avoids a second complete reference route and reuses contact
-  calculations. Superseded mesh estimates cancel promptly. Download remains
-  disabled until the actual generated path completes foundation and nozzle checks.
-- Local root selection checks finite contact with the original mesh. Near-collinear
-  contact fragments no longer count the same bearing twice. Split handles retain
-  external attachments while enclosed internal attachments are rejected.
-- Supported curtain targets and unsupported spans between them remain distinct in
-  the inspection panel. A few curtains do not claim to support the entire wall.
+### Separate limits for the base and the curtains
+- What leans out is measured on the form itself, before Weaves and Images, and
+  shows in under a second after a change.
+- **Base allowable overhang (%)** and **Curtain allowable overhang (%)** are set
+  separately. A project saved with one limit opens with both set to it.
+- Turning the base off removes it. In this version, curtains without a base were
+  each reached by a crossing in Vase mode; 0.14.3 lays them as part of the line.
 
 ## 0.14.1 — 2026-11-13
 
-### Responsive support checks
-- Changing settings stops the superseded calculation. Each session runs one path
-  calculation at a time, and an old result cannot replace a newer edit.
-- The preview shows **Building supports** and **Checking final path**, with elapsed
-  time. **Stop check** keeps your model and settings; **Check again** resumes checking.
-- Large support bases use faster, bounded clearance queries. Invalid candidate
-  outlines are rejected before their height schedule is calculated.
-- Taller Vase support bases keep their rising height schedule through the last
-  required course. Plain bases also check their contact with the preceding clay,
-  adjusting the innermost lane where the sculpture's contour leaves a gap.
-- Curtain departures check the nozzle against previously printed clay before
-  choosing a route, and also check that the following wall can pass the curtain.
+### Supports that answer sooner
+- Changing a setting stops the work already under way, so an old result never
+  replaces a newer one.
+- The preview says what it is doing and for how long. **Stop check** keeps the form
+  and settings; **Check again** carries on.
 
 ## 0.14.0 — 2026-11-12
 
-### Supports that follow the form
-- **Supports** is a new Mesh Mode step. Add a reinforced base, choose a number of
-  radial curtains, or pick local attachments on the wall. Curtains stay outside the
-  piece and follow its contour beneath outward overhangs. Clayline sizes them from
-  **Allowable overhang (%)**; placement and dimension overrides are under **Advanced**.
-- The overhang check uses the piece profile without Weaves. Intentional drips and
-  ripples do not raise warnings or make automatic supports grow. A lower allowable
-  percentage asks for more contact with the clay underneath.
-- Bases and curtains each have independent **Weaves** and **Images** switches. Their
-  patterns ease where needed to keep the added clay connected and clear of other
-  paths. The original sculpture wall stays complete at each curtain attachment.
-- The preview shows the actual support clay in blue. **Span warnings** in the preview
-  legend and **Show span warnings (red dots)** in the inspection panel switch the
-  markers on or off without rebuilding the path. The choice survives a restart.
-- The final check distinguishes supported attachment targets from spans still needing
-  support between curtains. A route without a verified foundation or clearance cannot
-  be exported, and its inspection points to the failed support segment.
-- Projects retain support placement and appearance. Supported G-code can restore its
-  editable job when the original model is supplied. Printed-coil OBJ exports include
-  the supports; Designed surface exports remain the sculpture's surface.
-- Larger decorated support jobs fit the bounded session cache, and completed checks
-  release planning data they no longer need. Complex jobs can take several minutes
-  to check before Download becomes available.
-
-The percentage describes nominal geometric contact, not a guarantee about wet clay.
-Check the final path and test the material and flow for the intended print.
+### Supports
+- **Supports** is a new step in Mesh Mode. Add a base round the foot of the piece,
+  choose a number of radial curtains, or place a local support by clicking the
+  wall. Supports stay outside the piece and follow its shape.
+- What leans out is judged on the form without its Weaves, so drips and ripples
+  made on purpose do not raise warnings or make supports grow.
+- The base and the curtains each have a **Weaves** and an **Images** switch.
+- The preview shows support clay in blue. **Show span warnings (red dots)** turns
+  the markers off and on, and the choice is remembered.
 
 ## 0.13.6 — 2026-11-11
 

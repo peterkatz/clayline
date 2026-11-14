@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -39,6 +40,8 @@ def route_open_supports(
     foot_variant: int,
     reference_stream: MoveStream | None = None,
     flow_multiplier: float = 1.0,
+    curtain_stops: Mapping[str, float] | None = None,
+    base_may_stop: bool = False,
 ) -> MoveStream:
     """Close a cycle of near-touching arcs using short, audited deposited welds.
 
@@ -116,6 +119,8 @@ def route_open_supports(
         reference_stream=replace(reference_stream, moves=tuple(reference_moves))
         if reference_stream is not None
         else None,
+        curtain_stops=curtain_stops,
+        base_may_stop=base_may_stop,
     )
 
 

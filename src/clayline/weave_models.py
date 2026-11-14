@@ -88,6 +88,11 @@ class FormWarningCode(StrEnum):
     # limit, the rim relief is eased and the path rebuilt rather than the job
     # refused. The artist is told, because the shape did change.
     TOP_FOLLOW_EASED = "top_follow_eased"
+    # 2026-11-13 (Pete's saw vase would not export with strict curtains): a
+    # curtain that cannot be carried higher ends where it is, and says so. The
+    # print file is never refused over it.
+    # The page heads a warning with its code, so the code reads as a heading.
+    SUPPORT_STOPPED = "curtain_stops_short"
     # 2026-07-19 (Pete's Dripper1.stl): a form whose bottom tip slices smaller
     # than the bead has no printable ring on its first layer(s); printing
     # starts at the first real ring, rebased to the bed, and says so.

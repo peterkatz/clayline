@@ -447,7 +447,9 @@ def test_saw_curtains_follow_only_external_base_form_needs(
             support_settings=settings,
         )
         assert supported.emission.lint_report.ok
-        assert (supported.report().totals.stroke_count == 1) is base_enabled
+        # Supports never add a stroke: with the base on or off the job stays one line.
+        assert supported.report().totals.stroke_count == baseline.report().totals.stroke_count
+        assert supported.report().totals.stroke_count == 1
         _assert_original_wall_edges_preserved(baseline.emission.stream, supported.emission.stream)
         if base_enabled:
             assert tuple(m for m in supported.emission.stream.moves if m.support_id is None) == (

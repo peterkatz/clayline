@@ -12,10 +12,8 @@ import shapely
 from shapely import STRtree
 
 from clayline.emit import (
-    EmissionLiteral,
     EmissionMotion,
     EmissionPoint,
-    EmissionPressure,
     PreparedEmission,
 )
 from clayline.models import MoveKind, MoveStream
@@ -30,6 +28,17 @@ _MAX_Z_BINS_PER_DEPOSIT = 32
 _MAX_DIAGNOSTICS = 512
 _BATCH_SIZE = 768
 _GENERATED_ROLES = frozenset(("support_foot", "support_curtain", "support_root"))
+_CURTAIN_ROLES = frozenset(("support_curtain", "support_root"))
+# A curtain leaves the wall and comes back to it, so its first and last few
+# millimetres are welded to the wall at their own height. Where a weave steps
+# the wall inward from one layer to the next, that short stretch can have no
+# clay beneath it before the curtain reaches the layer below. Clay bridges a
+# gap of this many bead widths; anything longer is not standing.
+CURTAIN_BRIDGE_BEADS = 1.5
+# One curtain course sits where the wall changes from flat layers to its
+# climbing turn, up to two layers above the course below. It is laid with
+# that much more clay, and reaches that much further down.
+MAX_SUPPORT_FILL = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,10 +204,18 @@ class _Deposit:
     demand_width: float
     page: int
     layer: int
+    # How many bead heights this deposit's clay reaches below the nozzle.
+    depth: float = 1.0
 
     @property
     def generated(self) -> bool:
         return self.role in _GENERATED_ROLES
+
+    @property
+    def is_curtain(self) -> bool:
+        # The base's first and last stretch carry the root role too; the base
+        # keeps the strict rule, so they are not curtain clay.
+        return self.role in _CURTAIN_ROLES and not self.is_base
 
     @property
     def is_base(self) -> bool:
@@ -826,40 +843,12 @@ def _deposits(
     added_seconds = 0.0
     previous = prepared.initial_point
     motion = -1
-    local_restart = False
     for event in prepared.events:
-        if isinstance(event, EmissionPressure):
-            if dict(event.source_move.metadata).get("support_local_travel") is True:
-                added_seconds += event.e / event.feed_mm_s
-            continue
-        if isinstance(event, EmissionLiteral):
-            # Profile restart dwells follow the tagged approach, including
-            # profiles with a dwell but no pressure charge. Artist-requested
-            # pauses are run breaks and never support overhead.
-            if event.run_break:
-                local_restart = False
-            elif local_restart:
-                words = event.line.split(";", 1)[0].split()
-                if len(words) == 2 and words[0] == "G4" and words[1].startswith("S"):
-                    seconds = float(words[1][1:])
-                    if math.isfinite(seconds) and seconds >= 0:
-                        added_seconds += seconds
-            continue
         if not isinstance(event, EmissionMotion):
             continue
         motion += 1
         start, end = previous, event.point
         previous = end
-        local_restart = (
-            not event.extrude
-            and event.kind in {MoveKind.TRAVEL_LIFT, MoveKind.TRAVEL_XY, MoveKind.TRAVEL_APPROACH}
-            and dict(event.source_move.metadata).get("support_local_travel") is True
-        )
-        if local_restart and start is not None:
-            # Count the actual support-attributed movement, including a
-            # tagged first approach from a known profile start point. This
-            # estimate does not subtract a hypothetical wall-only approach.
-            added_seconds += start.distance_to(end) / event.feed_mm_s
         if start is None or event.kind is MoveKind.THREAD_RELEASE:
             continue
         role = deposition_role(event)
@@ -868,6 +857,9 @@ def _deposits(
         if not deposits and not (generated and event.kind is MoveKind.PRINT):
             continue
         fraction = event.area_mm2 / nominal
+        depth = support_fill(event.source_move)
+        # A deep course carries its extra clay downward, not sideways.
+        fraction /= depth
         item = _Deposit(
             start,
             end,
@@ -878,6 +870,7 @@ def _deposits(
             settings.bead_width * max(1.0, fraction),
             event.page,
             event.source_move.layer_index,
+            depth,
         )
         if generated and deposits:
             length = start.distance_to(end)
@@ -892,6 +885,14 @@ def _deposits(
     return result, unresolved, added_volume, added_seconds
 
 
+def support_fill(move) -> float:
+    """How many bead heights a support move was given clay to fill, 1 to MAX_SUPPORT_FILL."""
+    value = dict(move.metadata).get("support_fill", 1.0)
+    if not isinstance(value, (int, float)) or not math.isfinite(value):
+        return 1.0
+    return min(MAX_SUPPORT_FILL, max(1.0, float(value)))
+
+
 def deposition_role(event: EmissionMotion) -> str:
     """Return the same source role for support inspection and exact preview."""
     if event.source_move.role is not None:
@@ -902,7 +903,15 @@ def deposition_role(event: EmissionMotion) -> str:
     return "wall"
 
 
-def _footprints(deposits: list[_Deposit], model: BeadModel) -> _Footprints:
+def _footprints(
+    deposits: list[_Deposit], model: BeadModel, *, reach_depth: float = 1.0
+) -> _Footprints:
+    """Index earlier clay by the heights a later bead can rest on it from.
+
+    ``reach_depth`` is the deepest later bead, in bead heights, that will be
+    looked up in this index.
+    """
+
     def xyz(point: EmissionPoint) -> tuple[float, float, float]:
         return point.x, point.y, point.z
 
@@ -927,7 +936,7 @@ def _footprints(deposits: list[_Deposit], model: BeadModel) -> _Footprints:
     z_step = 2.0 * model.contact_tolerance_mm
     low = np.floor((minimum[:, 2] + model.minimum_bearing_drop_mm - _EPS) / z_step).astype(np.int64)
     high = np.floor(
-        (maximum[:, 2] + model.height_mm + model.contact_tolerance_mm + _EPS) / z_step
+        (maximum[:, 2] + reach_depth * model.height_mm + model.contact_tolerance_mm + _EPS) / z_step
     ).astype(np.int64)
     if np.any(high - low + 1 > _MAX_Z_BINS_PER_DEPOSIT):
         raise _AnalysisLimit("A deposition move crosses too many contact height bands.")
@@ -974,13 +983,16 @@ def _contact_intervals(
     normal: np.ndarray,
     width: np.ndarray,
     model: BeadModel,
+    depth: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     # Trim each earlier centreline to the Z window that reaches this exact
     # candidate underside. A helix uses its interpolated height here.
+    # ``depth`` is each candidate's reach in bead heights (one when absent).
     base = footprints.start[lower]
     delta = footprints.vector[lower]
     point = position[candidate]
-    z_low = point[:, 2] - model.height_mm - model.contact_tolerance_mm
+    reach = model.height_mm if depth is None else model.height_mm * depth[candidate]
+    z_low = point[:, 2] - reach - model.contact_tolerance_mm
     z_high = point[:, 2] - model.minimum_bearing_drop_mm
     low, high = _clip_slab(
         np.zeros(len(lower)),
@@ -1069,6 +1081,7 @@ def _sample_contacts(
     bed: np.ndarray,
     model: BeadModel,
     pair_budget: int,
+    depth: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     covered = bed.astype(float)
     starts = point[:, :2] - normal * width[:, None] / 2.0
@@ -1113,6 +1126,7 @@ def _sample_contacts(
                 normal,
                 width,
                 model,
+                depth,
             )
             if not len(row):
                 continue
@@ -1152,7 +1166,10 @@ def _inspect(
             target_results=tuple(target.result() for target in target_collectors),
         )
 
-    footprints = _footprints(deposits, model)
+    depths = np.array([item.depth for item in deposits])
+    first_layer = min(item.layer for item in deposits)
+    first_course = np.array([item.layer == first_layer for item in deposits])
+    footprints = _footprints(deposits, model, reach_depth=float(np.max(depths)))
     lengths = np.linalg.norm(footprints.vector, axis=1)
     divisions = np.ceil(lengths / model.station_spacing_mm).astype(np.int64)
     # A midpoint checks the middle of a short segment even when it has the
@@ -1166,6 +1183,49 @@ def _inspect(
     normals /= footprints.length[:, None]
     rooted = np.zeros(len(deposits), dtype=bool)
     missing_foundation = False
+    # One curtain course, out and back, is judged whole: see _close_branch.
+    branch: list[tuple[int, np.ndarray, np.ndarray, np.ndarray, float]] = []
+    bridge_mm = CURTAIN_BRIDGE_BEADS * model.width_mm
+
+    def close_branch() -> bool:
+        """Settle one curtain course; return whether any of it is not standing."""
+        failed = False
+        if not branch:
+            return failed
+        # Each station stands for the path either side of it: a segment's two
+        # end stations count half, so a run measures its true length however
+        # finely the course was laid.
+        steps = np.concatenate(
+            [
+                np.concatenate(([step / 2.0], np.full(len(found) - 2, step), [step / 2.0]))
+                for _, _, _, found, step in branch
+            ]
+        )
+        found = np.concatenate([row[3] for row in branch])
+        # Lengths of each unbroken run of stations with nothing beneath.
+        bridged = found.copy()
+        start = None
+        for position in range(len(found) + 1):
+            open_run = position < len(found) and not found[position]
+            if open_run and start is None:
+                start = position
+            elif not open_run and start is not None:
+                if float(np.sum(steps[start:position])) <= bridge_mm + _EPS:
+                    bridged[start:position] = True
+                start = None
+        offset = 0
+        for index, fractions, values, stations, _step in branch:
+            standing = bridged[offset : offset + len(stations)]
+            offset += len(stations)
+            rooted[index] = bool(np.all(standing))
+            if not rooted[index]:
+                failed = True
+                collector.sample(
+                    deposits[index], fractions, values, ~standing, "missing_foundation"
+                )
+        branch.clear()
+        return failed
+
     # Dense but ordinary bases have more bead stations than a few curtains.
     # Scale the total work allowance with their size; each sparse query stays
     # bounded below, and excessive overlap density still exhausts this budget.
@@ -1185,8 +1245,14 @@ def _inspect(
         z = point[:, 2]
         # A first-layer bead can be squished against the bed. The bed never
         # supports a raised first pass simply because it is labeled layer 0.
+        # A first course laid to fill a deeper gap reaches the bed from that
+        # much higher. Only a first course: an upper one is measured in
+        # layers, and fills down to the course below it, not to the bed.
         bed = (z >= model.bed_z_mm - _EPS) & (
-            z <= model.bed_z_mm + model.first_layer_height_mm + _EPS
+            z
+            <= model.bed_z_mm
+            + model.first_layer_height_mm * np.where(first_course[source], depths[source], 1.0)
+            + _EPS
         )
         unsupported, contacts, prior, pair_budget = _sample_contacts(
             footprints,
@@ -1197,6 +1263,7 @@ def _inspect(
             bed,
             model,
             pair_budget,
+            depths[source],
         )
         if generated:
             contact_offsets = np.searchsorted(contacts, np.arange(len(source) + 1))
@@ -1210,19 +1277,40 @@ def _inspect(
             item = deposits[index]
             interval = slice(first, last)
             if generated:
+                continues = bool(
+                    branch
+                    and item.is_curtain
+                    and deposits[branch[-1][0]].support_id == item.support_id
+                    and deposits[branch[-1][0]].motion == item.motion - 1
+                )
+                if branch and not continues:
+                    missing_foundation = close_branch() or missing_foundation
                 for station in first + np.flatnonzero(~foundation[interval]):
                     found = prior[contact_offsets[station] : contact_offsets[station + 1]]
                     foundation[station] = bool(np.any(rooted[found]))
-                rooted[index] = bool(np.all(foundation[interval]))
-                if item.generated and not rooted[index]:
-                    missing_foundation = True
-                    collector.sample(
-                        item,
-                        fraction[interval],
-                        unsupported[interval],
-                        ~foundation[interval],
-                        "missing_foundation",
+                if item.is_curtain:
+                    # Decided when its course ends; nothing rests on a course
+                    # before the nozzle has left it.
+                    branch.append(
+                        (
+                            index,
+                            fraction[interval].copy(),
+                            unsupported[interval].copy(),
+                            foundation[interval].copy(),
+                            float(lengths[index] / divisions[index]),
+                        )
                     )
+                else:
+                    rooted[index] = bool(np.all(foundation[interval]))
+                    if item.generated and not rooted[index]:
+                        missing_foundation = True
+                        collector.sample(
+                            item,
+                            fraction[interval],
+                            unsupported[interval],
+                            ~foundation[interval],
+                            "missing_foundation",
+                        )
             values = unsupported[interval]
             peak = float(np.max(values))
             reported = include_generated if item.generated else include_original
@@ -1245,6 +1333,7 @@ def _inspect(
             failing = values > limit + _EPS
             if reported and np.any(failing):
                 collector.sample(item, fraction[interval], values, failing, "lower_contact")
+    missing_foundation = close_branch() or missing_foundation
     return replace(
         collector.result(model, maximum, missing_foundation, bool(unresolved)),
         target_results=tuple(target.result() for target in target_collectors),

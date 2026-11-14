@@ -92,7 +92,7 @@ def test_large_tilted_foot_keeps_its_fill_and_artwork_without_crossings(
 def test_extreme_foot_still_stops_at_the_point_budget(tilted_foot_case: tuple) -> None:
     sliced, stream, courses, artwork, settings, profile, _ = tilted_foot_case
     course = courses[0]
-    with pytest.raises(SupportRoutingError, match="support path size limit"):
+    with pytest.raises(SupportRoutingError, match="The base is too large to lay"):
         _foot_route(
             course,
             stream.moves[course.indices[0]],

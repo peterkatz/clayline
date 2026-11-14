@@ -73,7 +73,7 @@ def test_stop_and_resume_preserve_settings_and_ignore_aborted_answer(stage: str)
 """
     )
     assert out["held"] == 1
-    phase = "Building path" if stage == "modulate" else "Checking final path"
+    phase = "Building path" if stage == "modulate" else "Checking the print file"
     assert out["phase"].startswith(phase)
     assert out["elapsed"].startswith(phase) and out["elapsed"].endswith("s")
     assert out["stopped"] == {
@@ -82,7 +82,7 @@ def test_stop_and_resume_preserve_settings_and_ignore_aborted_answer(stage: str)
         "retry": "Check again",
         "visible": True,
         "disabled": True,
-        "inspection": "Support check stopped. Choose Check again to continue.",
+        "inspection": "Check stopped. Choose Check again to carry on.",
         "unchanged": True,
         "slice": True,
     }
